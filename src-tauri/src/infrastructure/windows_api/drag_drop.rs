@@ -83,8 +83,10 @@ impl DragDropController {
         let closure_pointer_pointer: *mut c_void = unsafe { std::mem::transmute(&mut trait_obj) };
         let lparam = LPARAM(closure_pointer_pointer as _);
         unsafe extern "system" fn enumerate_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let closure = &mut *(lparam.0 as *mut c_void as *mut &mut dyn FnMut(HWND) -> bool);
-            closure(hwnd).into()
+            unsafe {
+                let closure = &mut *(lparam.0 as *mut c_void as *mut &mut dyn FnMut(HWND) -> bool);
+                closure(hwnd).into()
+            }
         }
         let _ = unsafe { EnumChildWindows(Some(hwnd), Some(enumerate_callback), lparam) };
 
@@ -118,7 +120,7 @@ impl EmojiDropTarget {
         }
     }
 
-    unsafe fn format_etc(cf_format: u16, lindex: i32, tymed: u32) -> FORMATETC {
+    fn format_etc(cf_format: u16, lindex: i32, tymed: u32) -> FORMATETC {
         FORMATETC {
             cfFormat: cf_format,
             ptd: ptr::null_mut(),
@@ -130,55 +132,59 @@ impl EmojiDropTarget {
 
     unsafe fn has_format(data_obj: &IDataObject, cf_format: u16, tymed: u32, lindex: i32) -> bool {
         let format = Self::format_etc(cf_format, lindex, tymed);
-        data_obj.QueryGetData(&format).is_ok()
+        unsafe { data_obj.QueryGetData(&format).is_ok() }
     }
 
     unsafe fn read_hglobal_bytes(hglobal: windows::Win32::Foundation::HGLOBAL) -> Option<Vec<u8>> {
-        if hglobal.0.is_null() {
-            return None;
+        unsafe {
+            if hglobal.0.is_null() {
+                return None;
+            }
+            let size = GlobalSize(hglobal);
+            if size == 0 {
+                return None;
+            }
+            let ptr = GlobalLock(hglobal) as *const u8;
+            if ptr.is_null() {
+                return None;
+            }
+            let slice = std::slice::from_raw_parts(ptr, size);
+            let bytes = slice.to_vec();
+            let _ = GlobalUnlock(hglobal);
+            Some(bytes)
         }
-        let size = GlobalSize(hglobal);
-        if size == 0 {
-            return None;
-        }
-        let ptr = GlobalLock(hglobal) as *const u8;
-        if ptr.is_null() {
-            return None;
-        }
-        let slice = std::slice::from_raw_parts(ptr, size);
-        let bytes = slice.to_vec();
-        let _ = GlobalUnlock(hglobal);
-        Some(bytes)
     }
 
     unsafe fn read_hglobal_wide_string(
         hglobal: windows::Win32::Foundation::HGLOBAL,
     ) -> Option<String> {
-        if hglobal.0.is_null() {
-            return None;
-        }
-        let size = GlobalSize(hglobal);
-        if size < 2 {
-            return None;
-        }
-        let ptr = GlobalLock(hglobal) as *const u16;
-        if ptr.is_null() {
-            return None;
-        }
-        let len = size / 2;
-        let slice = std::slice::from_raw_parts(ptr, len);
-        let end = slice.iter().position(|c| *c == 0).unwrap_or(len);
-        let text = String::from_utf16_lossy(&slice[..end]);
-        let _ = GlobalUnlock(hglobal);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
+        unsafe {
+            if hglobal.0.is_null() {
+                return None;
+            }
+            let size = GlobalSize(hglobal);
+            if size < 2 {
+                return None;
+            }
+            let ptr = GlobalLock(hglobal) as *const u16;
+            if ptr.is_null() {
+                return None;
+            }
+            let len = size / 2;
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let end = slice.iter().position(|c| *c == 0).unwrap_or(len);
+            let text = String::from_utf16_lossy(&slice[..end]);
+            let _ = GlobalUnlock(hglobal);
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         }
     }
 
     unsafe fn read_hglobal_string(hglobal: windows::Win32::Foundation::HGLOBAL) -> Option<String> {
-        let bytes = Self::read_hglobal_bytes(hglobal)?;
+        let bytes = unsafe { Self::read_hglobal_bytes(hglobal)? };
         let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
         let text = String::from_utf8_lossy(&bytes[..end]).to_string();
         if text.is_empty() {
@@ -189,25 +195,27 @@ impl EmojiDropTarget {
     }
 
     unsafe fn iterate_file_paths(data_obj: &IDataObject) -> Option<(Vec<PathBuf>, HDROP)> {
-        let drop_format = Self::format_etc(CF_HDROP.0, -1, TYMED_HGLOBAL.0 as u32);
+        unsafe {
+            let drop_format = Self::format_etc(CF_HDROP.0, -1, TYMED_HGLOBAL.0 as u32);
 
-        match data_obj.GetData(&drop_format) {
-            Ok(medium) => {
-                let hdrop = HDROP(medium.u.hGlobal.0 as _);
-                let item_count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
-                let mut paths = Vec::new();
+            match data_obj.GetData(&drop_format) {
+                Ok(medium) => {
+                    let hdrop = HDROP(medium.u.hGlobal.0 as _);
+                    let item_count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+                    let mut paths = Vec::new();
 
-                for i in 0..item_count {
-                    let character_count = DragQueryFileW(hdrop, i, None) as usize;
-                    let str_len = character_count + 1;
-                    let mut path_buf = vec![0; str_len];
-                    DragQueryFileW(hdrop, i, Some(&mut path_buf));
-                    paths.push(OsString::from_wide(&path_buf[0..character_count]).into());
+                    for i in 0..item_count {
+                        let character_count = DragQueryFileW(hdrop, i, None) as usize;
+                        let str_len = character_count + 1;
+                        let mut path_buf = vec![0; str_len];
+                        DragQueryFileW(hdrop, i, Some(&mut path_buf));
+                        paths.push(OsString::from_wide(&path_buf[0..character_count]).into());
+                    }
+
+                    Some((paths, hdrop))
                 }
-
-                Some((paths, hdrop))
+                Err(_) => None,
             }
-            Err(_) => None,
         }
     }
 
@@ -216,11 +224,13 @@ impl EmojiDropTarget {
         let mut buffer = [0u8; 8192];
         loop {
             let mut read = 0u32;
-            let hr = stream.Read(
-                buffer.as_mut_ptr() as *mut c_void,
-                buffer.len() as u32,
-                Some(&mut read),
-            );
+            let hr = unsafe {
+                stream.Read(
+                    buffer.as_mut_ptr() as *mut c_void,
+                    buffer.len() as u32,
+                    Some(&mut read),
+                )
+            };
             if hr.is_err() {
                 return None;
             }
@@ -261,72 +271,76 @@ impl EmojiDropTarget {
     }
 
     unsafe fn read_virtual_files(data_obj: &IDataObject) -> Vec<(String, Vec<u8>)> {
-        let cf_file_descriptor = RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW);
-        if cf_file_descriptor == 0 {
-            return Vec::new();
-        }
+        unsafe {
+            let cf_file_descriptor = RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW);
+            if cf_file_descriptor == 0 {
+                return Vec::new();
+            }
 
-        let format = Self::format_etc(cf_file_descriptor as u16, -1, TYMED_HGLOBAL.0 as u32);
-        let mut out = Vec::new();
+            let format = Self::format_etc(cf_file_descriptor as u16, -1, TYMED_HGLOBAL.0 as u32);
+            let mut out = Vec::new();
 
-        let Ok(mut medium) = data_obj.GetData(&format) else {
-            return out;
-        };
+            let Ok(mut medium) = data_obj.GetData(&format) else {
+                return out;
+            };
 
-        let hglobal = medium.u.hGlobal;
-        let ptr = GlobalLock(hglobal) as *const FileGroupDescriptorW;
-        if ptr.is_null() {
+            let hglobal = medium.u.hGlobal;
+            let ptr = GlobalLock(hglobal) as *const FileGroupDescriptorW;
+            if ptr.is_null() {
+                ReleaseStgMedium(&mut medium);
+                return out;
+            }
+
+            let count = (*ptr).cItems as usize;
+            let first = (*ptr).fgd.as_ptr();
+            let descriptors = std::slice::from_raw_parts(first, count);
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                let name_end = descriptor
+                    .cFileName
+                    .iter()
+                    .position(|c| *c == 0)
+                    .unwrap_or(descriptor.cFileName.len());
+                if name_end == 0 {
+                    continue;
+                }
+                let name = String::from_utf16_lossy(&descriptor.cFileName[..name_end]);
+                if let Some(bytes) = Self::read_file_contents(data_obj, index as i32) {
+                    out.push((name, bytes));
+                }
+            }
+
+            let _ = GlobalUnlock(hglobal);
             ReleaseStgMedium(&mut medium);
-            return out;
+            out
         }
-
-        let count = (*ptr).cItems as usize;
-        let first = (*ptr).fgd.as_ptr();
-        let descriptors = std::slice::from_raw_parts(first, count);
-        for (index, descriptor) in descriptors.iter().enumerate() {
-            let name_end = descriptor
-                .cFileName
-                .iter()
-                .position(|c| *c == 0)
-                .unwrap_or(descriptor.cFileName.len());
-            if name_end == 0 {
-                continue;
-            }
-            let name = String::from_utf16_lossy(&descriptor.cFileName[..name_end]);
-            if let Some(bytes) = Self::read_file_contents(data_obj, index as i32) {
-                out.push((name, bytes));
-            }
-        }
-
-        let _ = GlobalUnlock(hglobal);
-        ReleaseStgMedium(&mut medium);
-        out
     }
 
     unsafe fn read_inet_url(data_obj: &IDataObject) -> Option<String> {
-        let cf_inet_w = RegisterClipboardFormatW(CFSTR_INETURLW);
-        if cf_inet_w != 0 {
-            let format = Self::format_etc(cf_inet_w as u16, -1, TYMED_HGLOBAL.0 as u32);
-            if let Ok(mut medium) = data_obj.GetData(&format) {
-                let url = Self::read_hglobal_wide_string(medium.u.hGlobal);
-                ReleaseStgMedium(&mut medium);
-                if url.is_some() {
+        unsafe {
+            let cf_inet_w = RegisterClipboardFormatW(CFSTR_INETURLW);
+            if cf_inet_w != 0 {
+                let format = Self::format_etc(cf_inet_w as u16, -1, TYMED_HGLOBAL.0 as u32);
+                if let Ok(mut medium) = data_obj.GetData(&format) {
+                    let url = Self::read_hglobal_wide_string(medium.u.hGlobal);
+                    ReleaseStgMedium(&mut medium);
+                    if url.is_some() {
+                        return url;
+                    }
+                }
+            }
+
+            let cf_inet_a = RegisterClipboardFormatW(CFSTR_INETURLA);
+            if cf_inet_a != 0 {
+                let format = Self::format_etc(cf_inet_a as u16, -1, TYMED_HGLOBAL.0 as u32);
+                if let Ok(mut medium) = data_obj.GetData(&format) {
+                    let url = Self::read_hglobal_string(medium.u.hGlobal);
+                    ReleaseStgMedium(&mut medium);
                     return url;
                 }
             }
-        }
 
-        let cf_inet_a = RegisterClipboardFormatW(CFSTR_INETURLA);
-        if cf_inet_a != 0 {
-            let format = Self::format_etc(cf_inet_a as u16, -1, TYMED_HGLOBAL.0 as u32);
-            if let Ok(mut medium) = data_obj.GetData(&format) {
-                let url = Self::read_hglobal_string(medium.u.hGlobal);
-                ReleaseStgMedium(&mut medium);
-                return url;
-            }
+            None
         }
-
-        None
     }
 
     fn emit_file_drop(app_handle: &AppHandle, paths: Vec<String>) {
@@ -427,7 +441,8 @@ impl EmojiDropTarget {
     }
 }
 
-#[allow(non_snake_case)]
+// IDropTarget_Impl fixes these COM callback signatures as safe methods with raw out-pointers.
+#[allow(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
 impl IDropTarget_Impl for EmojiDropTarget_Impl {
     fn DragEnter(
         &self,
