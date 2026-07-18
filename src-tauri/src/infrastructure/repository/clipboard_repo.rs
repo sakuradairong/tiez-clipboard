@@ -405,8 +405,10 @@ impl SqliteClipboardRepository {
                     tags = ?8, 
                     is_external = ?9,
                     source_app_path = ?10,
-                    use_count = use_count + 1
-                 WHERE id = ?11",
+                    use_count = use_count + 1,
+                    sync_updated_at = ?11,
+                    sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?12",
                 params![
                     entry.content_type,
                     content,
@@ -418,6 +420,7 @@ impl SqliteClipboardRepository {
                     serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string()),
                     if final_is_external { 1 } else { 0 },
                     entry.source_app_path.as_deref(),
+                    entry.timestamp,
                     entry.id
                 ],
             )
@@ -427,8 +430,8 @@ impl SqliteClipboardRepository {
         } else {
             // Insert new entry
             conn.execute(
-                "INSERT INTO clipboard_history (content_type, content, html_content, source_app, timestamp, preview, is_pinned, content_hash, tags, is_external, pinned_order, source_app_path) 
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO clipboard_history (content_type, content, html_content, source_app, timestamp, preview, is_pinned, content_hash, tags, is_external, pinned_order, source_app_path, sync_updated_at, sync_updated_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), ''))",
                 params![
                     entry.content_type,
                     content,
@@ -441,7 +444,8 @@ impl SqliteClipboardRepository {
                     serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string()),
                     if final_is_external { 1 } else { 0 },
                     entry.pinned_order,
-                    entry.source_app_path.as_deref()
+                    entry.source_app_path.as_deref(),
+                    entry.timestamp
                 ],
             ).map_err(|e| e.to_string())?;
 
@@ -637,19 +641,27 @@ impl SqliteClipboardRepository {
         id: i64,
         is_pinned: bool,
     ) -> Result<(), String> {
+        let updated_at = now_ms();
         if is_pinned {
             // Set pinned_order to max + 1 so it appears at top
             conn.execute(
                 "UPDATE clipboard_history 
                  SET is_pinned = 1, 
-                     pinned_order = (SELECT COALESCE(MAX(pinned_order), 0) + 1 FROM clipboard_history WHERE is_pinned = 1) 
-                 WHERE id = ?",
-                params![id],
+                     pinned_order = (SELECT COALESCE(MAX(pinned_order), 0) + 1 FROM clipboard_history WHERE is_pinned = 1),
+                     sync_updated_at = ?2,
+                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?1",
+                params![id, updated_at],
             ).map_err(|e| e.to_string())?;
         } else {
             conn.execute(
-                "UPDATE clipboard_history SET is_pinned = 0, pinned_order = 0 WHERE id = ?",
-                params![id],
+                "UPDATE clipboard_history
+                 SET is_pinned = 0,
+                     pinned_order = 0,
+                     sync_updated_at = ?2,
+                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?1",
+                params![id, updated_at],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -661,10 +673,15 @@ impl SqliteClipboardRepository {
         conn: &Connection,
         orders: Vec<(i64, i64)>,
     ) -> Result<(), String> {
+        let updated_at = now_ms();
         for (id, order) in orders {
             conn.execute(
-                "UPDATE clipboard_history SET pinned_order = ? WHERE id = ?",
-                params![order, id],
+                "UPDATE clipboard_history
+                 SET pinned_order = ?1,
+                     sync_updated_at = ?3,
+                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?2",
+                params![order, id, updated_at],
             )
             .map_err(|e| e.to_string())?;
         }
@@ -745,6 +762,7 @@ impl SqliteClipboardRepository {
 
         let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
         let should_encrypt = has_sensitive_tag(&tags);
+        let sync_updated_at = now_ms();
 
         if is_text_type(&content_type) {
             let hash = calc_text_hash(content) as i64;
@@ -757,13 +775,29 @@ impl SqliteClipboardRepository {
                 let encrypted_content = self.maybe_encrypt_text(content);
                 let encrypted_preview = self.maybe_encrypt_text(preview);
                 conn.execute(
-                    "UPDATE clipboard_history SET content = ?, preview = ?, content_hash = ?, html_content = NULL, content_type = ? WHERE id = ?",
-                    params![encrypted_content, encrypted_preview, hash, new_type, id],
+                    "UPDATE clipboard_history
+                     SET content = ?1,
+                         preview = ?2,
+                         content_hash = ?3,
+                         html_content = NULL,
+                         content_type = ?4,
+                         sync_updated_at = ?5,
+                         sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                     WHERE id = ?6",
+                    params![encrypted_content, encrypted_preview, hash, new_type, sync_updated_at, id],
                 ).map_err(|e| e.to_string())?;
             } else {
                 conn.execute(
-                    "UPDATE clipboard_history SET content = ?, preview = ?, content_hash = ?, html_content = NULL, content_type = ? WHERE id = ?",
-                    params![content, preview, hash, new_type, id],
+                    "UPDATE clipboard_history
+                     SET content = ?1,
+                         preview = ?2,
+                         content_hash = ?3,
+                         html_content = NULL,
+                         content_type = ?4,
+                         sync_updated_at = ?5,
+                         sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                     WHERE id = ?6",
+                    params![content, preview, hash, new_type, sync_updated_at, id],
                 ).map_err(|e| e.to_string())?;
             }
             return Ok(());
@@ -772,13 +806,25 @@ impl SqliteClipboardRepository {
             let encrypted_content = self.maybe_encrypt_text(content);
             let encrypted_preview = self.maybe_encrypt_text(preview);
             conn.execute(
-                "UPDATE clipboard_history SET content = ?, preview = ?, html_content = NULL WHERE id = ?",
-                params![encrypted_content, encrypted_preview, id],
+                "UPDATE clipboard_history
+                 SET content = ?1,
+                     preview = ?2,
+                     html_content = NULL,
+                     sync_updated_at = ?3,
+                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?4",
+                params![encrypted_content, encrypted_preview, sync_updated_at, id],
             ).map_err(|e| e.to_string())?;
         } else {
             conn.execute(
-                "UPDATE clipboard_history SET content = ?, preview = ?, html_content = NULL WHERE id = ?",
-                params![content, preview, id],
+                "UPDATE clipboard_history
+                 SET content = ?1,
+                     preview = ?2,
+                     html_content = NULL,
+                     sync_updated_at = ?3,
+                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?4",
+                params![content, preview, sync_updated_at, id],
             ).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -1259,7 +1305,11 @@ impl ClipboardRepository for SqliteClipboardRepository {
     fn touch_entry(&self, id: i64, timestamp: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE clipboard_history SET timestamp = ? WHERE id = ?",
+            "UPDATE clipboard_history
+             SET timestamp = ?1,
+                 sync_updated_at = ?1,
+                 sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+             WHERE id = ?2",
             params![timestamp, id],
         )
         .map_err(|e| e.to_string())?;

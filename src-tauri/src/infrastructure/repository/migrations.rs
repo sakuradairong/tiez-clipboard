@@ -207,6 +207,29 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (10)", [])?;
     }
 
+    // Migration 11: Per-entry metadata revision for deterministic multi-device merges.
+    if current_version < 11 {
+        if !has_column(conn, "clipboard_history", "sync_updated_at")? {
+            conn.execute(
+                "ALTER TABLE clipboard_history ADD COLUMN sync_updated_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        if !has_column(conn, "clipboard_history", "sync_updated_by")? {
+            conn.execute(
+                "ALTER TABLE clipboard_history ADD COLUMN sync_updated_by TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        conn.execute(
+            "UPDATE clipboard_history
+             SET sync_updated_at = timestamp
+             WHERE sync_updated_at <= 0",
+            [],
+        )?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])?;
+    }
+
     Ok(())
 }
 
@@ -220,4 +243,45 @@ fn has_column(conn: &Connection, table_name: &str, column_name: &str) -> Result<
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_column, run_migrations};
+    use rusqlite::Connection;
+
+    #[test]
+    fn migration_11_backfills_sync_revision_from_timestamp() {
+        let conn = Connection::open_in_memory().expect("open migration test db");
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+             );
+             INSERT INTO schema_migrations (version) VALUES (10);
+             CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                timestamp INTEGER NOT NULL
+             );
+             INSERT INTO clipboard_history (id, timestamp) VALUES (1, 12345);",
+        )
+        .expect("create version 10 schema");
+
+        run_migrations(&conn).expect("run migration 11");
+
+        assert!(has_column(&conn, "clipboard_history", "sync_updated_at")
+            .expect("check sync_updated_at"));
+        assert!(has_column(&conn, "clipboard_history", "sync_updated_by")
+            .expect("check sync_updated_by"));
+        let (updated_at, updated_by): (i64, String) = conn
+            .query_row(
+                "SELECT sync_updated_at, sync_updated_by
+                 FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated revision");
+        assert_eq!(updated_at, 12345);
+        assert!(updated_by.is_empty());
+    }
 }

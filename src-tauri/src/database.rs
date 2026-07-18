@@ -543,7 +543,9 @@ mod tests {
                 tags TEXT NOT NULL DEFAULT '[]',
                 use_count INTEGER NOT NULL DEFAULT 0,
                 is_external INTEGER NOT NULL DEFAULT 0,
-                pinned_order INTEGER NOT NULL DEFAULT 0
+                pinned_order INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL DEFAULT 0,
+                sync_updated_by TEXT NOT NULL DEFAULT ''
             )",
             [],
         )

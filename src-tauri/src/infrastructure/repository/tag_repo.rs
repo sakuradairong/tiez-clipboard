@@ -4,6 +4,14 @@ use crate::infrastructure::encryption;
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
 
 pub trait TagRepository {
     fn set_color(&self, name: &str, color: Option<String>) -> Result<(), String>;
@@ -53,8 +61,12 @@ impl SqliteTagRepository {
 
         let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
-            "UPDATE clipboard_history SET tags = ? WHERE id = ?",
-            params![tags_json, entry_id],
+            "UPDATE clipboard_history
+             SET tags = ?1,
+                 sync_updated_at = ?3,
+                 sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+             WHERE id = ?2",
+            params![tags_json, entry_id, now_ms()],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -199,20 +211,39 @@ impl TagRepository for SqliteTagRepository {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        // Remove from saved_tags
-        let _ = conn.execute("DELETE FROM saved_tags WHERE name = ?", params![name]);
-
-        // Delete all entries that carry this tag
-        let mut stmt = conn
-            .prepare("SELECT entry_id FROM entry_tags WHERE tag = ?")
+        conn.execute("DELETE FROM saved_tags WHERE name = ?", params![name])
             .map_err(|e| e.to_string())?;
-        let ids: Vec<i64> = stmt
-            .query_map(params![name], |row| row.get(0))
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT h.id, h.content_type, h.content_hash
+                 FROM clipboard_history h
+                 INNER JOIN entry_tags t ON t.entry_id = h.id
+                 WHERE t.tag = ?",
+            )
+            .map_err(|e| e.to_string())?;
+        let entries: Vec<(i64, String, i64)> = stmt
+            .query_map(params![name], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
             .map_err(|e| e.to_string())?
             .filter_map(Result::ok)
             .collect();
+        drop(stmt);
 
-        for id in ids {
+        let deleted_at = now_ms();
+        for (id, content_type, content_hash) in entries {
+            if content_hash != 0 {
+                conn.execute(
+                    "INSERT INTO cloud_sync_tombstones (content_type, content_hash, deleted_at)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(content_type, content_hash)
+                     DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
+                    params![content_type, content_hash, deleted_at],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+
             if let Some(dir) = data_dir {
                 let attachments_dir = dir.join("attachments");
                 let mut stmt_content = conn
@@ -225,7 +256,6 @@ impl TagRepository for SqliteTagRepository {
                     Ok((content_raw, is_ext == 1))
                 }) {
                     if entry.1 {
-                        // is_external
                         let content_path = self.maybe_decrypt_text(&entry.0);
                         let path = std::path::Path::new(&content_path);
                         if path.starts_with(&attachments_dir) && path.exists() {
@@ -234,8 +264,11 @@ impl TagRepository for SqliteTagRepository {
                     }
                 }
             }
-            let _ = conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id]);
-            let _ = conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id]);
+
+            conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -316,10 +349,134 @@ impl TagRepository for SqliteTagRepository {
 
         let tags_json = serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
-            "UPDATE clipboard_history SET tags = ? WHERE id = ?",
-            params![tags_json, id],
+            "UPDATE clipboard_history
+             SET tags = ?1,
+                 sync_updated_at = ?3,
+                 sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+             WHERE id = ?2",
+            params![tags_json, id, now_ms()],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SqliteTagRepository, TagRepository};
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn setup_tag_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().expect("open tag test db");
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('app.anon_id', 'device-a');
+             CREATE TABLE saved_tags (name TEXT PRIMARY KEY, color TEXT);
+             CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]',
+                is_external INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL DEFAULT 0,
+                sync_updated_by TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE entry_tags (
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (entry_id, tag)
+             );
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash)
+             );",
+        )
+        .expect("create tag test schema");
+        Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn deleting_global_tag_records_tombstone_before_removing_entry() {
+        let conn = setup_tag_db();
+        {
+            let guard = conn.lock().expect("lock tag test db");
+            guard
+                .execute("INSERT INTO saved_tags (name) VALUES ('remove-me')", [])
+                .expect("insert saved tag");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                     (id, content_type, content, content_hash, tags)
+                     VALUES (1, 'text', 'shared', 4242, '[\"remove-me\"]')",
+                    [],
+                )
+                .expect("insert tagged entry");
+            guard
+                .execute(
+                    "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remove-me')",
+                    [],
+                )
+                .expect("insert normalized tag");
+        }
+        let repo = SqliteTagRepository::new(conn.clone());
+
+        repo.delete_globally("remove-me", None)
+            .expect("delete global tag");
+
+        let guard = conn.lock().expect("lock result db");
+        let history_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count history");
+        let (content_type, content_hash, deleted_at): (String, i64, i64) = guard
+            .query_row(
+                "SELECT content_type, content_hash, deleted_at
+                 FROM cloud_sync_tombstones",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read tombstone");
+        assert_eq!(history_count, 0);
+        assert_eq!(content_type, "text");
+        assert_eq!(content_hash, 4242);
+        assert!(deleted_at > 0);
+    }
+
+    #[test]
+    fn updating_entry_tags_advances_sync_revision() {
+        let conn = setup_tag_db();
+        {
+            let guard = conn.lock().expect("lock tag test db");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                     (id, content_type, content, content_hash, tags, sync_updated_at)
+                     VALUES (1, 'text', 'shared', 4242, '[]', 1)",
+                    [],
+                )
+                .expect("insert entry");
+        }
+        let repo = SqliteTagRepository::new(conn.clone());
+
+        repo.update_entry_tags(1, vec!["new-tag".to_string()])
+            .expect("update tags");
+
+        let guard = conn.lock().expect("lock result db");
+        let (tags, updated_at, updated_by): (String, i64, String) = guard
+            .query_row(
+                "SELECT tags, sync_updated_at, sync_updated_by
+                 FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read sync revision");
+        assert_eq!(tags, "[\"new-tag\"]");
+        assert!(updated_at > 1);
+        assert_eq!(updated_by, "device-a");
     }
 }

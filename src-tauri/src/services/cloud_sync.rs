@@ -162,6 +162,10 @@ struct CloudSyncItem {
     pub html_blob_hash: Option<String>,
     pub source_app: String,
     pub timestamp: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub updated_by: String,
     pub preview: String,
     #[serde(default)]
     pub is_pinned: bool,
@@ -172,6 +176,20 @@ struct CloudSyncItem {
     #[serde(default)]
     pub pinned_order: i64,
 }
+
+type LocalSyncEntryState = (
+    i64,
+    bool,
+    i64,
+    String,
+    String,
+    i32,
+    String,
+    Option<String>,
+    bool,
+    i64,
+    String,
+);
 
 #[derive(Debug, Serialize)]
 struct CloudSyncRequest {
@@ -796,6 +814,18 @@ fn resolved_content_hash(item: &CloudSyncItem) -> i64 {
     }
 }
 
+fn item_updated_at(item: &CloudSyncItem) -> i64 {
+    if item.updated_at > 0 {
+        item.updated_at
+    } else {
+        item.timestamp
+    }
+}
+
+fn item_revision(item: &CloudSyncItem) -> i64 {
+    item.deleted_at.max(item_updated_at(item))
+}
+
 fn sync_key_for_item(item: &CloudSyncItem) -> Option<String> {
     let hash = resolved_content_hash(item);
     if hash == 0 {
@@ -814,9 +844,11 @@ fn sync_digest_for_item(item: &CloudSyncItem) -> String {
     let preview_hash = crate::database::calc_text_hash(&item.preview);
     let source_hash = crate::database::calc_text_hash(&item.source_app);
     let meta = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         resolved_content_hash(item),
         item.timestamp,
+        item.updated_at,
+        item.updated_by,
         item.deleted_at,
         item.is_pinned,
         item.pinned_order,
@@ -952,7 +984,10 @@ fn collapse_items_by_sync_key(items: &[CloudSyncItem]) -> BTreeMap<String, Cloud
 
         let replace = map
             .get(&key)
-            .map(|old| normalized.timestamp >= old.timestamp)
+            .map(|old| {
+                (item_revision(&normalized), normalized.updated_by.as_str())
+                    >= (item_revision(old), old.updated_by.as_str())
+            })
             .unwrap_or(true);
         if replace {
             map.insert(key, normalized);
@@ -1015,6 +1050,25 @@ fn replace_local_sync_index(
     Ok(())
 }
 
+fn record_remote_sync_digest(conn: &rusqlite::Connection, item: &CloudSyncItem) -> AppResult<()> {
+    let mut normalized = item.clone();
+    normalized.content_hash = resolved_content_hash(item);
+    if normalized.updated_at <= 0 {
+        normalized.updated_at = normalized.timestamp;
+    }
+    let Some(sync_key) = sync_key_for_item(&normalized) else {
+        return Ok(());
+    };
+    let digest = sync_digest_for_item(&normalized);
+    conn.execute(
+        "INSERT INTO cloud_sync_local_index (sync_key, digest) VALUES (?1, ?2)
+         ON CONFLICT(sync_key) DO UPDATE SET digest = excluded.digest",
+        rusqlite::params![sync_key, digest],
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
 fn collect_local_incremental_items(
     app: &AppHandle,
     local_items: &[CloudSyncItem],
@@ -1034,7 +1088,7 @@ fn collect_local_incremental_items(
         }
     }
 
-    deltas.sort_by_key(|item| item.timestamp);
+    deltas.sort_by_key(item_revision);
     Ok((deltas, collapsed))
 }
 
@@ -1151,9 +1205,33 @@ fn collect_local_syncable_items(
         }
     }
 
+    let sync_versions: HashMap<i64, (i64, String)> = {
+        let conn = db_state
+            .conn
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut stmt = conn
+            .prepare("SELECT id, sync_updated_at, sync_updated_by FROM clipboard_history")
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut versions = HashMap::new();
+        for row in rows {
+            let (id, updated_at, updated_by) =
+                row.map_err(|e| AppError::Internal(e.to_string()))?;
+            versions.insert(id, (updated_at, updated_by));
+        }
+        versions
+    };
+
     let mut items: Vec<CloudSyncItem> = entries
         .into_iter()
         .filter_map(|e| {
+            let (updated_at, updated_by) = sync_versions
+                .get(&e.id)
+                .cloned()
+                .unwrap_or_else(|| (e.timestamp, String::new()));
             let normalized = normalize_item_for_sync(CloudSyncItem {
                 content_type: e.content_type,
                 content: e.content,
@@ -1164,6 +1242,8 @@ fn collect_local_syncable_items(
                 html_blob_hash: None,
                 source_app: e.source_app,
                 timestamp: e.timestamp,
+                updated_at,
+                updated_by,
                 preview: e.preview,
                 is_pinned: e.is_pinned,
                 tags: e.tags,
@@ -1178,7 +1258,7 @@ fn collect_local_syncable_items(
 
     let mut tombstones = collect_local_tombstones(app, prefs)?;
     items.append(&mut tombstones);
-    items.sort_by_key(|e| e.timestamp);
+    items.sort_by_key(item_revision);
     Ok(items)
 }
 
@@ -1223,6 +1303,8 @@ fn collect_local_tombstones(
                 html_blob_hash: None,
                 source_app: "sync".to_string(),
                 timestamp: row.get(2)?,
+                updated_at: row.get(2)?,
+                updated_by: String::new(),
                 preview: String::new(),
                 is_pinned: false,
                 tags: Vec::new(),
@@ -1248,24 +1330,71 @@ fn update_existing_entry_from_sync(
     id: i64,
     item: &CloudSyncItem,
     effective_timestamp: i64,
-) -> AppResult<bool> {
-    let (local_timestamp, local_is_pinned, local_pinned_order, local_preview, local_source_app, local_use_count, local_tags_json, local_source_app_path, local_is_external): (i64, bool, i64, String, String, i32, String, Option<String>, bool) = conn
+) -> AppResult<(bool, bool)> {
+    let (
+        local_timestamp,
+        local_is_pinned,
+        local_pinned_order,
+        local_preview,
+        local_source_app,
+        local_use_count,
+        local_tags_json,
+        local_source_app_path,
+        local_is_external,
+        local_updated_at,
+        local_updated_by,
+    ): LocalSyncEntryState = conn
         .query_row(
-            "SELECT timestamp, is_pinned, pinned_order, preview, source_app, use_count, tags, source_app_path, is_external FROM clipboard_history WHERE id = ?",
+            "SELECT timestamp, is_pinned, pinned_order, preview, source_app, use_count, tags,
+                    source_app_path, is_external, sync_updated_at, sync_updated_by
+             FROM clipboard_history WHERE id = ?",
             rusqlite::params![id],
-            |row| Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7).unwrap_or(None),
-                row.get(8).unwrap_or(false),
-            )),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7).unwrap_or(None),
+                    row.get(8).unwrap_or(false),
+                    row.get(9).or_else(|_| row.get(0))?,
+                    row.get(10).unwrap_or_default(),
+                ))
+            },
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let remote_tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+    let remote_updated_at = item_updated_at(item);
+    let remote_version = (remote_updated_at, item.updated_by.as_str());
+    let local_version = (local_updated_at, local_updated_by.as_str());
+    let remote_metadata_key = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        effective_timestamp,
+        item.is_pinned,
+        item.pinned_order,
+        item.preview,
+        item.source_app,
+        item.use_count,
+        remote_tags_json
+    );
+    let local_metadata_key = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        local_timestamp,
+        local_is_pinned,
+        local_pinned_order,
+        local_preview,
+        local_source_app,
+        local_use_count,
+        local_tags_json
+    );
+    let remote_wins = remote_version > local_version
+        || (remote_version == local_version && remote_metadata_key > local_metadata_key);
+    let remote_accepted = remote_version > local_version
+        || (remote_version == local_version && remote_metadata_key >= local_metadata_key);
 
     let mut changed = false;
     let mut timestamp = local_timestamp;
@@ -1276,56 +1405,49 @@ fn update_existing_entry_from_sync(
     let mut use_count = local_use_count;
     let mut tags_json = local_tags_json.clone();
     let mut source_app_path = local_source_app_path;
+    let mut is_external = local_is_external;
+    let mut updated_at = local_updated_at;
+    let mut updated_by = local_updated_by;
 
-    if effective_timestamp > local_timestamp {
+    if remote_wins {
         timestamp = effective_timestamp;
-        changed = true;
-    }
-    if item.is_pinned != local_is_pinned {
         is_pinned = item.is_pinned;
-        changed = true;
-    }
-    if item.pinned_order != local_pinned_order {
         pinned_order = item.pinned_order;
-        changed = true;
-    }
-    if !item.preview.is_empty() && item.preview != preview {
-        preview = item.preview.clone();
-        changed = true;
-    }
-    if item.source_app != "sync" && item.source_app != source_app && !item.source_app.is_empty() {
-        source_app = item.source_app.clone();
-        source_app_path = None;
-        changed = true;
-    }
-    if item.use_count > local_use_count {
-        use_count = item.use_count;
-        changed = true;
-    }
-    let remote_tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
-    if remote_tags_json != tags_json {
+        if !item.preview.is_empty() {
+            preview = item.preview.clone();
+        }
+        if item.source_app != "sync" && !item.source_app.is_empty() {
+            source_app = item.source_app.clone();
+            source_app_path = None;
+        }
         tags_json = remote_tags_json;
+        is_external = item.content_type == "image"
+            || item.content_type == "file"
+            || item.content_type == "video";
+        updated_at = remote_updated_at;
+        updated_by = item.updated_by.clone();
         changed = true;
     }
-    let remote_is_external =
-        item.content_type == "image" || item.content_type == "file" || item.content_type == "video";
-    if remote_is_external != local_is_external {
+    if item.use_count > use_count {
+        use_count = item.use_count;
         changed = true;
     }
 
     if changed {
         conn.execute(
-            "UPDATE clipboard_history SET 
-                timestamp = ?, 
-                is_pinned = ?, 
-                pinned_order = ?, 
-                preview = ?, 
-                source_app = ?, 
-                use_count = ?, 
-                tags = ?,
-                source_app_path = ?,
-                is_external = ?
-             WHERE id = ?",
+            "UPDATE clipboard_history SET
+                timestamp = ?1,
+                is_pinned = ?2,
+                pinned_order = ?3,
+                preview = ?4,
+                source_app = ?5,
+                use_count = ?6,
+                tags = ?7,
+                source_app_path = ?8,
+                is_external = ?9,
+                sync_updated_at = ?10,
+                sync_updated_by = ?11
+             WHERE id = ?12",
             rusqlite::params![
                 timestamp,
                 is_pinned,
@@ -1335,7 +1457,9 @@ fn update_existing_entry_from_sync(
                 use_count,
                 tags_json,
                 source_app_path,
-                if remote_is_external { 1 } else { 0 },
+                if is_external { 1 } else { 0 },
+                updated_at,
+                updated_by,
                 id
             ],
         )
@@ -1356,7 +1480,7 @@ fn update_existing_entry_from_sync(
         }
     }
 
-    Ok(changed)
+    Ok((changed, remote_accepted))
 }
 
 fn apply_remote_changes(
@@ -1413,32 +1537,70 @@ fn apply_remote_changes(
                 continue;
             }
             let tombstone_ts = item.deleted_at.max(effective_timestamp);
-            let _ = conn.execute(
+            conn.execute(
                 "INSERT INTO cloud_sync_tombstones (content_type, content_hash, deleted_at)
                  VALUES (?1, ?2, ?3)
                  ON CONFLICT(content_type, content_hash)
                  DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
                 rusqlite::params![item.content_type, remote_hash, tombstone_ts],
-            );
-
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM clipboard_history
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+            let persisted_tombstone_ts = conn
+                .query_row(
+                    "SELECT deleted_at FROM cloud_sync_tombstones
                      WHERE content_type = ?1 AND content_hash = ?2",
+                    rusqlite::params![item.content_type, remote_hash],
+                    |row| row.get::<_, i64>(0),
                 )
                 .map_err(|e| AppError::Internal(e.to_string()))?;
-            let rows = stmt
-                .query_map(rusqlite::params![item.content_type, remote_hash], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-            for row in rows {
-                let id = row.map_err(|e| AppError::Internal(e.to_string()))?;
+
+            let entries = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, sync_updated_at, sync_updated_by
+                         FROM clipboard_history
+                         WHERE content_type = ?1 AND content_hash = ?2",
+                    )
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(rusqlite::params![item.content_type, remote_hash], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                let mut entries = Vec::new();
+                for row in rows {
+                    entries.push(row.map_err(|e| AppError::Internal(e.to_string()))?);
+                }
+                entries
+            };
+            let mut deletion_accepted = true;
+            for (id, local_updated_at, local_updated_by) in entries {
+                if (tombstone_ts, item.updated_by.as_str())
+                    < (local_updated_at, local_updated_by.as_str())
+                {
+                    deletion_accepted = false;
+                    continue;
+                }
                 db_state
                     .repo
                     .delete_with_conn(&conn, id, app_data_dir.as_deref())
                     .map_err(AppError::Internal)?;
                 applied += 1;
+            }
+            // delete_with_conn creates a local-time tombstone. Preserve the remote
+            // revision so pulling a deletion does not generate a newer echo delete.
+            conn.execute(
+                "UPDATE cloud_sync_tombstones SET deleted_at = ?3
+                 WHERE content_type = ?1 AND content_hash = ?2",
+                rusqlite::params![item.content_type, remote_hash, persisted_tombstone_ts],
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+            if deletion_accepted && persisted_tombstone_ts == tombstone_ts {
+                record_remote_sync_digest(&conn, item)?;
             }
             continue;
         }
@@ -1455,7 +1617,7 @@ fn apply_remote_changes(
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap_or(0);
-            if tombstone_deleted_at >= effective_timestamp.max(item.deleted_at) {
+            if tombstone_deleted_at >= item_updated_at(item) {
                 continue;
             }
         }
@@ -1466,15 +1628,20 @@ fn apply_remote_changes(
             .map_err(AppError::Internal)?;
 
         if let Some(id) = existing {
-            if update_existing_entry_from_sync(&conn, id, item, effective_timestamp)? {
+            let (changed, remote_accepted) =
+                update_existing_entry_from_sync(&conn, id, item, effective_timestamp)?;
+            if changed {
                 applied += 1;
             }
             if remote_hash != 0 {
                 let _ = conn.execute(
                     "DELETE FROM cloud_sync_tombstones
                      WHERE content_type = ?1 AND content_hash = ?2 AND deleted_at <= ?3",
-                    rusqlite::params![item.content_type, remote_hash, effective_timestamp],
+                    rusqlite::params![item.content_type, remote_hash, item_updated_at(item)],
                 );
+            }
+            if remote_accepted {
+                record_remote_sync_digest(&conn, item)?;
             }
             continue;
         }
@@ -1508,17 +1675,25 @@ fn apply_remote_changes(
             file_preview_exists: true,
         };
 
-        db_state
+        let inserted_id = db_state
             .repo
             .save_with_conn(&conn, &entry, app_data_dir.as_deref())
             .map_err(AppError::Internal)?;
+        conn.execute(
+            "UPDATE clipboard_history
+             SET sync_updated_at = ?1, sync_updated_by = ?2
+             WHERE id = ?3",
+            rusqlite::params![item_updated_at(item), item.updated_by, inserted_id],
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
         if remote_hash != 0 {
             let _ = conn.execute(
                 "DELETE FROM cloud_sync_tombstones
                  WHERE content_type = ?1 AND content_hash = ?2 AND deleted_at <= ?3",
-                rusqlite::params![item.content_type, remote_hash, effective_timestamp],
+                rusqlite::params![item.content_type, remote_hash, item_updated_at(item)],
             );
         }
+        record_remote_sync_digest(&conn, item)?;
         applied += 1;
     }
 
@@ -2648,7 +2823,7 @@ async fn pull_remote_webdav_snapshots_from_head(
         }
     }
 
-    remote_items.sort_by_key(|item| item.timestamp);
+    remote_items.sort_by_key(item_revision);
     apply_remote_changes(app, &remote_items, &cfg.content_prefs)
 }
 
@@ -2778,8 +2953,7 @@ async fn pull_remote_webdav_ops(
 
     let mut cursor_map = load_webdav_op_cursor_map(app);
     let mut received = 0usize;
-    let _total_refs = refs.len();
-    for (_index, op_ref) in refs.into_iter().enumerate() {
+    for op_ref in refs {
         if cloud_sync_cancel_requested() {
             break;
         }
@@ -3014,15 +3188,18 @@ async fn sync_once_webdav(
             return Ok(disabled_status());
         }
         let latest_op_seq = get_local_webdav_op_seq(app);
+        // Pulls above may have merged newer metadata. Re-read before publishing the
+        // snapshot so this device never advertises its stale pre-pull state.
+        let snapshot_items = collect_local_syncable_items(app, &cfg.content_prefs)?;
         upload_webdav_snapshot(
             &client,
             cfg,
             &paths.devices_path,
             latest_op_seq,
-            &local_items,
+            &snapshot_items,
         )
         .await?;
-        uploaded_items += local_items.len();
+        uploaded_items += snapshot_items.len();
         update_webdav_head_device(&mut sync_head, &cfg.device_id, |device| {
             device.latest_op_seq = device.latest_op_seq.max(latest_op_seq);
             device.snapshot_updated_at = device.snapshot_updated_at.max(now_ms());
@@ -3393,6 +3570,13 @@ fn check_and_create_emoji_sync_op(app: &AppHandle) -> AppResult<Option<CloudSync
         html_blob_hash: None,
         source_app: "TieZ".to_string(),
         timestamp: now_ms(),
+        updated_at: now_ms(),
+        updated_by: db_state
+            .settings_repo
+            .get("app.anon_id")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
         preview: "⭐ Emoji Sync".to_string(),
         is_pinned: false,
         pinned_order: 0,
@@ -3452,9 +3636,12 @@ fn merge_remote_emojis(app: &AppHandle, remote_json: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_item_for_sync, rewrite_rich_html_resources_for_sync, CloudSyncItem,
-        RICH_IMAGE_FALLBACK_PREFIX, RICH_IMAGE_FALLBACK_SUFFIX,
+        collapse_items_by_sync_key, normalize_item_for_sync, record_remote_sync_digest,
+        rewrite_rich_html_resources_for_sync, sync_digest_for_item, sync_key_for_item,
+        update_existing_entry_from_sync, CloudSyncItem, RICH_IMAGE_FALLBACK_PREFIX,
+        RICH_IMAGE_FALLBACK_SUFFIX,
     };
+    use rusqlite::Connection;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3473,6 +3660,165 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tiez-cloud-sync-{name}-{unique}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    fn test_sync_item(updated_at: i64, updated_by: &str, tags: &[&str]) -> CloudSyncItem {
+        CloudSyncItem {
+            content_type: "text".to_string(),
+            content: "shared".to_string(),
+            content_hash: crate::database::calc_text_hash("shared") as i64,
+            deleted_at: 0,
+            html_content: None,
+            content_blob_hash: None,
+            html_blob_hash: None,
+            source_app: "Test".to_string(),
+            timestamp: 100,
+            updated_at,
+            updated_by: updated_by.to_string(),
+            preview: "shared".to_string(),
+            is_pinned: false,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            use_count: 0,
+            pinned_order: 0,
+        }
+    }
+
+    fn setup_merge_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory merge db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                timestamp INTEGER NOT NULL,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_order INTEGER NOT NULL DEFAULT 0,
+                preview TEXT NOT NULL,
+                source_app TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
+                source_app_path TEXT,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL,
+                sync_updated_by TEXT NOT NULL
+             );
+             CREATE TABLE entry_tags (
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (entry_id, tag)
+             );
+             CREATE TABLE cloud_sync_local_index (
+                sync_key TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+             );",
+        )
+        .expect("create merge schema");
+        conn
+    }
+
+    #[test]
+    fn stale_remote_metadata_does_not_overwrite_newer_local_tags() {
+        let conn = setup_merge_db();
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, timestamp, preview, source_app, tags, sync_updated_at, sync_updated_by)
+             VALUES (1, 100, 'shared', 'Test', '[\"local\"]', 200, 'device-a')",
+            [],
+        )
+        .expect("insert local entry");
+        conn.execute(
+            "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'local')",
+            [],
+        )
+        .expect("insert local tag");
+
+        let stale = test_sync_item(150, "device-b", &["stale"]);
+        let (changed, remote_accepted) =
+            update_existing_entry_from_sync(&conn, 1, &stale, stale.timestamp)
+                .expect("merge stale metadata");
+
+        assert!(!changed);
+        assert!(!remote_accepted);
+        let tags: String = conn
+            .query_row(
+                "SELECT tags FROM clipboard_history WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read tags");
+        assert_eq!(tags, "[\"local\"]");
+    }
+
+    #[test]
+    fn newer_remote_metadata_replaces_tags_and_revision() {
+        let conn = setup_merge_db();
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, timestamp, preview, source_app, tags, sync_updated_at, sync_updated_by)
+             VALUES (1, 100, 'shared', 'Test', '[\"old\"]', 200, 'device-a')",
+            [],
+        )
+        .expect("insert local entry");
+        conn.execute(
+            "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'old')",
+            [],
+        )
+        .expect("insert old tag");
+
+        let newer = test_sync_item(300, "device-b", &["new"]);
+        let (changed, remote_accepted) =
+            update_existing_entry_from_sync(&conn, 1, &newer, newer.timestamp)
+                .expect("merge newer metadata");
+
+        assert!(changed);
+        assert!(remote_accepted);
+        let (tags, updated_at, updated_by): (String, i64, String) = conn
+            .query_row(
+                "SELECT tags, sync_updated_at, sync_updated_by
+                 FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read merged revision");
+        assert_eq!(tags, "[\"new\"]");
+        assert_eq!(updated_at, 300);
+        assert_eq!(updated_by, "device-b");
+        let entry_tag: String = conn
+            .query_row("SELECT tag FROM entry_tags WHERE entry_id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read normalized tag");
+        assert_eq!(entry_tag, "new");
+    }
+
+    #[test]
+    fn pulled_remote_digest_is_recorded_to_prevent_echo_upload() {
+        let conn = setup_merge_db();
+        let item = test_sync_item(300, "device-b", &["remote"]);
+        let key = sync_key_for_item(&item).expect("sync key");
+
+        record_remote_sync_digest(&conn, &item).expect("record remote digest");
+
+        let digest: String = conn
+            .query_row(
+                "SELECT digest FROM cloud_sync_local_index WHERE sync_key = ?1",
+                rusqlite::params![key],
+                |row| row.get(0),
+            )
+            .expect("read remote digest");
+        assert_eq!(digest, sync_digest_for_item(&item));
+    }
+
+    #[test]
+    fn collapse_prefers_newer_metadata_revision_for_same_content() {
+        let older = test_sync_item(100, "device-a", &["old"]);
+        let newer = test_sync_item(200, "device-b", &["new"]);
+        let key = sync_key_for_item(&newer).expect("sync key");
+
+        let collapsed = collapse_items_by_sync_key(&[newer.clone(), older]);
+
+        assert_eq!(
+            collapsed.get(&key).map(|item| &item.tags),
+            Some(&newer.tags)
+        );
     }
 
     #[test]
@@ -3516,6 +3862,8 @@ mod tests {
             html_blob_hash: None,
             source_app: "Test".to_string(),
             timestamp: 1,
+            updated_at: 1,
+            updated_by: "test-device".to_string(),
             preview: "hello".to_string(),
             is_pinned: false,
             tags: vec![],
