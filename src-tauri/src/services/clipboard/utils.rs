@@ -410,9 +410,7 @@ pub fn build_clipboard_text_fingerprint(
         "rich_text" => {
             collapse_preview_whitespace(&derive_rich_text_content(content, html_content))
         }
-        "text" | "code" | "url" => {
-            collapse_preview_whitespace(&normalize_clipboard_plain_text(content))
-        }
+        "text" | "code" | "url" => normalize_clipboard_plain_text(content),
         _ => String::new(),
     }
 }
@@ -1219,12 +1217,12 @@ pub fn truncate_html_for_preview(html: &str) -> Option<String> {
 mod tests {
     use super::{
         app_cleanup_policy_matches, apply_cleanup_rules, attach_rich_image_fallback,
-        attach_rich_named_formats, build_entry_preview, collapse_preview_whitespace,
-        derive_rich_text_content, extract_animated_image_data_url_from_html,
-        extract_animated_image_data_url_from_text, extract_first_image_data_url_from_html,
-        infer_rich_html_from_plain_text, normalize_clipboard_plain_text,
-        parse_app_cleanup_policies, parse_cf_html, parse_cleanup_rules,
-        split_rich_html_and_image_fallback, split_rich_html_and_named_formats,
+        attach_rich_named_formats, build_clipboard_text_fingerprint, build_entry_preview,
+        collapse_preview_whitespace, derive_rich_text_content,
+        extract_animated_image_data_url_from_html, extract_animated_image_data_url_from_text,
+        extract_first_image_data_url_from_html, infer_rich_html_from_plain_text,
+        normalize_clipboard_plain_text, parse_app_cleanup_policies, parse_cf_html,
+        parse_cleanup_rules, split_rich_html_and_image_fallback, split_rich_html_and_named_formats,
         truncate_html_for_preview, AppCleanupPolicy, HTML_TRUNCATION_SUFFIX,
     };
     use base64::Engine;
@@ -1560,6 +1558,18 @@ mod tests {
         let normalized = normalize_clipboard_plain_text(text);
 
         assert_eq!(normalized, "ddd");
+    }
+
+    #[test]
+    fn plain_text_fingerprint_preserves_edge_whitespace() {
+        assert_ne!(
+            build_clipboard_text_fingerprint("text", "hello", None),
+            build_clipboard_text_fingerprint("text", "hello ", None)
+        );
+        assert_eq!(
+            build_clipboard_text_fingerprint("text", "hello\r\n", None),
+            build_clipboard_text_fingerprint("text", "hello\n", None)
+        );
     }
 
     #[test]
