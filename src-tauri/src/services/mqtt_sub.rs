@@ -428,8 +428,12 @@ pub fn start_mqtt_client(app: AppHandle) {
                     let _ = app.emit("mqtt-status", "disconnected");
 
                     // Cap backoff at 60 seconds
-                    let wait_secs = (5 * u64::pow(2, (current_attempts as u32).saturating_sub(1))).min(60);
-                    info!(">>> [MQTT] Retrying in {}s (Attempt {})...", wait_secs, current_attempts);
+                    let wait_secs =
+                        (5 * u64::pow(2, (current_attempts as u32).saturating_sub(1))).min(60);
+                    info!(
+                        ">>> [MQTT] Retrying in {}s (Attempt {})...",
+                        wait_secs, current_attempts
+                    );
                     sleep(Duration::from_secs(wait_secs)).await;
                     continue;
                 }

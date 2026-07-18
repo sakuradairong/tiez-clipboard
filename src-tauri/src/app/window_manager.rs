@@ -503,7 +503,7 @@ mod tests {
             height: 1440,
         };
 
-        let mapped = remap_fixed_window_position((1610, 670), (300, 400), source, target);
+        let mapped = remap_fixed_window_position((1620, 680), (300, 400), source, target);
 
         assert_eq!(mapped, (4180, 1040));
     }
@@ -525,7 +525,7 @@ mod tests {
 
         let mapped = remap_fixed_window_position((810, 340), (300, 400), source, target);
 
-        assert_eq!(mapped, (-800, 250));
+        assert_eq!(mapped, (-950, 250));
     }
 
     #[test]

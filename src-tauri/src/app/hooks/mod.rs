@@ -16,6 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::app::window_manager::{hide_window_cmd, toggle_window};
 use crate::app_state::SettingsState;
 use crate::global_state::*;
+#[cfg(target_os = "windows")]
 use crate::infrastructure::windows_ext::WindowExt;
 
 // Store registered hotkey IDs for cleanup

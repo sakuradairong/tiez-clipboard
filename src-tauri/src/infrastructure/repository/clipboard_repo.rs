@@ -42,7 +42,12 @@ pub trait ClipboardRepository {
         offset: i32,
         content_type: Option<&str>,
     ) -> Result<Vec<ClipboardEntry>, String>;
-    fn search(&self, query: &str, limit: i32, tag_only: bool) -> Result<Vec<ClipboardEntry>, String>;
+    fn search(
+        &self,
+        query: &str,
+        limit: i32,
+        tag_only: bool,
+    ) -> Result<Vec<ClipboardEntry>, String>;
     fn delete(&self, id: i64, data_dir: Option<&std::path::Path>) -> Result<(), String>;
     fn clear(&self, data_dir: Option<&std::path::Path>) -> Result<(), String>;
     fn get_count(&self) -> Result<i64, String>;
@@ -938,7 +943,12 @@ impl ClipboardRepository for SqliteClipboardRepository {
         Ok(history)
     }
 
-    fn search(&self, query: &str, limit: i32, tag_only: bool) -> Result<Vec<ClipboardEntry>, String> {
+    fn search(
+        &self,
+        query: &str,
+        limit: i32,
+        tag_only: bool,
+    ) -> Result<Vec<ClipboardEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
         let term = query.trim().to_lowercase();

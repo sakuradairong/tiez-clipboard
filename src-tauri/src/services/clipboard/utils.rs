@@ -1670,7 +1670,14 @@ mod tests {
 
 pub fn detect_content_type(text: &str) -> String {
     let trimmed = text.trim();
-    if trimmed.starts_with("www.") || trimmed.contains("://") && trimmed.split("://").next().map_or(false, |s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')) {
+    if trimmed.starts_with("www.")
+        || trimmed.contains("://")
+            && trimmed.split("://").next().map_or(false, |s| {
+                !s.is_empty()
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+            })
+    {
         return "url".to_string();
     }
 
@@ -1742,8 +1749,11 @@ pub fn contains_sensitive_info(text: &str, kinds: &[String], custom_rules: &[Str
     let has_kind = |k: &str| kinds.iter().any(|t| t == k);
 
     if has_kind("url") {
-        let re = URL_RE.get_or_init(|| Regex::new(r"(?i)(?:[a-zA-Z][a-zA-Z0-9+\-.]*://|www\.)\S+").unwrap());
-        if re.is_match(text) { return true; }
+        let re = URL_RE
+            .get_or_init(|| Regex::new(r"(?i)(?:[a-zA-Z][a-zA-Z0-9+\-.]*://|www\.)\S+").unwrap());
+        if re.is_match(text) {
+            return true;
+        }
     }
     if has_kind("phone") {
         let re = PHONE_RE.get_or_init(|| {
@@ -2323,7 +2333,7 @@ pub fn parse_cf_html(raw: &[u8]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod classification_tests {
     use super::*;
 
     mod detect_content_type_tests {
@@ -2341,7 +2351,10 @@ mod tests {
 
         #[test]
         fn ftp_url() {
-            assert_eq!(detect_content_type("ftp://files.example.com/doc.pdf"), "url");
+            assert_eq!(
+                detect_content_type("ftp://files.example.com/doc.pdf"),
+                "url"
+            );
         }
 
         #[test]
@@ -2372,7 +2385,10 @@ mod tests {
 
         #[test]
         fn code_snippet() {
-            assert_eq!(detect_content_type("const x = 1; function foo() {}"), "code");
+            assert_eq!(
+                detect_content_type("const x = 1; function foo() {}"),
+                "code"
+            );
         }
     }
 
@@ -2449,11 +2465,7 @@ mod tests {
         #[test]
         fn skips_oversized_text() {
             let big = "a".repeat(5001);
-            assert!(!contains_sensitive_info(
-                &big,
-                &kinds(&["phone"]),
-                &[],
-            ));
+            assert!(!contains_sensitive_info(&big, &kinds(&["phone"]), &[],));
         }
 
         #[test]

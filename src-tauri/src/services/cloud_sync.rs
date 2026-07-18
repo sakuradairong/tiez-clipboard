@@ -57,7 +57,6 @@ static CLOUD_SYNC_LAST_SYNC_AT: AtomicI64 = AtomicI64::new(0);
 static LAST_PUSHED_EMOJI_HASH: AtomicI64 = AtomicI64::new(0);
 static CLOUD_SYNC_BACKOFF_UNTIL: AtomicI64 = AtomicI64::new(0);
 
-
 // 用于记录在本次运行中，哪些 WebDAV 目录已经确认存在，避免重复发网络请求
 static WEBDAV_KNOWN_DIRS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -1877,7 +1876,7 @@ where
         if status_code == missing_status {
             return Ok(None);
         }
-        
+
         // 兼容坚果云：如果父目录不存在，GET 可能返回 409 Conflict (AncestorsNotFound)
         if status_code == 409 {
             return Ok(None);
@@ -1965,7 +1964,6 @@ async fn ensure_webdav_directories(
     mkcol_if_needed(client, cfg, &paths.settings_path).await?;
     mkcol_if_needed(client, cfg, &paths.ops_path).await?;
     mkcol_if_needed(client, cfg, &paths.blobs_path).await?;
-
 
     Ok(paths)
 }

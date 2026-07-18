@@ -1298,6 +1298,7 @@ fn handle_blur(window: &tauri::Window) {
     if IS_MOUSE_BUTTON_DOWN.load(Ordering::SeqCst) {
         return;
     }
+    #[cfg(target_os = "windows")]
     unsafe {
         if (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x01) as u16 & 0x8000)
             != 0
@@ -1311,15 +1312,17 @@ fn handle_blur(window: &tauri::Window) {
     let w = window.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let down = IS_MOUSE_BUTTON_DOWN.load(Ordering::SeqCst)
-            || unsafe {
-                (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x01) as u16
+        #[cfg(target_os = "windows")]
+        let mouse_button_down = unsafe {
+            (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x01) as u16 & 0x8000)
+                != 0
+                || (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x02) as u16
                     & 0x8000)
                     != 0
-                    || (windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(0x02) as u16
-                        & 0x8000)
-                        != 0
-            };
+        };
+        #[cfg(not(target_os = "windows"))]
+        let mouse_button_down = false;
+        let down = IS_MOUSE_BUTTON_DOWN.load(Ordering::SeqCst) || mouse_button_down;
         if !down && matches!(w.is_focused(), Ok(false)) {
             if !IGNORE_BLUR.load(Ordering::Relaxed) && !WINDOW_PINNED.load(Ordering::Relaxed) {
                 let _ = w.hide();
