@@ -41,7 +41,7 @@ pub fn is_text_type(content_type: &str) -> bool {
 }
 
 fn normalize_text(content: &str) -> String {
-    content.trim().replace("\r\n", "\n")
+    content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 pub fn calc_text_hash(content: &str) -> u64 {
@@ -626,5 +626,11 @@ mod tests {
         // 测试设置读取
         let val = repo.get("test_key").unwrap();
         assert_eq!(val, Some("test_value".to_string()));
+    }
+
+    #[test]
+    fn calc_text_hash_preserves_trailing_spaces() {
+        assert_ne!(calc_text_hash("hello"), calc_text_hash("hello "));
+        assert_eq!(calc_text_hash("hello\r\n"), calc_text_hash("hello\n"));
     }
 }

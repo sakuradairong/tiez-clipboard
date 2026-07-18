@@ -488,7 +488,7 @@ async fn restore_focus_before_paste(_app_handle: &tauri::AppHandle) -> AppResult
 }
 
 fn calculate_content_hash(content: &str) -> (u64, u64) {
-    let normalized = content.trim().replace("\r\n", "\n");
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     let mut hasher = DefaultHasher::new();
     normalized.hash(&mut hasher);
     let content_hash = hasher.finish();

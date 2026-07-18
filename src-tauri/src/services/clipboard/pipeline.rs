@@ -1,6 +1,6 @@
 use crate::app_state::{AppDataDir, PasteQueue, SessionHistory, SettingsState};
 use crate::database::DbState;
-use crate::database::{calc_image_hash, is_text_type};
+use crate::database::{calc_image_hash, calc_text_hash, is_text_type};
 use crate::domain::models::ClipboardEntry;
 use crate::infrastructure::windows_api::window_tracker::{
     get_clipboard_source_app_info, ActiveAppInfo,
@@ -10,6 +10,10 @@ use base64::Engine;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
+
+fn normalize_text_preserving_edge_whitespace(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
 
 #[derive(Debug, Clone)]
 pub enum ClipboardData {
@@ -184,8 +188,8 @@ impl PipelineStage for TransformationStage {
         let entry = ctx.entry.as_mut().unwrap();
         let settings = ctx.app_handle.state::<SettingsState>();
 
-        // Normalization (already partially done but let's be thorough)
-        entry.content = entry.content.trim().replace("\r\n", "\n");
+        // Normalize line endings, but preserve meaningful leading/trailing whitespace.
+        entry.content = normalize_text_preserving_edge_whitespace(&entry.content);
 
         let app_cleanup_policies_raw = settings.app_cleanup_policies.lock().unwrap().clone();
         if !app_cleanup_policies_raw.trim().is_empty() {
@@ -213,7 +217,7 @@ impl PipelineStage for TransformationStage {
                             ctx.should_stop = true;
                             return;
                         }
-                        entry.content = cleaned.trim().replace("\r\n", "\n");
+                        entry.content = normalize_text_preserving_edge_whitespace(&cleaned);
                         entry.preview =
                             build_entry_preview(&entry.content_type, &entry.content, None);
                     }
@@ -231,7 +235,7 @@ impl PipelineStage for TransformationStage {
                         ctx.should_stop = true;
                         return;
                     }
-                    entry.content = cleaned.trim().replace("\r\n", "\n");
+                    entry.content = normalize_text_preserving_edge_whitespace(&cleaned);
                     entry.preview = build_entry_preview(&entry.content_type, &entry.content, None);
                 }
             }
@@ -325,9 +329,10 @@ impl PipelineStage for ValidationStage {
                 )
             };
 
-            // Try precise match and normalized match
-            let normalized_content = content.trim().replace("\r\n", "\n");
+            // Try precise match and line-ending-normalized/hash match.
+            let normalized_content = normalize_text_preserving_edge_whitespace(&content);
             let normalized_html = |html: &str| html.trim().replace("\r\n", "\n");
+            let normalized_content_hash = calc_text_hash(&normalized_content) as i64;
             let recent_self_copy_window = {
                 let last_app_time = crate::LAST_APP_SET_TIMESTAMP.load(Ordering::Relaxed);
                 let now_secs = SystemTime::now()
@@ -355,7 +360,7 @@ impl PipelineStage for ValidationStage {
                         return true;
                     }
                     return recent_self_copy_window
-                        && stored_content.trim().replace("\r\n", "\n") == normalized_content;
+                        && calc_text_hash(&stored_content) as i64 == normalized_content_hash;
                 }
                 false
             };
@@ -372,20 +377,6 @@ impl PipelineStage for ValidationStage {
                     db_state
                         .repo
                         .find_by_content_with_conn(&conn, &content, Some(t))
-                {
-                    if content_type == "rich_text"
-                        && t == "rich_text"
-                        && !rich_text_html_matches(id)
-                    {
-                        continue;
-                    }
-                    existing_id = Some(id);
-                    break;
-                }
-                if let Ok(Some(id)) =
-                    db_state
-                        .repo
-                        .find_by_content_with_conn(&conn, &normalized_content, Some(t))
                 {
                     if content_type == "rich_text"
                         && t == "rich_text"
@@ -414,20 +405,21 @@ impl PipelineStage for ValidationStage {
             {
                 let session = session_history.0.lock().unwrap();
                 let entry = ctx.entry.as_ref().expect("entry exists");
-                let normalized_content = entry.content.trim().replace("\r\n", "\n");
+                let normalized_content_hash = calc_text_hash(&entry.content) as i64;
                 let entry_image_hash = if entry.content_type == "image" {
                     calc_image_hash(&entry.content)
                 } else {
                     None
                 };
                 for item in session.iter() {
-                    let item_normalized = item.content.trim().replace("\r\n", "\n");
+                    let item_normalized_hash = calc_text_hash(&item.content) as i64;
                     let rich_text_match =
                         if entry.content_type == "rich_text" && item.content_type == "rich_text" {
                             htmls_equivalent(
                                 item.html_content.as_deref(),
                                 entry.html_content.as_deref(),
-                            ) || (recent_self_copy_window && item_normalized == normalized_content)
+                            ) || (recent_self_copy_window
+                                && item_normalized_hash == normalized_content_hash)
                         } else {
                             true
                         };
@@ -436,7 +428,7 @@ impl PipelineStage for ValidationStage {
                         && entry_image_hash.is_some()
                         && calc_image_hash(&item.content) == entry_image_hash;
                     let text_match = (item.content == entry.content
-                        || item_normalized == normalized_content)
+                        || item_normalized_hash == normalized_content_hash)
                         && rich_text_match;
                     let match_found = image_match || text_match;
                     if match_found {
@@ -458,6 +450,27 @@ impl PipelineStage for ValidationStage {
             }
             ctx.pending_removals.extend(removed_ids);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_text_preserving_edge_whitespace;
+
+    #[test]
+    fn normalization_preserves_trailing_spaces() {
+        assert_eq!(
+            normalize_text_preserving_edge_whitespace("hello "),
+            "hello "
+        );
+        assert_eq!(
+            normalize_text_preserving_edge_whitespace(" hello"),
+            " hello"
+        );
+        assert_eq!(
+            normalize_text_preserving_edge_whitespace("hello\r\n"),
+            "hello\n"
+        );
     }
 }
 
