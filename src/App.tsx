@@ -184,6 +184,8 @@ const App = () => {
     setSequentialHotkey,
     richPasteHotkey,
     setRichPasteHotkey,
+    plainPasteHotkey,
+    setPlainPasteHotkey,
     searchHotkey,
     setSearchHotkey,
     quickPasteModifier,
@@ -196,6 +198,8 @@ const App = () => {
     setIsRecordingSequential,
     isRecordingRich,
     setIsRecordingRich,
+    isRecordingPlain,
+    setIsRecordingPlain,
     isRecordingSearch,
     setIsRecordingSearch,
     deleteAfterPaste,
@@ -511,7 +515,7 @@ const App = () => {
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
-      if (isRecording || isRecordingSequential || isRecordingRich || isRecordingSearch) return;
+      if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch) return;
       if (!hotkey || hotkey === t('not_set')) return;
 
       const activeEl = document.activeElement as HTMLElement | null;
@@ -535,7 +539,7 @@ const App = () => {
 
     window.addEventListener('keydown', handleKeydown, true);
     return () => window.removeEventListener('keydown', handleKeydown, true);
-  }, [hotkey, isRecording, isRecordingSequential, isRecordingRich, isRecordingSearch, t]);
+  }, [hotkey, isRecording, isRecordingSequential, isRecordingRich, isRecordingPlain, isRecordingSearch, t]);
 
 
   const { toasts, pushToast, confirmDialog, openConfirm, closeConfirm } = useOverlays();
@@ -630,6 +634,7 @@ const App = () => {
     setFileServerPort,
     setSequentialHotkey,
     setRichPasteHotkey,
+    setPlainPasteHotkey,
     setSearchHotkey,
     setQuickPasteModifier,
     setSequentialModeState,
@@ -864,6 +869,7 @@ const App = () => {
     updateHotkey,
     updateSequentialHotkey,
     updateRichPasteHotkey,
+    updatePlainPasteHotkey,
     updateSearchHotkey
   } =
     useHotkeyConfig({
@@ -873,6 +879,8 @@ const App = () => {
       setSequentialHotkey,
       richPasteHotkey,
       setRichPasteHotkey,
+      plainPasteHotkey,
+      setPlainPasteHotkey,
       searchHotkey,
       setSearchHotkey,
       sequentialMode,
@@ -882,6 +890,8 @@ const App = () => {
       setIsRecordingSequential,
       isRecordingRich,
       setIsRecordingRich,
+      isRecordingPlain,
+      setIsRecordingPlain,
       isRecordingSearch,
       setIsRecordingSearch,
       saveAppSetting,
@@ -1022,6 +1032,7 @@ const App = () => {
     updateHotkey,
     updateSequentialHotkey,
     updateRichPasteHotkey,
+    updatePlainPasteHotkey,
     updateSearchHotkey,
     saveAppSetting,
     saveSetting,

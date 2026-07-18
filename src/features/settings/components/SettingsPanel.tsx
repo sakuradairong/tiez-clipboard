@@ -56,6 +56,8 @@ interface SettingsPanelProps {
     isRecordingSequential: boolean;
     richPasteHotkey: string;
     isRecordingRich: boolean;
+    plainPasteHotkey: string;
+    isRecordingPlain: boolean;
     searchHotkey: string;
     isRecordingSearch: boolean;
     quickPasteModifier: "disabled" | "ctrl" | "alt" | "shift" | "win";
@@ -170,6 +172,8 @@ interface SettingsPanelProps {
     updateSequentialHotkey: (key: string) => void;
     setIsRecordingRich: (val: boolean) => void;
     updateRichPasteHotkey: (key: string) => void;
+    setIsRecordingPlain: (val: boolean) => void;
+    updatePlainPasteHotkey: (key: string) => void;
     setIsRecordingSearch: (val: boolean) => void;
     updateSearchHotkey: (key: string) => void;
     setPrivacyProtection: (val: boolean) => void;
@@ -186,7 +190,7 @@ interface SettingsPanelProps {
 
     compactMode: boolean;
     setCompactMode: (val: boolean) => void;
-    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'search') => boolean;
+    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'plain' | 'search') => boolean;
 
 
     setMqttEnabled: (val: boolean) => void;
@@ -247,7 +251,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         t, theme, language, colorMode, showSourceAppIcon, setShowSourceAppIcon,
         collapsedGroups, settingsSubpage, autoStart, silentStart, persistent, persistentLimitEnabled, persistentLimit, deduplicate, captureFiles, captureRichText, richTextSnapshotPreview, deleteAfterPaste, moveToTopAfterPaste,
         sequentialMode, sequentialHotkey, isRecordingSequential,
-        richPasteHotkey, isRecordingRich, searchHotkey, isRecordingSearch, quickPasteModifier, setQuickPasteModifier,
+        richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, quickPasteModifier, setQuickPasteModifier,
         privacyProtection, privacyProtectionKinds, setPrivacyProtectionKinds, privacyProtectionCustomRules, setPrivacyProtectionCustomRules, sensitiveMaskPrefixVisible, setSensitiveMaskPrefixVisible, sensitiveMaskSuffixVisible, setSensitiveMaskSuffixVisible, sensitiveMaskEmailDomain, setSensitiveMaskEmailDomain, cleanupRules, setCleanupRules, appCleanupPolicies, setAppCleanupPolicies, showSearchBox, setShowSearchBox, scrollTopButtonEnabled, setScrollTopButtonEnabled, arrowKeySelection, setArrowKeySelection,
         soundEnabled, setSoundEnabled, pasteSoundEnabled, setPasteSoundEnabled,
         soundVolume, setSoundVolume,
@@ -265,6 +269,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         toggleGroup, setSettingsSubpage, setAutoStart, setSilentStart, setPersistent, setPersistentLimitEnabled, setPersistentLimit, setDeduplicate, setCaptureFiles, setCaptureRichText, setRichTextSnapshotPreview, setDeleteAfterPaste, setMoveToTopAfterPaste, saveAppSetting,
         setSequentialModeState, setIsRecordingSequential, updateSequentialHotkey,
         setIsRecordingRich, updateRichPasteHotkey,
+        setIsRecordingPlain, updatePlainPasteHotkey,
         setIsRecordingSearch, updateSearchHotkey,
         setPrivacyProtection,
         setIsRecording, isRecording, hotkey, hotkeyParts, updateHotkey,
@@ -563,6 +568,10 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 isRecordingRich={isRecordingRich}
                 setIsRecordingRich={setIsRecordingRich}
                 updateRichPasteHotkey={updateRichPasteHotkey}
+                plainPasteHotkey={plainPasteHotkey}
+                isRecordingPlain={isRecordingPlain}
+                setIsRecordingPlain={setIsRecordingPlain}
+                updatePlainPasteHotkey={updatePlainPasteHotkey}
                 searchHotkey={searchHotkey}
                 isRecordingSearch={isRecordingSearch}
                 setIsRecordingSearch={setIsRecordingSearch}

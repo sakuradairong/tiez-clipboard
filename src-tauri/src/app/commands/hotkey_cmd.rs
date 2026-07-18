@@ -38,6 +38,10 @@ pub(crate) fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
     let rich_hotkey = settings.rich_paste_hotkey.lock().unwrap().clone();
     register_shortcut(app_handle, &rich_hotkey);
 
+    if let Ok(plain_hotkey) = settings.plain_paste_hotkey.lock() {
+        register_shortcut(app_handle, &plain_hotkey);
+    }
+
     let search_hotkey = settings.search_hotkey.lock().unwrap().clone();
     register_shortcut(app_handle, &search_hotkey);
 

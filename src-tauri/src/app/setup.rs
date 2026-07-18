@@ -187,6 +187,7 @@ pub struct StartupSettings {
     pub sequential_mode: bool,
     pub sequential_hotkey: String,
     pub rich_paste_hotkey: String,
+    pub plain_paste_hotkey: String,
     pub search_hotkey: String,
     pub quick_paste_modifier: String,
     pub sound_enabled: bool,
@@ -276,6 +277,10 @@ fn load_settings(repo: &impl SettingsRepository) -> StartupSettings {
             .get("app.rich_paste_hotkey")
             .unwrap_or(Some("Ctrl+Shift+Z".to_string()))
             .unwrap_or("Ctrl+Shift+Z".to_string()),
+        plain_paste_hotkey: repo
+            .get("app.plain_paste_hotkey")
+            .unwrap_or(Some(String::new()))
+            .unwrap_or_default(),
         search_hotkey: repo
             .get("app.search_hotkey")
             .unwrap_or(Some("Alt+F".to_string()))
@@ -380,6 +385,7 @@ fn setup_state(
         sequential_mode: AtomicBool::new(s.sequential_mode),
         sequential_paste_hotkey: std::sync::Mutex::new(s.sequential_hotkey.clone()),
         rich_paste_hotkey: std::sync::Mutex::new(s.rich_paste_hotkey.clone()),
+        plain_paste_hotkey: std::sync::Mutex::new(s.plain_paste_hotkey.clone()),
         search_hotkey: std::sync::Mutex::new(s.search_hotkey.clone()),
         quick_paste_modifier: std::sync::Mutex::new(s.quick_paste_modifier.clone()),
         sound_enabled: AtomicBool::new(s.sound_enabled),
@@ -1166,6 +1172,20 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_sh
     } {
         if shortcut == &rich_s {
             crate::services::clipboard_ops::paste_latest_rich(app.clone());
+            return;
+        }
+    }
+
+    if let Ok(plain_hotkey) = settings
+        .plain_paste_hotkey
+        .lock()
+        .map(|value| value.clone())
+    {
+        if let Ok(plain_s) = plain_hotkey.replace("Win", "Super").parse::<Shortcut>() {
+            if shortcut == &plain_s {
+                crate::services::clipboard_ops::paste_latest_plain(app.clone());
+                return;
+            }
         }
     }
 

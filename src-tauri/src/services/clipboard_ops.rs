@@ -1,6 +1,6 @@
 // Clipboard operations module
 use crate::app_state::{PasteQueue, SessionHistory, SettingsState};
-use crate::database::{calc_image_hash_from_rgba, DbState};
+use crate::database::{calc_image_hash_from_rgba, is_text_type, DbState};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
@@ -1364,39 +1364,51 @@ fn play_paste_sound_if_enabled(app_handle: &tauri::AppHandle) {
     }
 }
 
-#[tauri::command]
-pub fn paste_latest_rich(app_handle: tauri::AppHandle) {
-    let app_handle_clone = app_handle.clone();
+fn paste_latest(app_handle: tauri::AppHandle, paste_with_format: bool, text_only: bool) {
     tauri::async_runtime::spawn(async move {
         let delete_after = {
-            let settings = app_handle_clone.state::<SettingsState>();
+            let settings = app_handle.state::<SettingsState>();
             settings.delete_after_paste.load(Ordering::Relaxed)
         };
 
-        let history = crate::app::commands::history_cmd::get_clipboard_history(
-            app_handle_clone.state::<DbState>(),
-            app_handle_clone.state::<SessionHistory>(),
+        let Ok(items) = crate::app::commands::history_cmd::get_clipboard_history(
+            app_handle.state::<DbState>(),
+            app_handle.state::<SessionHistory>(),
             1,
-            0, // offset
+            0,
             None,
-        );
-
-        if let Ok(items) = history {
-            if let Some(item) = items.first() {
-                let _ = copy_to_clipboard(
-                    app_handle_clone.clone(),
-                    app_handle_clone.state::<DbState>(),
-                    app_handle_clone.state::<SessionHistory>(),
-                    item.content.clone(),
-                    item.content_type.clone(),
-                    true, // paste
-                    item.id,
-                    delete_after, // delete_after_use
-                    Some(true),   // paste_with_format
-                    None,
-                )
-                .await;
-            }
+        ) else {
+            return;
+        };
+        let Some(item) = items.first() else {
+            return;
+        };
+        if text_only && !is_text_type(&item.content_type) {
+            return;
         }
+
+        let _ = copy_to_clipboard(
+            app_handle.clone(),
+            app_handle.state::<DbState>(),
+            app_handle.state::<SessionHistory>(),
+            item.content.clone(),
+            item.content_type.clone(),
+            true,
+            item.id,
+            delete_after,
+            Some(paste_with_format),
+            None,
+        )
+        .await;
     });
+}
+
+#[tauri::command]
+pub fn paste_latest_rich(app_handle: tauri::AppHandle) {
+    paste_latest(app_handle, true, false);
+}
+
+#[tauri::command]
+pub fn paste_latest_plain(app_handle: tauri::AppHandle) {
+    paste_latest(app_handle, false, true);
 }

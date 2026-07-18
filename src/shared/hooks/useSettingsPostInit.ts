@@ -96,6 +96,7 @@ interface UseSettingsPostInitOptions {
   setFileServerPort: (val: string) => void;
   setSequentialHotkey: (val: string) => void;
   setRichPasteHotkey: (val: string) => void;
+  setPlainPasteHotkey: (val: string) => void;
   setSearchHotkey: (val: string) => void;
   setQuickPasteModifier: (val: QuickPasteModifier) => void;
   setSequentialModeState: (val: boolean) => void;
@@ -182,6 +183,7 @@ export const useSettingsPostInit = ({
   setFileServerPort,
   setSequentialHotkey,
   setRichPasteHotkey,
+  setPlainPasteHotkey,
   setSearchHotkey,
   setQuickPasteModifier,
   setSequentialModeState,
@@ -381,6 +383,9 @@ export const useSettingsPostInit = ({
     if (settings["file_server_port"]) setFileServerPort(settings["file_server_port"]);
     if (settings["app.sequential_hotkey"]) setSequentialHotkey(settings["app.sequential_hotkey"]);
     if (settings["app.rich_paste_hotkey"]) setRichPasteHotkey(settings["app.rich_paste_hotkey"]);
+    if (settings["app.plain_paste_hotkey"] !== undefined) {
+      setPlainPasteHotkey(settings["app.plain_paste_hotkey"]);
+    }
     if (settings["app.search_hotkey"] !== undefined) setSearchHotkey(settings["app.search_hotkey"]);
     setQuickPasteModifier(normalizeQuickPasteModifier(settings["app.quick_paste_modifier"]));
     if (settings["app.sequential_mode"] === "true") setSequentialModeState(true);
@@ -525,6 +530,7 @@ export const useSettingsPostInit = ({
     setFileServerPort,
     setSequentialHotkey,
     setRichPasteHotkey,
+    setPlainPasteHotkey,
     setSearchHotkey,
     setQuickPasteModifier,
     setSequentialModeState,

@@ -247,6 +247,10 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.plain_paste_hotkey', '')",
+        [],
+    );
+    let _ = conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.search_hotkey', 'Alt+F')",
         [],
     );
@@ -626,6 +630,21 @@ mod tests {
         // 测试设置读取
         let val = repo.get("test_key").unwrap();
         assert_eq!(val, Some("test_value".to_string()));
+    }
+
+    #[test]
+    fn plain_paste_hotkey_is_disabled_by_default() -> Result<()> {
+        let conn = setup_test_db();
+        seed_defaults(&conn)?;
+
+        let hotkey: String = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'app.plain_paste_hotkey'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert!(hotkey.is_empty());
+        Ok(())
     }
 
     #[test]

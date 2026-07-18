@@ -36,6 +36,10 @@ interface ClipboardSettingsGroupProps {
     isRecordingRich: boolean;
     setIsRecordingRich: (val: boolean) => void;
     updateRichPasteHotkey: (key: string) => void;
+    plainPasteHotkey: string;
+    isRecordingPlain: boolean;
+    setIsRecordingPlain: (val: boolean) => void;
+    updatePlainPasteHotkey: (key: string) => void;
     searchHotkey: string;
     isRecordingSearch: boolean;
     setIsRecordingSearch: (val: boolean) => void;
@@ -52,7 +56,7 @@ interface ClipboardSettingsGroupProps {
     isRecordingSequential: boolean;
     setIsRecordingSequential: (val: boolean) => void;
     updateSequentialHotkey: (key: string) => void;
-    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'search') => boolean;
+    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'plain' | 'search') => boolean;
     privacyProtection: boolean;
     setPrivacyProtection: (val: boolean) => void;
     privacyProtectionKinds: string[];
@@ -332,6 +336,51 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                                 <div className="key-cap" style={{ width: '8em' }}>{props.t('waiting_for_input')}</div>
                             ) : (
                                 renderHotkeyCaps(props.richPasteHotkey)
+                            )}
+                        </div>
+                    </div>
+                    <div className="setting-item">
+                        <div className="item-label-group">
+                            <span className="item-label">{props.t('plain_paste_hotkey_label')}</span>
+                            <span className="hint">{props.isRecordingPlain ? props.t('hotkey_recording_esc') : props.t('hotkey_click_hint')}</span>
+                        </div>
+                        <div
+                            className={`key-group ${props.isRecordingPlain ? 'recording' : ''}`}
+                            onClick={(e) => { props.setIsRecordingPlain(true); e.currentTarget.focus(); }}
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                                if (!props.isRecordingPlain) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+
+                                if (e.key === 'Escape') {
+                                    props.setIsRecordingPlain(false);
+                                    return;
+                                }
+
+                                if (e.key === 'Backspace' || e.key === 'Delete') {
+                                    props.updatePlainPasteHotkey('');
+                                    props.setIsRecordingPlain(false);
+                                    return;
+                                }
+
+                                const modifiers = [];
+                                if (e.ctrlKey) modifiers.push('Ctrl');
+                                if (e.shiftKey) modifiers.push('Shift');
+                                if (e.altKey) modifiers.push('Alt');
+                                if (e.metaKey) modifiers.push('Command');
+
+                                const key = e.key.toUpperCase();
+                                if (['CONTROL', 'SHIFT', 'ALT', 'META'].includes(key)) return;
+
+                                const newHotkey = [...modifiers, key].join('+');
+                                props.updatePlainPasteHotkey(newHotkey);
+                            }}
+                        >
+                            {props.isRecordingPlain ? (
+                                <div className="key-cap" style={{ width: '8em' }}>{props.t('waiting_for_input')}</div>
+                            ) : (
+                                renderHotkeyCaps(props.plainPasteHotkey)
                             )}
                         </div>
                     </div>

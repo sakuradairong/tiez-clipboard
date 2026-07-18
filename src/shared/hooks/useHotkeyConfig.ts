@@ -2,7 +2,7 @@ import { useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type HotkeyMode = "main" | "sequential" | "rich" | "search";
+type HotkeyMode = "main" | "sequential" | "rich" | "plain" | "search";
 
 interface UseHotkeyConfigOptions {
   hotkey: string;
@@ -11,6 +11,8 @@ interface UseHotkeyConfigOptions {
   setSequentialHotkey: (val: string) => void;
   richPasteHotkey: string;
   setRichPasteHotkey: (val: string) => void;
+  plainPasteHotkey: string;
+  setPlainPasteHotkey: (val: string) => void;
   searchHotkey: string;
   setSearchHotkey: (val: string) => void;
   sequentialMode: boolean;
@@ -20,6 +22,8 @@ interface UseHotkeyConfigOptions {
   setIsRecordingSequential: (val: boolean) => void;
   isRecordingRich: boolean;
   setIsRecordingRich: (val: boolean) => void;
+  isRecordingPlain: boolean;
+  setIsRecordingPlain: (val: boolean) => void;
   isRecordingSearch: boolean;
   setIsRecordingSearch: (val: boolean) => void;
   saveAppSetting: (type: string, value: string) => void;
@@ -34,6 +38,8 @@ export const useHotkeyConfig = ({
   setSequentialHotkey,
   richPasteHotkey,
   setRichPasteHotkey,
+  plainPasteHotkey,
+  setPlainPasteHotkey,
   searchHotkey,
   setSearchHotkey,
   sequentialMode,
@@ -43,6 +49,8 @@ export const useHotkeyConfig = ({
   setIsRecordingSequential,
   isRecordingRich,
   setIsRecordingRich,
+  isRecordingPlain,
+  setIsRecordingPlain,
   isRecordingSearch,
   setIsRecordingSearch,
   saveAppSetting,
@@ -61,6 +69,9 @@ export const useHotkeyConfig = ({
       if (mode !== "rich" && newHotkey === richPasteHotkey) {
         conflicts.push(t("rich_paste_hotkey_label"));
       }
+      if (mode !== "plain" && newHotkey === plainPasteHotkey) {
+        conflicts.push(t("plain_paste_hotkey_label"));
+      }
       if (mode !== "search" && newHotkey === searchHotkey) {
         conflicts.push(t("search_hotkey_label"));
       }
@@ -72,7 +83,7 @@ export const useHotkeyConfig = ({
       }
       return false;
     },
-    [hotkey, sequentialMode, sequentialHotkey, richPasteHotkey, searchHotkey, t, pushToast]
+    [hotkey, sequentialMode, sequentialHotkey, richPasteHotkey, plainPasteHotkey, searchHotkey, t, pushToast]
   );
 
   const updateHotkey = useCallback(
@@ -173,6 +184,33 @@ export const useHotkeyConfig = ({
     ]
   );
 
+  const updatePlainPasteHotkey = useCallback(
+    async (newHotkey: string) => {
+      const hasConflict = checkHotkeyConflict(newHotkey, "plain");
+      if (hasConflict) {
+        setIsRecordingPlain(false);
+        return;
+      }
+
+      if (newHotkey) {
+        try {
+          await invoke<boolean>("test_hotkey_available", { hotkey: newHotkey });
+        } catch (err) {
+          const errorMsg = `❌ ${newHotkey}: ${err || "快捷键被占用"}`;
+          pushToast(errorMsg, 5000);
+          setIsRecordingPlain(false);
+          return;
+        }
+      }
+
+      setPlainPasteHotkey(newHotkey);
+      saveAppSetting("plain_paste_hotkey", newHotkey);
+      await invoke("set_plain_paste_hotkey", { hotkey: newHotkey }).catch(console.error);
+      setIsRecordingPlain(false);
+    },
+    [checkHotkeyConflict, pushToast, saveAppSetting, setPlainPasteHotkey, setIsRecordingPlain]
+  );
+
   const updateSearchHotkey = useCallback(
     async (newHotkey: string) => {
       const hasConflict = checkHotkeyConflict(newHotkey, "search");
@@ -209,14 +247,15 @@ export const useHotkeyConfig = ({
   useEffect(() => {
     invoke("set_recording_mode", {
       enabled: isRecording || isRecordingSequential || isRecordingRich
-        || isRecordingSearch
+        || isRecordingPlain || isRecordingSearch
     }).catch(console.error);
 
-    if (isRecording || isRecordingSequential || isRecordingRich || isRecordingSearch) {
+    if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch) {
       const unlisten = listen<string>("hotkey-recorded", (event) => {
         if (isRecording) updateHotkey(event.payload);
         if (isRecordingSequential) updateSequentialHotkey(event.payload);
         if (isRecordingRich) updateRichPasteHotkey(event.payload);
+        if (isRecordingPlain) updatePlainPasteHotkey(event.payload);
         if (isRecordingSearch) updateSearchHotkey(event.payload);
       });
 
@@ -224,6 +263,7 @@ export const useHotkeyConfig = ({
         setIsRecording(false);
         setIsRecordingSequential(false);
         setIsRecordingRich(false);
+        setIsRecordingPlain(false);
         setIsRecordingSearch(false);
       });
 
@@ -236,14 +276,17 @@ export const useHotkeyConfig = ({
     isRecording,
     isRecordingSequential,
     isRecordingRich,
+    isRecordingPlain,
     isRecordingSearch,
     setIsRecording,
     setIsRecordingSequential,
     setIsRecordingRich,
+    setIsRecordingPlain,
     setIsRecordingSearch,
     updateHotkey,
     updateSequentialHotkey,
     updateRichPasteHotkey,
+    updatePlainPasteHotkey,
     updateSearchHotkey
   ]);
 
@@ -252,6 +295,7 @@ export const useHotkeyConfig = ({
     updateHotkey,
     updateSequentialHotkey,
     updateRichPasteHotkey,
+    updatePlainPasteHotkey,
     updateSearchHotkey
   };
 };
