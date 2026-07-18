@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Download, RefreshCw, X, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { FORK_LINKS } from "../config/fork";
 import "./UpdateDialog.css"; // Import the custom styles
 
 interface UpdateDialogProps {
@@ -33,7 +34,7 @@ const UpdateDialog: React.FC<UpdateDialogProps> = ({
   }, [isOpen]);
 
   const handleOpenWebsite = () => {
-    openUrl("https://tiez.name666.top/");
+    openUrl(FORK_LINKS.releases);
   };
 
   return (
@@ -104,7 +105,7 @@ const UpdateDialog: React.FC<UpdateDialogProps> = ({
                     className="update-btn"
                   >
                     <ExternalLink size={16} />
-                    前往官网
+                    前往下载页
                   </button>
                 ) : status === "ready" ? (
                   <button

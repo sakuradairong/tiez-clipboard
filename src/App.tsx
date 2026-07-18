@@ -349,6 +349,7 @@ const App = () => {
     onStartDownload,
     onApplyUpdate,
     onClose: closeUpdateDialog,
+    updaterEnabled,
   } = useAutoUpdate();
   // -------------------------
 
@@ -1134,7 +1135,7 @@ const App = () => {
       />
 
       <UpdateDialog
-        isOpen={isUpdateOpen}
+        isOpen={updaterEnabled && isUpdateOpen}
         version={updateVersion}
         notes={updateNotes}
         downloadProgress={updateProgress}

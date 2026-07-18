@@ -10,14 +10,35 @@
 
   ### **STAY FAST. STAY SYNCED.**
 
-  | STARS | VERSION | LICENSE | PLATFORM |
+  | STATUS | LICENSE | PLATFORM | STACK |
   | :--- | :--- | :--- | :--- |
-  | [![Stars](https://img.shields.io/github/stars/jimuzhe/tiez-clipboard?label=STARS&style=for-the-badge&color=4CAF50)](https://github.com/jimuzhe/tiez-clipboard/stargazers) | [![Version](https://img.shields.io/github/v/release/jimuzhe/tiez-clipboard?label=VERSION&style=for-the-badge&color=2196F3)](https://github.com/jimuzhe/tiez-clipboard/releases) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | [![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20MAC-f44336?style=for-the-badge)](https://github.com/jimuzhe/tiez-clipboard/releases) |
+  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
 
   [English](./README.md) | [简体中文](./README.zh-CN.md)
 </div>
 
 ---
+
+## Maintenance Status
+
+> This repository is now maintained as a community fork.
+
+- The original upstream project appears to be inactive.
+- This fork focuses first on build stability, release reliability, and contributor onboarding.
+- Project-specific infrastructure from the original maintainer, such as website-hosted update services, should be reviewed before shipping production releases from this fork.
+
+### Fork Maintainer Goals
+
+1. Restore a reproducible build and release flow.
+2. Keep the existing desktop experience working on supported platforms.
+3. Accept focused bug fixes and maintenance improvements before large feature work.
+
+### Contributing to This Fork
+
+- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+- Review [SECURITY.md](./SECURITY.md) for responsible disclosure guidance.
+- Track maintenance changes in [CHANGELOG.md](./CHANGELOG.md).
+- Download builds from this fork's [Releases](../../releases) page.
 
 <div align="center">
 
@@ -81,44 +102,27 @@ Explore 4 elegant themes designed for every workspace and efficiency scenarios.
 | **macOS** | Sierra 10.15+ <br>(Apple Silicon / Intel) | `.dmg` |
 | **Linux** | Support Coming Soon | TBD |
 
-[**Download the Latest Release →**](https://github.com/jimuzhe/tiez-clipboard/releases)
+[**Download the Latest Release →**](../../releases)
 
 ---
 
-## Star History
+## Community & Maintenance
+
+This fork currently prioritizes maintenance, compatibility, and release continuity.
 
 <div align="center">
-  <a href="https://star-history.com/#jimuzhe/tiez-clipboard&Date">
-    <img src="https://api.star-history.com/svg?repos=jimuzhe/tiez-clipboard&type=Date" alt="Star History Chart" width="800" />
-  </a>
-</div>
-
----
-
-## Community & Support
-
-If TieZ makes your life easier, consider supporting the journey.
-
-<div align="center">
-  <table style="border: none;">
-    <tr>
-      <td align="center" style="border: none;">
-        <p><strong>WeChat</strong></p>
-        <img src="docs/images/wx.jpeg" alt="WeChat" width="180" height="180" />
-      </td>
-      <td align="center" style="border: none;">
-        <p><strong>Alipay</strong></p>
-        <img src="docs/images/zfb.jpeg" alt="Alipay" width="180" height="180" />
-      </td>
-      <td align="center" style="border: none;">
-        <p><strong>QQ Group</strong></p>
-        <img src="docs/images/qq.jpeg" alt="QQ Group" width="180" height="180" />
-      </td>
-    </tr>
-  </table>
-  <br>
-  <p>Your support keeps the project active and the developer caffeinated!</p>
-  <a href="https://tiez.name666.top/zh/sponsors.html"><strong>View Sponsor List</strong></a>
+  <p><strong>Need help or want to contribute?</strong></p>
+  <p>
+    <a href="../../issues"><strong>Open an issue</strong></a>
+    ·
+    <a href="./CONTRIBUTING.md"><strong>Read the contribution guide</strong></a>
+    ·
+    <a href="./SECURITY.md"><strong>Report security concerns responsibly</strong></a>
+  </p>
+  <p>
+    Please review and replace any legacy upstream links, update endpoints, and signing infrastructure
+    before publishing official binaries from this fork.
+  </p>
 </div>
 
 ---

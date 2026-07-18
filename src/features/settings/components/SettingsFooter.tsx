@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useState } from "react";
+import { FORK_LINKS, FORK_SERVICES } from "../../../shared/config/fork";
 
 interface SettingsFooterProps {
     t: (key: string) => string;
@@ -24,6 +25,8 @@ const SettingsFooter = ({
     setEmailCopied
 }: SettingsFooterProps) => {
     const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+    const supportEmail = FORK_LINKS.supportEmail;
+    const updaterEnabled = FORK_SERVICES.updaterEnabled;
 
     const handleInstallUpdate = async () => {
         if (!pendingUpdate) return;
@@ -232,9 +235,13 @@ const SettingsFooter = ({
                         marginBottom: '0'
                     }}
                     onClick={() => {
-                        navigator.clipboard.writeText('tiez@name666.top');
-                        setEmailCopied(true);
-                        setTimeout(() => setEmailCopied(false), 2000);
+                        if (supportEmail) {
+                            navigator.clipboard.writeText(supportEmail);
+                            setEmailCopied(true);
+                            setTimeout(() => setEmailCopied(false), 2000);
+                            return;
+                        }
+                        openUrl(FORK_LINKS.issues);
                     }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -289,7 +296,7 @@ const SettingsFooter = ({
                     <span>TieZ {appVersion ? `v${appVersion}` : "v0.2.0"}</span>
                     <button
                         onClick={async () => {
-                            if (updateStatus) return;
+                            if (updateStatus || !updaterEnabled) return;
                             setUpdateStatus(t('checking'));
                             try {
                                 const update = await check();
@@ -306,7 +313,7 @@ const SettingsFooter = ({
                                 setTimeout(() => setUpdateStatus(''), 3000);
                             }
                         }}
-                        disabled={!!updateStatus}
+                        disabled={!!updateStatus || !updaterEnabled}
                         style={{
                             border: 'none',
                             background: 'transparent',
@@ -319,10 +326,12 @@ const SettingsFooter = ({
                             fontWeight: updateStatus ? 'bold' : 'normal',
                             transition: 'all 0.2s'
                         }}
-                        onMouseEnter={(e) => !updateStatus && (e.currentTarget.style.opacity = '1')}
-                        onMouseLeave={(e) => !updateStatus && (e.currentTarget.style.opacity = '0.8')}
+                        onMouseEnter={(e) => !updateStatus && updaterEnabled && (e.currentTarget.style.opacity = '1')}
+                        onMouseLeave={(e) => !updateStatus && updaterEnabled && (e.currentTarget.style.opacity = '0.8')}
                     >
-                        {(updateStatus && !updateStatus.includes('%')) ? updateStatus : t('check_update')}
+                        {!updaterEnabled
+                            ? t('updates_unconfigured')
+                            : (updateStatus && !updateStatus.includes('%')) ? updateStatus : t('check_update')}
                     </button>
                 </div>
                 <div style={{
@@ -341,7 +350,7 @@ const SettingsFooter = ({
                     flexWrap: 'wrap'
                 }}>
                     <button
-                        onClick={() => openUrl('https://tiez.name666.top/')}
+                        onClick={() => openUrl(FORK_LINKS.website)}
                         style={{
                             fontSize: '11px',
                             color: 'var(--accent-color)',
@@ -359,7 +368,7 @@ const SettingsFooter = ({
                         {t('official_website')}
                     </button>
                     <button
-                        onClick={() => openUrl('https://github.com/jimuzhe/tiez-clipboard')}
+                        onClick={() => openUrl(FORK_LINKS.repository)}
                         style={{
                             fontSize: '11px',
                             color: 'var(--accent-color)',

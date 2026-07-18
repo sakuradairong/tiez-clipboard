@@ -55,7 +55,8 @@
     "node-fetch": "^2.6.7",
     "playwright": "^1.40.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^2.1.9"
   },
   "overrides": {
     "react": "$react",

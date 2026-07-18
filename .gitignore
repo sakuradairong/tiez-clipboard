@@ -40,6 +40,7 @@ artifacts/
 conflicts.txt
 git_graph.txt
 git_log_out.txt
+.omo/
 
 # Sub-projects
 mobile-app/

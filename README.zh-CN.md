@@ -10,14 +10,35 @@
 
   ### **STAY FAST. STAY SYNCED.**
 
-  | STARS | VERSION | LICENSE | PLATFORM |
+  | 状态 | 协议 | 平台 | 技术栈 |
   | :--- | :--- | :--- | :--- |
-  | [![Stars](https://img.shields.io/github/stars/jimuzhe/tiez-clipboard?label=STARS&style=for-the-badge&color=4CAF50)](https://github.com/jimuzhe/tiez-clipboard/stargazers) | [![Version](https://img.shields.io/github/v/release/jimuzhe/tiez-clipboard?label=VERSION&style=for-the-badge&color=2196F3)](https://github.com/jimuzhe/tiez-clipboard/releases) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | [![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20MAC-f44336?style=for-the-badge)](https://github.com/jimuzhe/tiez-clipboard/releases) |
+  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
 
   [English](./README.md) | [简体中文](./README.zh-CN.md)
 </div>
 
 ---
+
+## 维护状态
+
+> 当前仓库已作为社区维护分支继续推进。
+
+- 原上游项目看起来已经长期缺少维护。
+- 这个 fork 当前优先处理构建稳定性、发布可靠性和贡献者协作入口。
+- 原维护者名下的网站、更新接口、签名与分发基础设施，在本 fork 正式发版前都应重新核查。
+
+### 当前维护目标
+
+1. 恢复可复现的构建与发布流程。
+2. 保持现有桌面端体验在已支持平台上的可用性。
+3. 在大功能开发前，优先接收聚焦的缺陷修复和维护改进。
+
+### 参与本 Fork 的维护
+
+- 提交 PR 前先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)
+- 安全问题处理请查看 [SECURITY.md](./SECURITY.md)
+- 维护变更记录见 [CHANGELOG.md](./CHANGELOG.md)
+- 构建产物请前往本 fork 的 [Releases](../../releases) 页面下载
 
 <div align="center">
 
@@ -81,44 +102,26 @@
 | **macOS** | Sierra 10.15+ <br>(Apple Silicon / Intel) | `.dmg` |
 | **Linux** | 即将支持 | 敬请期待 |
 
-[**前往 Releases 下载最新版本 →**](https://github.com/jimuzhe/tiez-clipboard/releases)
+[**前往 Releases 下载最新版本 →**](../../releases)
 
 ---
 
-## Star History
+## 社区与维护
+
+当前 fork 以维护延续、兼容性和发布可靠性为优先目标。
 
 <div align="center">
-  <a href="https://star-history.com/#jimuzhe/tiez-clipboard&Date">
-    <img src="https://api.star-history.com/svg?repos=jimuzhe/tiez-clipboard&type=Date" alt="Star History Chart" width="800" />
-  </a>
-</div>
-
----
-
-## 交流与赞助
-
-如果 TieZ 提高了你的工作效率，欢迎赞助本项目持续演进。
-
-<div align="center">
-  <table style="border: none;">
-    <tr>
-      <td align="center" style="border: none;">
-        <p><strong>微信赞赏</strong></p>
-        <img src="docs/images/wx.jpeg" alt="微信收款码" width="180" height="180" />
-      </td>
-      <td align="center" style="border: none;">
-        <p><strong>支付宝赞赏</strong></p>
-        <img src="docs/images/zfb.jpeg" alt="支付宝收款码" width="180" height="180" />
-      </td>
-      <td align="center" style="border: none;">
-        <p><strong>QQ 交流群</strong></p>
-        <img src="docs/images/qq.jpeg" alt="QQ 群二维码" width="180" height="180" />
-      </td>
-    </tr>
-  </table>
-  <br>
-  <p>每一份支持都是开发者保持更新的动力！</p>
-  <a href="https://tiez.name666.top/zh/sponsors.html"><strong>查看打赏赞助名单</strong></a>
+  <p><strong>需要帮助，或想参与共建？</strong></p>
+  <p>
+    <a href="../../issues"><strong>提交 Issue</strong></a>
+    ·
+    <a href="./CONTRIBUTING.md"><strong>阅读贡献指南</strong></a>
+    ·
+    <a href="./SECURITY.md"><strong>按规范反馈安全问题</strong></a>
+  </p>
+  <p>
+    在本 fork 发布正式二进制前，请先检查并替换所有遗留的上游链接、更新接口、签名与分发基础设施。
+  </p>
 </div>
 
 ---

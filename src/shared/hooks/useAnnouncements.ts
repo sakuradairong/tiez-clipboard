@@ -1,10 +1,9 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import type { Announcement } from "../types";
+import { FORK_SERVICES } from "../config/fork";
 
 export type { Announcement } from "../types";
-
-const PING_URL = "https://tiez.name666.top/api/v1/ping";
 
 const normalizeVersion = (val?: string | null) => {
   if (!val) return null;
@@ -69,6 +68,13 @@ export function useAnnouncements() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const pingUrl = FORK_SERVICES.announcementPingUrl;
+    if (!pingUrl) {
+      setLoading(false);
+      setAnnouncements([]);
+      return;
+    }
+
     const fetchAnnouncements = async () => {
       try {
         // Get device ID (optional, using stored random ID or generating one)
@@ -87,7 +93,7 @@ export function useAnnouncements() {
         }
 
         // Construct URL with query params
-        const url = `${PING_URL}?id=${deviceId}&v=${version}`;
+        const url = `${pingUrl}?id=${deviceId}&v=${version}`;
 
         const response = await fetch(url, {
           signal: AbortSignal.timeout(3000),

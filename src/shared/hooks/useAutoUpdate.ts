@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { isTauriRuntime } from "../lib/tauriRuntime";
+import { FORK_SERVICES } from "../config/fork";
 
 export type UpdateStatus = "idle" | "checking" | "downloading" | "ready" | "error";
 
@@ -14,7 +15,7 @@ export const useAutoUpdate = () => {
   const [updateObj, setUpdateObj] = useState<Update | null>(null);
 
   const checkUpdate = useCallback(async () => {
-    if (!isTauriRuntime()) return;
+    if (!isTauriRuntime() || !FORK_SERVICES.updaterEnabled) return;
     
     try {
       setStatus("checking");
@@ -93,7 +94,7 @@ export const useAutoUpdate = () => {
     }, 5000);
 
     const setupListener = async () => {
-      if (isTauriRuntime()) {
+      if (isTauriRuntime() && FORK_SERVICES.updaterEnabled) {
         const { listen } = await import('@tauri-apps/api/event');
         return listen("check-update-manually", () => {
           checkUpdate();
@@ -121,5 +122,6 @@ export const useAutoUpdate = () => {
     onStartDownload: startUpdate,
     onApplyUpdate: applyUpdate,
     onClose: () => setIsOpen(false),
+    updaterEnabled: FORK_SERVICES.updaterEnabled,
   };
 };

@@ -7,7 +7,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0MDY1QzlGQkU0ODcwMjMKUldRamNFaStuMXdHcEtFWlNINnVJcVgxa2tRb0wrRlBjdzRmZ3Z1WGJxZ1V3R0w5ZmNUemtvRjMK",
       "endpoints": [
-        "https://tiez.name666.top/api/v1/latest-version?platform={{target}}"
+        "https://example.invalid/tiez/latest-version?platform={{target}}"
       ]
     }
   },
@@ -125,10 +125,7 @@
               "identifier": "opener:allow-open-url",
               "allow": [
                 {
-                  "url": "https://tiez.name666.top/**"
-                },
-                {
-                  "url": "https://github.com/jimuzhe/tie-z/**"
+                  "url": "https://github.com/**"
                 }
               ]
             },
