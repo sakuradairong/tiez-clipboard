@@ -5,9 +5,9 @@
   "identifier": "com.tiez",
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0MDY1QzlGQkU0ODcwMjMKUldRamNFaStuMXdHcEtFWlNINnVJcVgxa2tRb0wrRlBjdzRmZ3Z1WGJxZ1V3R0w5ZmNUemtvRjMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2OENDMzYyMDVEQjREOUYKUldTZlRkc0ZZc09NOWhtREovQ2IrRUQ4WXNkMllBbEpJZVNlYWUvWkQ2Qlo2blVFZzgvSDhoVFQK",
       "endpoints": [
-        "https://example.invalid/tiez/latest-version?platform={{target}}"
+        "https://github.com/sakuradairong/tiez-clipboard/releases/latest/download/latest.json"
       ]
     }
   },
@@ -139,7 +139,7 @@
   },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
