@@ -124,6 +124,18 @@ pub fn update_tags(
         .update_entry_tags(id, tags)
         .map_err(AppError::from)?;
     if old_sensitive != new_sensitive {
+        if new_sensitive {
+            // OCR text is intentionally stored as plaintext for fast local search.
+            // Remove any existing index before the entry becomes sensitive.
+            let conn = state
+                .conn
+                .lock()
+                .map_err(|err| AppError::Database(err.to_string()))?;
+            conn.execute(
+                "DELETE FROM clipboard_image_analysis WHERE entry_id = ?1",
+                [id],
+            )?;
+        }
         let queue = app_handle.state::<EncryptionQueueState>();
         let action = if new_sensitive {
             EncryptionAction::Encrypt

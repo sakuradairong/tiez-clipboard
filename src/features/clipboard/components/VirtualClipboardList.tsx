@@ -145,6 +145,7 @@ const VirtualClipboardList = React.forwardRef<VirtualClipboardListHandle, Virtua
                 <Virtuoso
                     ref={virtuosoRef}
                     data={items}
+                    computeItemKey={(_index, item) => item.id}
                     itemContent={itemContent}
                     components={components}
                     context={context}

@@ -27,7 +27,11 @@ import {
     Files,
     ImageOff,
     FileQuestion,
-    GripVertical
+    GripVertical,
+    ScanText,
+    Copy,
+    RefreshCw,
+    QrCode
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClipboardItemProps } from "../types";
@@ -52,6 +56,17 @@ const SPREADSHEET_SOURCE_RE = /\b(excel|et|wps|sheet|spreadsheet|calc)\b/i;
 const SPREADSHEET_APP_RE = /(?:^|[\\/])(excel|et|wps|wpssheet|soffice)(?:\.exe|\.app)?$/i;
 const STANDALONE_COLOR_RE = /^(#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\(\s*[^)]+\s*\))$/i;
 const COMPACT_PREVIEW_DEBUG = false;
+
+type ImageAnalysisResult = {
+    text: string;
+    qrCodes: string[];
+    language?: string | null;
+    analyzedAt: number;
+    cached: boolean;
+    persisted: boolean;
+    ocrAvailable: boolean;
+    ocrError?: string | null;
+};
 const IS_MACOS =
     typeof navigator !== "undefined" &&
     (/Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform));
@@ -724,6 +739,10 @@ const ClipboardItem = ({
     const [localAiOptionsOpen, setLocalAiOptionsOpen] = useState(!!aiOptionsOpen);
     const [snapshotFailed, setSnapshotFailed] = useState(false);
     const [richImageFallbackFailed, setRichImageFallbackFailed] = useState(false);
+    const [imageAnalysis, setImageAnalysis] = useState<ImageAnalysisResult | null>(null);
+    const [imageAnalysisOpen, setImageAnalysisOpen] = useState(false);
+    const [imageAnalysisLoading, setImageAnalysisLoading] = useState(false);
+    const [imageAnalysisError, setImageAnalysisError] = useState<string | null>(null);
     const [sourceAppIcon, setSourceAppIcon] = useState<string | null>(() => peekSourceAppIcon(item.source_app_path) ?? null);
     const filePaths = useMemo(
         () => item.content_type === "file" ? item.content.split('\n').filter((p) => p.trim()) : [],
@@ -763,6 +782,49 @@ const ClipboardItem = ({
     useEffect(() => {
         if (!isEditingTags) setTagSuggestIndex(-1);
     }, [isEditingTags]);
+
+    useEffect(() => {
+        setImageAnalysis(null);
+        setImageAnalysisOpen(false);
+        setImageAnalysisError(null);
+    }, [item.id]);
+
+    useEffect(() => {
+        if (isSensitiveHidden) {
+            setImageAnalysisOpen(false);
+        }
+    }, [isSensitiveHidden]);
+
+    const runImageAnalysis = async (force = false) => {
+        if (imageAnalysisLoading) return;
+        setImageAnalysisOpen(true);
+        setImageAnalysisLoading(true);
+        setImageAnalysisError(null);
+        try {
+            const result = await invoke<ImageAnalysisResult>("analyze_image_entry", {
+                id: item.id,
+                force
+            });
+            setImageAnalysis(result);
+        } catch (error) {
+            setImageAnalysisError(String(error));
+        } finally {
+            setImageAnalysisLoading(false);
+        }
+    };
+
+    const copyRecognizedText = async (content: string) => {
+        if (!content) return;
+        await invoke("copy_to_clipboard", {
+            content,
+            contentType: "text",
+            paste: false,
+            id: 0,
+            deleteAfterUse: false,
+            pasteWithFormat: false,
+            moveToTop: false
+        });
+    };
 
     useEffect(() => {
         setTagSuggestIndex((prev) => {
@@ -1671,6 +1733,26 @@ const ClipboardItem = ({
                         >
                             <Tag size={12} />
                         </button>
+                        {item.content_type === 'image' && !isSensitiveHidden && item.id > 0 && (
+                            <button
+                                className={`btn-icon ${imageAnalysisOpen ? "active" : ""}`}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (imageAnalysisOpen) {
+                                        setImageAnalysisOpen(false);
+                                    } else if (imageAnalysis) {
+                                        setImageAnalysisOpen(true);
+                                    } else {
+                                        void runImageAnalysis(false);
+                                    }
+                                }}
+                                title={t('recognize_image_text')}
+                            >
+                                {imageAnalysisLoading
+                                    ? <Loader2 size={12} className="animate-spin" />
+                                    : <ScanText size={12} />}
+                            </button>
+                        )}
                         {(item.content_type === 'text' || item.content_type === 'rich_text') && aiEnabled && (
                             <button
                                 className={`btn-icon ai-btn ${isAIProcessing || showAIOptions ? 'active' : ''}`}
@@ -1726,6 +1808,7 @@ const ClipboardItem = ({
                             </div>
                         ) : (
                             <img
+                                key={`${item.id}:${item.content}`}
                                 src={
                                     item.content.startsWith("data:")
                                         ? item.content
@@ -1737,7 +1820,11 @@ const ClipboardItem = ({
                                 alt={t('image_preview')}
                                 className="image-preview"
                                 loading="lazy"
-                                style={isSensitiveHidden ? { filter: 'blur(8px)' } : {}}
+                                style={isSensitiveHidden ? { filter: 'blur(8px)', display: 'block' } : { display: 'block' }}
+                                onLoad={(e) => {
+                                    e.currentTarget.style.display = 'block';
+                                    e.currentTarget.parentElement?.classList.remove('image-load-error');
+                                }}
                                 onError={(e) => {
                                     // Fallback for load errors even if backend said it exists (e.g. deleted after fetch)
                                     e.currentTarget.style.display = 'none';
@@ -1895,6 +1982,72 @@ const ClipboardItem = ({
                 {overlayTagsInPreview && renderTagsContainer(true)}
                 </div>
             </div>
+
+            {item.content_type === 'image' && !isSensitiveHidden && imageAnalysisOpen && (
+                <div className="image-analysis-panel" onClick={(e) => e.stopPropagation()}>
+                    <div className="image-analysis-header">
+                        <span><ScanText size={13} />{t('image_recognition')}</span>
+                        <button
+                            className="btn-icon"
+                            onClick={() => void runImageAnalysis(true)}
+                            disabled={imageAnalysisLoading}
+                            title={t('recognize_again')}
+                        >
+                            <RefreshCw size={12} className={imageAnalysisLoading ? "animate-spin" : ""} />
+                        </button>
+                    </div>
+                    {imageAnalysisLoading && !imageAnalysis && (
+                        <div className="image-analysis-status">
+                            <Loader2 size={13} className="animate-spin" />{t('recognizing_image')}
+                        </div>
+                    )}
+                    {imageAnalysisError && (
+                        <div className="image-analysis-error">{imageAnalysisError}</div>
+                    )}
+                    {imageAnalysis && (
+                        <>
+                            {imageAnalysis.text && (
+                                <div className="image-analysis-section">
+                                    <div className="image-analysis-section-title">
+                                        <span>{t('recognized_text')}</span>
+                                        <button
+                                            className="btn-icon"
+                                            onClick={() => void copyRecognizedText(imageAnalysis.text)}
+                                            title={t('copy')}
+                                        >
+                                            <Copy size={12} />
+                                        </button>
+                                    </div>
+                                    <div className="image-analysis-text">{imageAnalysis.text}</div>
+                                </div>
+                            )}
+                            {imageAnalysis.qrCodes.map((code, index) => (
+                                <div className="image-analysis-section" key={`${code}-${index}`}>
+                                    <div className="image-analysis-section-title">
+                                        <span><QrCode size={12} />{t('qr_code')}</span>
+                                        <button
+                                            className="btn-icon"
+                                            onClick={() => void copyRecognizedText(code)}
+                                            title={t('copy')}
+                                        >
+                                            <Copy size={12} />
+                                        </button>
+                                    </div>
+                                    <div className="image-analysis-text">{code}</div>
+                                </div>
+                            ))}
+                            {!imageAnalysis.text && imageAnalysis.qrCodes.length === 0 && (
+                                <div className="image-analysis-status">
+                                    {imageAnalysis.ocrError || t('no_text_found')}
+                                </div>
+                            )}
+                            {!imageAnalysis.persisted && (
+                                <div className="image-analysis-privacy">{t('sensitive_ocr_not_saved')}</div>
+                            )}
+                        </>
+                    )}
+                </div>
+            )}
 
             {/* AI Options - Compact Mode: Dropdown Panel, Normal Mode: Inline */}
             <AnimatePresence>

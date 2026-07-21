@@ -134,6 +134,24 @@ fn is_likely_rich_text_source(
     .any(|needle| haystack.contains(needle))
 }
 
+fn is_wps_writer_source(
+    source_snapshot: &crate::infrastructure::windows_api::window_tracker::ActiveAppInfo,
+) -> bool {
+    let app_name = source_snapshot.app_name.to_ascii_lowercase();
+    let process_path = source_snapshot
+        .process_path
+        .as_deref()
+        .unwrap_or("")
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let executable = process_path.rsplit('/').next().unwrap_or("");
+
+    executable == "wps.exe"
+        || ((app_name.contains("wps") || process_path.contains("/wps/"))
+            && executable != "et.exe"
+            && !app_name.contains("spreadsheet"))
+}
+
 fn is_likely_spreadsheet_source(
     source_snapshot: &crate::infrastructure::windows_api::window_tracker::ActiveAppInfo,
 ) -> bool {
@@ -317,14 +335,16 @@ fn probe_rich_text_payload(
             return Some((normalized_text, html));
         }
 
-        unsafe {
-            if crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(
-                "Rich Text Format",
-            )
-            .map(|raw| !raw.is_empty())
-            .unwrap_or(false)
-            {
-                saw_candidate_format = true;
+        if !is_wps_writer_source(source_snapshot) {
+            unsafe {
+                if crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(
+                    "Rich Text Format",
+                )
+                .map(|raw| !raw.is_empty())
+                .unwrap_or(false)
+                {
+                    saw_candidate_format = true;
+                }
             }
         }
 
@@ -550,9 +570,13 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                 normalize_clipboard_plain_text(&text).hash(&mut hasher);
             }
 
-            // Also consider image hash if present
-            if let Some(image) = read_clipboard_image_once(&mut cached_image) {
-                image.bytes.hash(&mut hasher);
+            // Avoid forcing delayed bitmap rendering from rich-text applications.
+            // WPS Writer 32-bit in particular can crash while serving CF_DIB
+            // during a Ctrl+C operation.
+            if !is_likely_rich_text_source(&source_snapshot) {
+                if let Some(image) = read_clipboard_image_once(&mut cached_image) {
+                    image.bytes.hash(&mut hasher);
+                }
             }
 
             hasher.finish()
@@ -718,8 +742,9 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                         let html_has_renderable_images =
                             html_to_store.to_ascii_lowercase().contains("<img ");
 
+                        let conservative_wps_capture = is_wps_writer_source(&source_snapshot);
                         if let Some(data_url) = html_animated_gif_fallback.clone().or_else(|| {
-                            if html_has_renderable_images {
+                            if html_has_renderable_images || conservative_wps_capture {
                                 None
                             } else {
                                 clipboard_image_fallback_data_url()
@@ -728,8 +753,11 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                             html_to_store = attach_rich_image_fallback(&html_to_store, &data_url);
                         }
 
-                        let preserved_named_formats =
-                            capture_preserved_named_formats_from_clipboard(Some(&source_snapshot));
+                        let preserved_named_formats = if conservative_wps_capture {
+                            Vec::new()
+                        } else {
+                            capture_preserved_named_formats_from_clipboard(Some(&source_snapshot))
+                        };
                         if !preserved_named_formats.is_empty() {
                             html_to_store =
                                 attach_rich_named_formats(&html_to_store, &preserved_named_formats);
@@ -1064,7 +1092,7 @@ pub fn process_new_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_snipping_tool_source, should_capture_file_entries};
+    use super::{is_snipping_tool_source, is_wps_writer_source, should_capture_file_entries};
     use crate::infrastructure::windows_api::window_tracker::ActiveAppInfo;
 
     #[test]
@@ -1110,5 +1138,20 @@ mod tests {
     #[test]
     fn file_capture_follows_setting_when_enabled() {
         assert!(should_capture_file_entries(true));
+    }
+
+    #[test]
+    fn detects_wps_writer_without_treating_spreadsheet_as_writer() {
+        let writer = ActiveAppInfo {
+            app_name: "WPS Office".to_string(),
+            process_path: Some(r"C:\Program Files\Kingsoft\WPS Office\wps.exe".to_string()),
+        };
+        let spreadsheet = ActiveAppInfo {
+            app_name: "WPS Spreadsheets".to_string(),
+            process_path: Some(r"C:\Program Files\Kingsoft\WPS Office\et.exe".to_string()),
+        };
+
+        assert!(is_wps_writer_source(&writer));
+        assert!(!is_wps_writer_source(&spreadsheet));
     }
 }

@@ -1016,9 +1016,13 @@ impl ClipboardRepository for SqliteClipboardRepository {
                 "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                  FROM clipboard_history ch
                  LEFT JOIN entry_tags et ON ch.id = et.entry_id
+                 LEFT JOIN clipboard_image_analysis ia
+                    ON ch.id = ia.entry_id AND ch.content_hash = ia.content_hash
                  WHERE ch.content LIKE '%' || ?1 || '%'
                     OR ch.source_app LIKE '%' || ?1 || '%'
                     OR et.tag LIKE '%' || ?1 || '%'
+                    OR ia.ocr_text LIKE '%' || ?1 || '%'
+                    OR ia.qr_codes LIKE '%' || ?1 || '%'
                  ORDER BY ch.timestamp DESC
                  LIMIT ?2"
             };
@@ -1090,6 +1094,8 @@ impl ClipboardRepository for SqliteClipboardRepository {
                     "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                      FROM clipboard_history ch
                      LEFT JOIN entry_tags et ON ch.id = et.entry_id
+                     LEFT JOIN clipboard_image_analysis ia
+                        ON ch.id = ia.entry_id AND ch.content_hash = ia.content_hash
                      WHERE NOT EXISTS (
                          SELECT 1 FROM entry_tags se
                          WHERE se.entry_id = ch.id
@@ -1099,6 +1105,8 @@ impl ClipboardRepository for SqliteClipboardRepository {
                          ch.content LIKE '%' || ?1 || '%'
                          OR ch.source_app LIKE '%' || ?1 || '%'
                          OR et.tag LIKE '%' || ?1 || '%'
+                         OR ia.ocr_text LIKE '%' || ?1 || '%'
+                         OR ia.qr_codes LIKE '%' || ?1 || '%'
                        )
                      ORDER BY ch.timestamp DESC, ch.id DESC
                      LIMIT ?2",
@@ -1373,5 +1381,58 @@ impl ClipboardRepository for SqliteClipboardRepository {
     ) -> Result<Option<(String, String, Option<String>)>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         self.get_entry_content_with_html_with_conn(&conn, id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClipboardRepository, SqliteClipboardRepository};
+    use crate::infrastructure::repository::migrations::run_migrations;
+    use rusqlite::{params, Connection};
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn search_matches_current_ocr_and_qr_index() {
+        let conn = Connection::open_in_memory().expect("open repository test db");
+        run_migrations(&conn).expect("run migrations");
+        conn.execute(
+            "INSERT INTO clipboard_history
+                (id, content_type, content, source_app, timestamp, preview, content_hash)
+             VALUES (1, 'image', '/tmp/image.png', 'test', 100, 'image', 42)",
+            [],
+        )
+        .expect("insert image entry");
+        conn.execute(
+            "INSERT INTO clipboard_image_analysis
+                (entry_id, content_hash, ocr_text, qr_codes, analyzed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                1,
+                42,
+                "invoice number 8675",
+                "[\"https://tiez.app/qr\"]",
+                100
+            ],
+        )
+        .expect("insert image analysis");
+
+        let repo = SqliteClipboardRepository::new(Arc::new(Mutex::new(conn)));
+        assert_eq!(repo.search("8675", 10, false).expect("search OCR").len(), 1);
+        assert_eq!(
+            repo.search("tiez.app", 10, false).expect("search QR").len(),
+            1
+        );
+
+        let conn = repo.conn.lock().expect("lock repository db");
+        conn.execute(
+            "UPDATE clipboard_history SET content_hash = 99 WHERE id = 1",
+            [],
+        )
+        .expect("change image hash");
+        drop(conn);
+        assert!(repo
+            .search("8675", 10, false)
+            .expect("search stale OCR")
+            .is_empty());
     }
 }

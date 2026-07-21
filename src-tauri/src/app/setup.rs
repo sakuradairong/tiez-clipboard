@@ -55,6 +55,11 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Data Directory & Migration
     let app_dir = resolve_data_dir(app)?;
 
+    // Apply a previously validated restore before opening the database.
+    if let Err(error) = crate::services::backup::apply_pending_restore(&app_dir) {
+        eprintln!(">>> [RESTORE] Restore was not applied: {error}");
+    }
+
     // 2. Logger Initialization
     crate::logger::init(app_dir.join("tiez.log"));
     info!(">>> [STARTUP] TieZ starting up...");

@@ -230,6 +230,28 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])?;
     }
 
+    // Migration 12: Local OCR and QR index for image clipboard entries.
+    if current_version < 12 {
+        conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS clipboard_image_analysis (
+                entry_id INTEGER PRIMARY KEY,
+                content_hash INTEGER NOT NULL,
+                ocr_text TEXT NOT NULL DEFAULT '',
+                qr_codes TEXT NOT NULL DEFAULT '[]',
+                language TEXT,
+                analyzed_at INTEGER NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS trg_clipboard_image_analysis_delete
+            AFTER DELETE ON clipboard_history
+            BEGIN
+                DELETE FROM clipboard_image_analysis WHERE entry_id = OLD.id;
+            END;
+            ",
+        )?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (12)", [])?;
+    }
+
     Ok(())
 }
 
@@ -283,5 +305,35 @@ mod tests {
             .expect("read migrated revision");
         assert_eq!(updated_at, 12345);
         assert!(updated_by.is_empty());
+
+        let analysis_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'clipboard_image_analysis'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check image analysis table");
+        assert!(analysis_table_exists);
+
+        conn.execute(
+            "INSERT INTO clipboard_image_analysis
+                (entry_id, content_hash, ocr_text, qr_codes, analyzed_at)
+             VALUES (1, 42, 'searchable text', '[]', 12345)",
+            [],
+        )
+        .expect("insert image analysis");
+        conn.execute("DELETE FROM clipboard_history WHERE id = 1", [])
+            .expect("delete clipboard entry");
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM clipboard_image_analysis WHERE entry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count orphaned image analysis");
+        assert_eq!(remaining, 0);
     }
 }

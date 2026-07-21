@@ -25,7 +25,7 @@ const SENSITIVE_KEYS: &[&str] = &[
     "cloud_sync_webdav_password",
 ];
 
-pub const SENSITIVE_TAGS: &[&str] = &["sensitive", "密码"];
+pub const SENSITIVE_TAGS: &[&str] = &["sensitive", "密码", "password"];
 
 pub fn is_sensitive_key(key: &str) -> bool {
     SENSITIVE_KEYS.iter().any(|k| k.eq_ignore_ascii_case(key))

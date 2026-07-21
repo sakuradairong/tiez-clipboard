@@ -1,6 +1,6 @@
 [package]
 name = "tiez-app"
-version = "0.3.4"
+version = "0.3.5"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -38,6 +38,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 arboard = "3"
 clipboard-rs = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
+rqrr = "0.10"
 tokio = { version = "1", features = ["time"] }
 tauri-plugin-dialog = "2.6"
 tauri-plugin-global-shortcut = "2.3.1"
@@ -63,6 +64,7 @@ tauri-plugin-http = "2"
 tauri-plugin-autostart = "2"
 machine-uid = "0.5"
 sha2 = "0.10"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
 windows-version = "0.1.1"
 dotenvy = "0.15"
@@ -73,7 +75,7 @@ objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "N
 objc2-app-kit = { version = "0.3.2", features = ["NSBitmapImageRep", "NSImage", "NSImageRep", "NSWorkspace", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Controls", "Win32_Security_Cryptography", "Win32_UI_Accessibility", "Win32_UI_Input_Ime", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_Storage_FileSystem"] }
+windows = { version = "0.61", features = ["Foundation", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage", "Storage_Streams", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WinRT", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Controls", "Win32_Security_Cryptography", "Win32_UI_Accessibility", "Win32_UI_Input_Ime", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_Storage_FileSystem"] }
 windows-core = "0.61"
 windows-version = "0.1.1"
 winreg = "0.55.0"

@@ -16,71 +16,89 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 pub fn listen_clipboard(callback: Arc<dyn Fn() + Send + Sync + 'static>) {
     #[cfg(target_os = "windows")]
-    std::thread::spawn(move || {
-        unsafe {
-            let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
-            let window_class = "TieZClipboardListener";
-            let window_class_w: Vec<u16> = window_class
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+    {
+        // Never perform clipboard reads from the window procedure itself.
+        // Some delayed-rendering providers (notably 32-bit WPS) re-enter their
+        // own message loop while serving clipboard formats and can crash when
+        // the listener blocks WM_CLIPBOARDUPDATE. A bounded worker also merges
+        // bursts of format-update notifications into one processing pass.
+        let (notify_tx, notify_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        std::thread::spawn(move || {
+            while notify_rx.recv().is_ok() {
+                callback();
+            }
+        });
+        let notifier: Arc<dyn Fn() + Send + Sync + 'static> = Arc::new(move || {
+            let _ = notify_tx.try_send(());
+        });
 
-            let wnd_class = WNDCLASSW {
-                lpfnWndProc: Some(wnd_proc),
-                hInstance: instance.into(),
-                lpszClassName: PCWSTR(window_class_w.as_ptr()),
-                ..Default::default()
-            };
+        std::thread::spawn(move || {
+            unsafe {
+                let instance =
+                    windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap();
+                let window_class = "TieZClipboardListener";
+                let window_class_w: Vec<u16> = window_class
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
 
-            RegisterClassW(&wnd_class);
+                let wnd_class = WNDCLASSW {
+                    lpfnWndProc: Some(wnd_proc),
+                    hInstance: instance.into(),
+                    lpszClassName: PCWSTR(window_class_w.as_ptr()),
+                    ..Default::default()
+                };
 
-            let hwnd = match CreateWindowExW(
-                Default::default(),
-                PCWSTR(window_class_w.as_ptr()),
-                PCWSTR(std::ptr::null()),
-                Default::default(),
-                0,
-                0,
-                0,
-                0,
-                Some(HWND_MESSAGE), // Use HWND_MESSAGE for invisible message-only window
-                None,
-                Some(HINSTANCE(instance.0)),
-                None,
-            ) {
-                Ok(hwnd) => hwnd,
-                Err(e) => {
-                    eprintln!(
-                        "[ERROR] Failed to create clipboard listener window: {:?}",
-                        e
-                    );
+                RegisterClassW(&wnd_class);
+
+                let hwnd = match CreateWindowExW(
+                    Default::default(),
+                    PCWSTR(window_class_w.as_ptr()),
+                    PCWSTR(std::ptr::null()),
+                    Default::default(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Some(HWND_MESSAGE), // Use HWND_MESSAGE for invisible message-only window
+                    None,
+                    Some(HINSTANCE(instance.0)),
+                    None,
+                ) {
+                    Ok(hwnd) => hwnd,
+                    Err(e) => {
+                        eprintln!(
+                            "[ERROR] Failed to create clipboard listener window: {:?}",
+                            e
+                        );
+                        return;
+                    }
+                };
+
+                // Wrap callback in a Box to store in window user data
+                let boxed_callback = Box::new(notifier);
+                let ptr = Box::into_raw(boxed_callback);
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+
+                if let Err(e) = AddClipboardFormatListener(hwnd) {
+                    eprintln!("[ERROR] Failed to add clipboard listener: {:?}", e);
+                    let _ = Box::from_raw(ptr);
                     return;
                 }
-            };
 
-            // Wrap callback in a Box to store in window user data
-            let boxed_callback = Box::new(callback);
-            let ptr = Box::into_raw(boxed_callback);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
+                println!(">>> [CLIPBOARD] Windows event-driven listener started.");
 
-            if let Err(e) = AddClipboardFormatListener(hwnd) {
-                eprintln!("[ERROR] Failed to add clipboard listener: {:?}", e);
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    DispatchMessageW(&msg);
+                }
+
+                let _ = RemoveClipboardFormatListener(hwnd);
+                // Cleanup callback
                 let _ = Box::from_raw(ptr);
-                return;
             }
-
-            println!(">>> [CLIPBOARD] Windows event-driven listener started.");
-
-            let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                DispatchMessageW(&msg);
-            }
-
-            let _ = RemoveClipboardFormatListener(hwnd);
-            // Cleanup callback
-            let _ = Box::from_raw(ptr);
-        }
-    });
+        });
+    }
 
     #[cfg(not(target_os = "windows"))]
     std::thread::spawn(move || {

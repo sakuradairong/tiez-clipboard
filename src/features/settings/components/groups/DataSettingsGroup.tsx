@@ -1,6 +1,7 @@
-import { open, ask, message } from "@tauri-apps/plugin-dialog";
+import { useState } from "react";
+import { open, save, ask, message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ArchiveRestore, ChevronDown, ChevronRight, Download, Loader2 } from "lucide-react";
 
 interface DataSettingsGroupProps {
     t: (key: string) => string;
@@ -9,7 +10,105 @@ interface DataSettingsGroupProps {
     dataPath: string;
 }
 
-const DataSettingsGroup = ({ t, collapsed, onToggle, dataPath }: DataSettingsGroupProps) => (
+interface BackupInfo {
+    formatVersion: number;
+    appVersion: string;
+    createdAt: number;
+    entryCount: number;
+    fileCount: number;
+    totalBytes: number;
+    path: string;
+}
+
+const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = bytes / 1024;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+    }
+    return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[index]}`;
+};
+
+const DataSettingsGroup = ({ t, collapsed, onToggle, dataPath }: DataSettingsGroupProps) => {
+    const [backupBusy, setBackupBusy] = useState<"export" | "restore" | null>(null);
+
+    const exportBackup = async () => {
+        if (backupBusy) return;
+        const date = new Date().toISOString().slice(0, 10);
+        const destination = await save({
+            title: t('backup_export'),
+            defaultPath: `TieZ-backup-${date}.tiez-backup`,
+            filters: [{ name: "TieZ Backup", extensions: ["tiez-backup"] }]
+        });
+        if (!destination) return;
+
+        setBackupBusy("export");
+        try {
+            const info = await invoke<BackupInfo>("create_backup", { destination });
+            await message(
+                t('backup_export_success')
+                    .replace('{count}', String(info.entryCount))
+                    .replace('{size}', formatBytes(info.totalBytes)),
+                { title: t('backup_export'), kind: 'info' }
+            );
+        } catch (error) {
+            await message(
+                t('backup_failed').replace('{e}', String(error)),
+                { title: t('error'), kind: 'error' }
+            );
+        } finally {
+            setBackupBusy(null);
+        }
+    };
+
+    const restoreBackup = async () => {
+        if (backupBusy) return;
+        const selected = await open({
+            title: t('backup_restore'),
+            multiple: false,
+            directory: false,
+            filters: [{ name: "TieZ Backup", extensions: ["tiez-backup"] }]
+        });
+        if (!selected || Array.isArray(selected)) return;
+
+        setBackupBusy("restore");
+        try {
+            const info = await invoke<BackupInfo>("inspect_backup", { path: selected });
+            const confirmed = await ask(
+                t('backup_restore_confirm')
+                    .replace('{version}', info.appVersion)
+                    .replace('{count}', String(info.entryCount))
+                    .replace('{size}', formatBytes(info.totalBytes))
+                    .replace('{date}', new Date(info.createdAt).toLocaleString()),
+                {
+                    title: t('backup_restore'),
+                    kind: 'warning',
+                    okLabel: t('confirm'),
+                    cancelLabel: t('cancel')
+                }
+            );
+            if (!confirmed) return;
+
+            await invoke("schedule_backup_restore", { path: selected });
+            await message(t('backup_restore_scheduled'), {
+                title: t('backup_restore'),
+                kind: 'info'
+            });
+            await invoke("relaunch");
+        } catch (error) {
+            await message(
+                t('backup_failed').replace('{e}', String(error)),
+                { title: t('error'), kind: 'error' }
+            );
+        } finally {
+            setBackupBusy(null);
+        }
+    };
+
+    return (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
         <div className="group-header" onClick={onToggle}>
             <h3 style={{ margin: 0 }}>{t('data_management')}</h3>
@@ -82,9 +181,38 @@ const DataSettingsGroup = ({ t, collapsed, onToggle, dataPath }: DataSettingsGro
                         {dataPath}
                     </div>
                 </div>
+                <div className="setting-item column">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', width: '100%' }}>
+                        <div style={{ minWidth: 0 }}>
+                            <div className="item-label">{t('backup_center')}</div>
+                            <div className="item-description">{t('backup_center_hint')}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                            <button
+                                className="btn-icon"
+                                onClick={() => void exportBackup()}
+                                disabled={backupBusy !== null}
+                                style={{ width: 'auto', padding: '4px 12px', fontSize: '10px', height: '26px', gap: '5px' }}
+                            >
+                                {backupBusy === "export" ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                                {t('backup_export')}
+                            </button>
+                            <button
+                                className="btn-icon"
+                                onClick={() => void restoreBackup()}
+                                disabled={backupBusy !== null}
+                                style={{ width: 'auto', padding: '4px 12px', fontSize: '10px', height: '26px', gap: '5px' }}
+                            >
+                                {backupBusy === "restore" ? <Loader2 size={12} className="animate-spin" /> : <ArchiveRestore size={12} />}
+                                {t('backup_restore')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         )}
     </div>
-);
+    );
+};
 
 export default DataSettingsGroup;

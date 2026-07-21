@@ -544,7 +544,7 @@ pub fn set_data_path(app_handle: AppHandle, new_path: String) -> AppResult<()> {
     Ok(())
 }
 
-fn rewrite_attachment_paths_in_db(
+pub(crate) fn rewrite_attachment_paths_in_db(
     db_path: &std::path::Path,
     old_base: &std::path::Path,
     new_base: &std::path::Path,
@@ -563,7 +563,12 @@ fn rewrite_attachment_paths_in_db(
     let conn = Connection::open(db_path).map_err(AppError::from)?;
 
     let mut stmt = conn
-        .prepare("SELECT id, content, html_content FROM clipboard_history WHERE is_external = 1 OR html_content IS NOT NULL")
+        .prepare(
+            "SELECT id, content, html_content FROM clipboard_history
+                  WHERE content_type IN ('image', 'file', 'video')
+                     OR is_external = 1
+                     OR html_content IS NOT NULL",
+        )
         .map_err(AppError::from)?;
 
     let rows = stmt
@@ -580,25 +585,49 @@ fn rewrite_attachment_paths_in_db(
         let mut content_new: Option<String> = None;
         let mut html_new: Option<String> = None;
 
-        if let Some(updated) = rewrite_content_path(
-            &content_raw,
+        let content_was_encrypted = content_raw.starts_with(ENCRYPT_PREFIX);
+        let content_plain = if content_was_encrypted {
+            crate::infrastructure::encryption::decrypt_value(&content_raw)
+                .unwrap_or_else(|| content_raw.clone())
+        } else {
+            content_raw.clone()
+        };
+        if let Some(updated_plain) = rewrite_content_path(
+            &content_plain,
             &old_prefix,
             &new_prefix,
             &old_prefix_slash,
             &new_prefix_slash,
         ) {
-            content_new = Some(updated);
+            content_new = Some(if content_was_encrypted {
+                crate::infrastructure::encryption::encrypt_value(&updated_plain)
+                    .unwrap_or(updated_plain)
+            } else {
+                updated_plain
+            });
         }
 
-        if let Some(html) = html_raw.as_ref() {
-            if let Some(updated) = rewrite_html_paths(
-                html,
+        if let Some(html_raw_value) = html_raw.as_ref() {
+            let html_was_encrypted = html_raw_value.starts_with(ENCRYPT_PREFIX);
+            let html_plain = if html_was_encrypted {
+                crate::infrastructure::encryption::decrypt_value(html_raw_value)
+                    .unwrap_or_else(|| html_raw_value.clone())
+            } else {
+                html_raw_value.clone()
+            };
+            if let Some(updated_plain) = rewrite_html_paths(
+                &html_plain,
                 &old_prefix,
                 &new_prefix,
                 &old_prefix_slash,
                 &new_prefix_slash,
             ) {
-                html_new = Some(updated);
+                html_new = Some(if html_was_encrypted {
+                    crate::infrastructure::encryption::encrypt_value(&updated_plain)
+                        .unwrap_or(updated_plain)
+                } else {
+                    updated_plain
+                });
             }
         }
 
@@ -619,7 +648,7 @@ fn rewrite_attachment_paths_in_db(
     Ok(())
 }
 
-fn rewrite_emoji_favorites_in_db(
+pub(crate) fn rewrite_emoji_favorites_in_db(
     db_path: &std::path::Path,
     old_base: &std::path::Path,
     new_base: &std::path::Path,
@@ -680,7 +709,7 @@ fn rewrite_emoji_favorites_in_db(
     Ok(())
 }
 
-fn rewrite_custom_background_in_db(
+pub(crate) fn rewrite_custom_background_in_db(
     db_path: &std::path::Path,
     old_base: &std::path::Path,
     new_base: &std::path::Path,
