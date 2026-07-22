@@ -1,0 +1,94 @@
+name: "Build Platforms"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: tiez-windows-x64
+            artifact_path: src-tauri/target/release/bundle/nsis/*.exe
+          - name: Linux x64
+            platform: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_name: tiez-linux-x64
+            artifact_path: src-tauri/target/release/bundle/deb/*.deb
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            rust_target: aarch64-apple-darwin
+            artifact_name: tiez-macos-arm64
+            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          - name: macOS Intel
+            platform: macos-latest
+            rust_target: x86_64-apple-darwin
+            artifact_name: tiez-macos-x64
+            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app
+
+    runs-on: ${{ matrix.platform }}
+    env:
+      CI: true
+      VITE_ENABLE_UPDATER: "false"
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Windows NSIS bundle
+        if: runner.os == 'Windows'
+        run: npx tauri build --target ${{ matrix.rust_target }} --bundles nsis --config .github/tauri-build-test.conf.json --no-sign --ci
+
+      - name: Build Linux DEB bundle
+        if: runner.os == 'Linux'
+        run: npx tauri build --target ${{ matrix.rust_target }} --bundles deb --config .github/tauri-build-test.conf.json --no-sign --ci
+
+      - name: Build macOS app bundle
+        if: runner.os == 'macOS'
+        run: npx tauri build --target ${{ matrix.rust_target }} --bundles app --config .github/tauri-build-test.conf.json --no-sign --ci
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 7
