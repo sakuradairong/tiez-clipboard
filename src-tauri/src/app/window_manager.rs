@@ -374,6 +374,12 @@ pub fn toggle_window(app: &AppHandle) {
         {
             let _ = window.show();
         }
+
+        // The webview stays mounted while the main window is hidden, so its
+        // route and virtual-list scroll position would otherwise survive the
+        // next hotkey open. Tell the frontend this is a fresh main-window
+        // session after the native window is visible again.
+        let _ = app.emit("main-window-opened", ());
     }
 }
 

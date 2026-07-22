@@ -663,6 +663,53 @@ const App = () => {
   useEffect(() => {
     if (!isTauriRuntime()) return;
 
+    const unlisten = listen("main-window-opened", () => {
+      forceHideCompactPreviewWindow();
+      setShowSettings(false);
+      setSettingsSubpage("home");
+      setShowTagManager(false);
+      setShowEmojiPanel(false);
+      setChatMode(false);
+      setShowTagFilter(false);
+      setEditingTagsId(null);
+      setTagInput("");
+      setAiOptionsOpenId(null);
+      setSelectedIndex(0);
+      setIsKeyboardMode(false);
+      setShowScrollTop(false);
+
+      // Settings and tag views scroll the main container, while clipboard
+      // history scrolls inside Virtuoso. Reset both after React has restored
+      // the clipboard view so reopening always starts from its first item.
+      requestAnimationFrame(() => {
+        const mainContent = document.querySelector<HTMLElement>(".main-content");
+        mainContent?.scrollTo({ top: 0, behavior: "auto" });
+        requestAnimationFrame(() => {
+          virtualListRef.current?.scrollToTop();
+        });
+      });
+    });
+
+    return () => {
+      unlisten.then((off) => off());
+    };
+  }, [
+    setAiOptionsOpenId,
+    setChatMode,
+    setEditingTagsId,
+    setIsKeyboardMode,
+    setSelectedIndex,
+    setSettingsSubpage,
+    setShowEmojiPanel,
+    setShowSettings,
+    setShowTagFilter,
+    setShowTagManager,
+    setTagInput
+  ]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+
     const unlisten = listen("focus-search-input", () => {
       setShowSettings(false);
       setShowTagManager(false);

@@ -1022,6 +1022,7 @@ fn setup_tray(app: &App, hide_tray: bool) {
             if event.id.as_ref() == "show" {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
+                    let _ = app.emit("main-window-opened", ());
                 }
             } else if event.id.as_ref() == "quit" {
                 app.exit(0);
@@ -1036,6 +1037,7 @@ fn setup_tray(app: &App, hide_tray: bool) {
                 if let Some(window) = tray.app_handle().get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                    let _ = tray.app_handle().emit("main-window-opened", ());
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
