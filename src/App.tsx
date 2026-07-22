@@ -370,6 +370,14 @@ const App = () => {
   const [quickPasteHintsById, setQuickPasteHintsById] = useState<Record<number, QuickPasteHint>>(
     {}
   );
+  const quickPastePinnedSignature = useMemo(
+    () => history
+      .filter((item) => item.is_pinned)
+      .slice(0, QUICK_PASTE_KEYS.length)
+      .map((item) => `${item.id}:${item.pinned_order || 0}`)
+      .join("|"),
+    [history]
+  );
   const PAGE_SIZE = 80;
   const { fetchHistory, loadMoreHistory } = useHistoryFetch({
     debouncedSearch,
@@ -782,7 +790,9 @@ const App = () => {
     }
 
     invoke<ClipboardEntry[]>("get_clipboard_history", {
-      limit: 256,
+      // History is ordered with pinned entries first. Ten rows are enough for
+      // the ten supported quick-paste slots and avoid decrypting 256 entries.
+      limit: QUICK_PASTE_KEYS.length,
       offset: 0,
       contentType: null
     })
@@ -801,7 +811,7 @@ const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [history, quickPasteModifier]);
+  }, [quickPasteModifier, quickPastePinnedSignature]);
 
   useToastListener({ pushToast });
 

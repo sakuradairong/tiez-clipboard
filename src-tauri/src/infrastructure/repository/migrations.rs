@@ -252,6 +252,35 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("INSERT INTO schema_migrations (version) VALUES (12)", [])?;
     }
 
+    // Migration 13: Match the history pagination sort order exactly.
+    //
+    // The original index omitted the id tie-breaker and filtered history had
+    // no content_type-prefixed sort index. Both cases can make SQLite build a
+    // temporary B-tree while the clipboard window is opening or scrolling.
+    if current_version < 13 {
+        conn.execute_batch(
+            "
+            DROP INDEX IF EXISTS idx_clipboard_history_pinned_order_time;
+            CREATE INDEX IF NOT EXISTS idx_clipboard_history_sort
+                ON clipboard_history (
+                    is_pinned DESC,
+                    pinned_order DESC,
+                    timestamp DESC,
+                    id DESC
+                );
+            CREATE INDEX IF NOT EXISTS idx_clipboard_history_type_sort
+                ON clipboard_history (
+                    content_type,
+                    is_pinned DESC,
+                    pinned_order DESC,
+                    timestamp DESC,
+                    id DESC
+                );
+            ",
+        )?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (13)", [])?;
+    }
+
     Ok(())
 }
 
@@ -283,7 +312,10 @@ mod tests {
              INSERT INTO schema_migrations (version) VALUES (10);
              CREATE TABLE clipboard_history (
                 id INTEGER PRIMARY KEY,
-                timestamp INTEGER NOT NULL
+                content_type TEXT NOT NULL DEFAULT 'text',
+                timestamp INTEGER NOT NULL,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_order INTEGER NOT NULL DEFAULT 0
              );
              INSERT INTO clipboard_history (id, timestamp) VALUES (1, 12345);",
         )
@@ -335,5 +367,44 @@ mod tests {
             )
             .expect("count orphaned image analysis");
         assert_eq!(remaining, 0);
+
+        let sort_indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'idx_clipboard_history_sort',
+                       'idx_clipboard_history_type_sort'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count history sort indexes");
+        assert_eq!(sort_indexes, 2);
+
+        let history_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM clipboard_history
+                 ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+                 LIMIT 80 OFFSET 0",
+                [],
+                |row| row.get(3),
+            )
+            .expect("explain history pagination");
+        assert!(history_plan.contains("idx_clipboard_history_sort"));
+
+        let filtered_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM clipboard_history
+                 WHERE content_type = 'image'
+                 ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+                 LIMIT 80 OFFSET 0",
+                [],
+                |row| row.get(3),
+            )
+            .expect("explain filtered history pagination");
+        assert!(filtered_plan.contains("idx_clipboard_history_type_sort"));
     }
 }

@@ -1006,23 +1006,34 @@ impl ClipboardRepository for SqliteClipboardRepository {
         {
             // Portable version: Data is NOT encrypted, use conventional SQL LIKE search (fastest)
             let sql = if tag_only {
-                "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
+                "SELECT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                  FROM clipboard_history ch
-                 INNER JOIN entry_tags et ON ch.id = et.entry_id
-                 WHERE et.tag LIKE '%' || ?1 || '%'
+                 WHERE EXISTS (
+                     SELECT 1 FROM entry_tags et
+                     WHERE et.entry_id = ch.id
+                       AND et.tag LIKE '%' || ?1 || '%'
+                 )
                  ORDER BY ch.timestamp DESC
                  LIMIT ?2"
             } else {
-                "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
+                "SELECT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                  FROM clipboard_history ch
-                 LEFT JOIN entry_tags et ON ch.id = et.entry_id
-                 LEFT JOIN clipboard_image_analysis ia
-                    ON ch.id = ia.entry_id AND ch.content_hash = ia.content_hash
                  WHERE ch.content LIKE '%' || ?1 || '%'
                     OR ch.source_app LIKE '%' || ?1 || '%'
-                    OR et.tag LIKE '%' || ?1 || '%'
-                    OR ia.ocr_text LIKE '%' || ?1 || '%'
-                    OR ia.qr_codes LIKE '%' || ?1 || '%'
+                    OR EXISTS (
+                        SELECT 1 FROM entry_tags et
+                        WHERE et.entry_id = ch.id
+                          AND et.tag LIKE '%' || ?1 || '%'
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM clipboard_image_analysis ia
+                        WHERE ia.entry_id = ch.id
+                          AND ia.content_hash = ch.content_hash
+                          AND (
+                              ia.ocr_text LIKE '%' || ?1 || '%'
+                              OR ia.qr_codes LIKE '%' || ?1 || '%'
+                          )
+                    )
                  ORDER BY ch.timestamp DESC
                  LIMIT ?2"
             };
@@ -1076,26 +1087,26 @@ impl ClipboardRepository for SqliteClipboardRepository {
             // 1) SQL search for non-sensitive (plaintext) entries
             let sql_non_sensitive = if tag_only {
                 format!(
-                    "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
+                    "SELECT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                      FROM clipboard_history ch
-                     INNER JOIN entry_tags et ON ch.id = et.entry_id
                      WHERE NOT EXISTS (
                          SELECT 1 FROM entry_tags se
                          WHERE se.entry_id = ch.id
                            AND se.tag COLLATE NOCASE IN {}
                      )
-                       AND et.tag LIKE '%' || ?1 || '%'
+                       AND EXISTS (
+                           SELECT 1 FROM entry_tags et
+                           WHERE et.entry_id = ch.id
+                             AND et.tag LIKE '%' || ?1 || '%'
+                       )
                      ORDER BY ch.timestamp DESC, ch.id DESC
                      LIMIT ?2",
                     sensitive_tags_sql
                 )
             } else {
                 format!(
-                    "SELECT DISTINCT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
+                    "SELECT ch.id, ch.content_type, ch.content, ch.html_content, ch.source_app, ch.timestamp, ch.preview, ch.is_pinned, ch.tags, ch.use_count, ch.is_external, ch.pinned_order, ch.source_app_path
                      FROM clipboard_history ch
-                     LEFT JOIN entry_tags et ON ch.id = et.entry_id
-                     LEFT JOIN clipboard_image_analysis ia
-                        ON ch.id = ia.entry_id AND ch.content_hash = ia.content_hash
                      WHERE NOT EXISTS (
                          SELECT 1 FROM entry_tags se
                          WHERE se.entry_id = ch.id
@@ -1104,9 +1115,20 @@ impl ClipboardRepository for SqliteClipboardRepository {
                        AND (
                          ch.content LIKE '%' || ?1 || '%'
                          OR ch.source_app LIKE '%' || ?1 || '%'
-                         OR et.tag LIKE '%' || ?1 || '%'
-                         OR ia.ocr_text LIKE '%' || ?1 || '%'
-                         OR ia.qr_codes LIKE '%' || ?1 || '%'
+                         OR EXISTS (
+                             SELECT 1 FROM entry_tags et
+                             WHERE et.entry_id = ch.id
+                               AND et.tag LIKE '%' || ?1 || '%'
+                         )
+                         OR EXISTS (
+                             SELECT 1 FROM clipboard_image_analysis ia
+                             WHERE ia.entry_id = ch.id
+                               AND ia.content_hash = ch.content_hash
+                               AND (
+                                   ia.ocr_text LIKE '%' || ?1 || '%'
+                                   OR ia.qr_codes LIKE '%' || ?1 || '%'
+                               )
+                         )
                        )
                      ORDER BY ch.timestamp DESC, ch.id DESC
                      LIMIT ?2",
@@ -1421,6 +1443,27 @@ mod tests {
         assert_eq!(
             repo.search("tiez.app", 10, false).expect("search QR").len(),
             1
+        );
+
+        {
+            let conn = repo.conn.lock().expect("lock repository db");
+            conn.execute(
+                "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'invoice')",
+                [],
+            )
+            .expect("insert first matching tag");
+            conn.execute(
+                "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'invoice-archive')",
+                [],
+            )
+            .expect("insert second matching tag");
+        }
+        assert_eq!(
+            repo.search("invoice", 10, true)
+                .expect("search multiple matching tags")
+                .len(),
+            1,
+            "one entry must not be duplicated by multiple matching tags"
         );
 
         let conn = repo.conn.lock().expect("lock repository db");

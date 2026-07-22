@@ -756,7 +756,8 @@ const ClipboardItem = ({
     const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverAnchorRef = useRef<CompactPreviewAnchor | null>(null);
     const hoverRequestIdRef = useRef(0);
-    const richTextFallback = item.content_type === "rich_text" && item.html_content
+    const richTextFallback = useMemo(
+        () => item.content_type === "rich_text" && item.html_content
         ? (() => {
             const { cleanHtml, imagePayload } = extractRichImageFallback(item.html_content);
             return {
@@ -765,7 +766,9 @@ const ClipboardItem = ({
                 imageSrc: resolveRichImageSrc(imagePayload)
             };
         })()
-        : null;
+        : null,
+        [item.content_type, item.html_content]
+    );
     const pickableTagSuggestions = useMemo(() => {
         if (!isEditingTags) return [];
         const existing = new Set(item.tags || []);
@@ -887,6 +890,10 @@ const ClipboardItem = ({
         ]
     );
     const richTextCleanHtml = richTextFallback?.cleanHtml || item.html_content || "";
+    const richTextLooksTabular = useMemo(
+        () => richHtmlLooksTabular(richTextCleanHtml),
+        [richTextCleanHtml]
+    );
     const richTextSnapshotDisplayMaxHeight = compactMode ? 40 : 64;
     const richTextSnapshotRenderMaxHeight = compactMode ? 100 : 200;
     const spreadsheetLikeRichSource = item.content_type === "rich_text"
@@ -898,14 +905,14 @@ const ClipboardItem = ({
     const preferHtmlRichPreview = item.content_type === "rich_text"
         && !!item.html_content
         && !richTextHasAnimatedImageFallback
-        && !richHtmlLooksTabular(richTextCleanHtml)
+        && !richTextLooksTabular
         && !spreadsheetLikeRichSource;
     const preferGeneratedRichPreview = item.content_type === "rich_text"
         && !!item.html_content
         && !preferHtmlRichPreview
         && (
             !!richTextSnapshotPreview
-            || richHtmlLooksTabular(richTextCleanHtml)
+            || richTextLooksTabular
             || spreadsheetLikeRichSource
         );
     const richTextSnapshotSrc = useMemo(() => {
@@ -930,7 +937,7 @@ const ClipboardItem = ({
         ? (richTextFallback?.imageSrc || null)
         : null;
     const preferImageFallbackForTabular = (
-        richHtmlLooksTabular(richTextCleanHtml) || spreadsheetLikeRichSource
+        richTextLooksTabular || spreadsheetLikeRichSource
     ) && !!effectiveRichImageFallbackSrc;
     const richTextPreviewSrc = richTextHasAnimatedImageFallback
         ? (effectiveRichImageFallbackSrc || effectiveRichTextSnapshotSrc)
