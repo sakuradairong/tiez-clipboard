@@ -25,11 +25,11 @@ jobs:
           - name: macOS Apple Silicon
             platform: macos-latest
             rust_target: aarch64-apple-darwin
-            args: '--target aarch64-apple-darwin --bundles dmg'
+            args: '--target aarch64-apple-darwin --bundles app,dmg'
           - name: macOS Intel
             platform: macos-latest
             rust_target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin --bundles dmg'
+            args: '--target x86_64-apple-darwin --bundles app,dmg'
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
