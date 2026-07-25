@@ -40,6 +40,15 @@ enum ClipboardSnapshot {
     Files { paths: Vec<String> },
 }
 
+#[cfg(any(not(target_os = "windows"), test))]
+fn should_restore_direct_text_clipboard(
+    paste_succeeded: bool,
+    current: &ClipboardSnapshot,
+    temporary: &ClipboardSnapshot,
+) -> bool {
+    paste_succeeded && current == temporary
+}
+
 fn resolve_rich_image_fallback_bytes(payload: &str) -> Option<Vec<u8>> {
     let value = payload.trim();
 
@@ -337,10 +346,53 @@ pub async fn paste_text_directly(app_handle: tauri::AppHandle, content: String) 
         return Ok(());
     }
 
+    #[cfg(not(target_os = "windows"))]
+    let previous_clipboard = capture_clipboard_snapshot();
+
+    #[cfg(not(target_os = "windows"))]
+    remember_recent_paste(&app_handle, &content, "text", None);
+
     handle_window_focus_for_paste(&app_handle).await?;
-    send_paste_keystroke("game_mode", Some(&content), Some("text"))?;
-    hide_window_after_paste(&app_handle).await;
-    play_paste_sound_if_enabled(&app_handle);
+
+    #[cfg(not(target_os = "windows"))]
+    prepare_clipboard_payload(&content, "text", None, false).await?;
+
+    #[cfg(not(target_os = "windows"))]
+    let temporary_clipboard = capture_clipboard_snapshot();
+
+    let paste_result = send_paste_keystroke("game_mode", Some(&content), Some("text"));
+
+    if paste_result.is_ok() {
+        hide_window_after_paste(&app_handle).await;
+        play_paste_sound_if_enabled(&app_handle);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(target_os = "linux")]
+        let restore_delay = std::time::Duration::from_millis(600);
+        #[cfg(target_os = "macos")]
+        let restore_delay = std::time::Duration::from_millis(250);
+        tokio::time::sleep(restore_delay).await;
+
+        let current_clipboard = capture_clipboard_snapshot();
+        let restore_result = if should_restore_direct_text_clipboard(
+            paste_result.is_ok(),
+            &current_clipboard,
+            &temporary_clipboard,
+        ) {
+            restore_clipboard_snapshot(previous_clipboard).await
+        } else {
+            Ok(())
+        };
+
+        paste_result?;
+        restore_result?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    paste_result?;
 
     Ok(())
 }
@@ -1608,4 +1660,33 @@ pub fn paste_latest_rich(app_handle: tauri::AppHandle) {
 #[tauri::command]
 pub fn paste_latest_plain(app_handle: tauri::AppHandle) {
     paste_latest(app_handle, false, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_restore_direct_text_clipboard, ClipboardSnapshot};
+
+    fn text_snapshot(value: &str) -> ClipboardSnapshot {
+        ClipboardSnapshot::Text {
+            text: value.to_string(),
+            html: None,
+        }
+    }
+
+    #[test]
+    fn direct_text_restore_requires_success_and_unchanged_temporary_clipboard() {
+        let temporary = text_snapshot("selected emoji");
+
+        assert!(should_restore_direct_text_clipboard(
+            true, &temporary, &temporary,
+        ));
+        assert!(!should_restore_direct_text_clipboard(
+            false, &temporary, &temporary,
+        ));
+        assert!(!should_restore_direct_text_clipboard(
+            true,
+            &text_snapshot("changed by target"),
+            &temporary,
+        ));
+    }
 }

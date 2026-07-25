@@ -37,5 +37,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Linux automatic paste no longer invokes macOS `osascript`
 - Linux and macOS image, file, and rich-text copy operations no longer report success without writing clipboard data
+- Linux and macOS direct-text and emoji paste now stages the requested text and safely restores the previous clipboard after a successful paste
 - Non-Windows clipboard monitoring no longer exits permanently after a single initialization failure
 - Transient paste no longer overwrites a clipboard value changed by the user or target application during restoration
