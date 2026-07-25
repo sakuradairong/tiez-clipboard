@@ -27,6 +27,7 @@ import { CLOUD_SYNC_ENABLED } from "../../../shared/config/edition";
 
 interface SettingsPanelProps {
     t: (key: string) => string;
+    pushToast: (msg: string, duration?: number) => unknown;
     theme: string;
     language: Locale;
     colorMode: string;
@@ -248,7 +249,7 @@ interface SettingsPanelProps {
 
 const SettingsPanel = (props: SettingsPanelProps) => {
     const {
-        t, theme, language, colorMode, showSourceAppIcon, setShowSourceAppIcon,
+        t, pushToast, theme, language, colorMode, showSourceAppIcon, setShowSourceAppIcon,
         collapsedGroups, settingsSubpage, autoStart, silentStart, persistent, persistentLimitEnabled, persistentLimit, deduplicate, captureFiles, captureRichText, richTextSnapshotPreview, deleteAfterPaste, moveToTopAfterPaste,
         sequentialMode, sequentialHotkey, isRecordingSequential,
         richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, quickPasteModifier, setQuickPasteModifier,
@@ -556,6 +557,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 persistentLimit={persistentLimit}
                 setPersistentLimit={setPersistentLimit}
                 saveAppSetting={saveAppSetting}
+                pushToast={pushToast}
                 deduplicate={deduplicate}
                 setDeduplicate={setDeduplicate}
                 captureFiles={captureFiles}

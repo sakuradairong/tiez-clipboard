@@ -10,8 +10,15 @@
     "core:default",
     "core:app:allow-version",
     "core:app:default",
-    "opener:default",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/**"
+        }
+      ]
+    },
+    "opener:allow-reveal-item-in-dir",
     "core:event:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",

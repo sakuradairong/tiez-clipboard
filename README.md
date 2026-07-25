@@ -8,11 +8,11 @@
 <div align="center">
   <img src="docs/images/logo.png" alt="TieZ Hero Logo" width="300" />
 
-  ### **STAY FAST. STAY SYNCED.**
+### **STAY FAST. STAY SYNCED.**
 
   | STATUS | LICENSE | PLATFORM | STACK |
   | :--- | :--- | :--- | :--- |
-  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
+  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20LINUX%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
 
   [English](./README.md) | [简体中文](./README.zh-CN.md)
 </div>
@@ -69,24 +69,28 @@ Explore 4 elegant themes designed for every workspace and efficiency scenarios.
 ## Key Features
 
 ### Core Experience
+
 - **Native Efficiency**: Built with Tauri 2 and Rust for minimum memory footprint.
 - **Smart Capture**: Automatically collects text, rich text (HTML), images, and file paths.
 - **Modern UI**: Supports Mica/Acrylic effects and Dark/Light modes with **4 elegant theme styles**.
 - **Edge Docking**: Automatically hides at the screen edge to stay out of your way.
 
 ### Management & Enhancements
+
 - **Tag System**: Organize your history with custom multi-color tags.
 - **Emoji Library**: Comprehensive built-in emoji management for quick access.
 - **Advanced Settings**: Granular control over cleanup rules and app behavior.
 - **Privacy Masking**: Auto-masks sensitive info like IDs and phone numbers in previews.
 
 ### Networking & Transport
+
 - **WebDAV Sync**: Your data, your cloud. Complete cross-device history.
 - **LAN File Transfer**: Seamlessly move items between devices on the same network.
 - **Verifcation Code Sync**: Instant transfer of OTP codes to your active device.
 - **MQTT Connectivity**: Optimized for real-time synchronization between devices.
 
 ### Productivity Tools
+
 - **External Collaboration**: Open items in external editors with auto-sync back.
 - **Global Search**: Find anything by content, source app, or date.
 - **Sequential Paste**: Optimized workflow for high-frequency copy-paste tasks.
@@ -96,11 +100,20 @@ Explore 4 elegant themes designed for every workspace and efficiency scenarios.
 ## Installation
 
 ### Platform Support
+
 | Platform | Requirement | Output |
 | :--- | :--- | :--- |
-| **Windows** | Windows 10/11 (x86/x64)<br>*(Windows 11 Recommended)* | `.exe` / **`.zip` (Portable)** |
-| **macOS** | Sierra 10.15+ <br>(Apple Silicon / Intel) | `.dmg` |
-| **Linux** | Support Coming Soon | TBD |
+| **Windows** | Windows 10/11 (x64 only)<br>*(Windows 11 Recommended)* | NSIS `.exe` / MSI `.msi` installer |
+| **Linux** | Ubuntu 22.04 or a compatible x64 desktop | DEB `.deb` / AppImage |
+| **macOS** | macOS 11+ on Apple Silicon or Intel | DMG `.dmg` |
+
+Linux clipboard capture supports X11/XWayland and compositors implementing the Wayland data-control protocol. Automatic paste uses `xdotool` on X11 or `wtype` on Wayland; when neither is available, TieZ keeps the content on the clipboard and asks you to paste manually instead of treating the operation as successful.
+
+macOS builds are not Apple Developer signed or notarized yet, so Gatekeeper may require explicit approval on first launch. Clipboard history and automatic paste can also require Pasteboard and Accessibility permission in System Settings, especially on recent macOS versions.
+
+System OCR currently uses Windows Runtime and is available on Windows only. QR-code recognition remains cross-platform.
+
+Current releases do not include a portable ZIP. Repository, issues, releases, and website overrides in `.env` must be HTTPS URLs on `github.com`; invalid values fall back to the maintained repository because the desktop opener is intentionally GitHub-only.
 
 [**Download the Latest Release →**](../../releases)
 

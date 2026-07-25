@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
 };
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum ClipboardSnapshot {
     Empty,
     Text { text: String, html: Option<String> },
@@ -75,6 +75,7 @@ fn resolve_rich_image_fallback_bytes(payload: &str) -> Option<Vec<u8>> {
     std::fs::read(decoded_path).ok()
 }
 
+#[cfg(target_os = "windows")]
 fn capture_clipboard_snapshot() -> ClipboardSnapshot {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -143,6 +144,61 @@ fn capture_clipboard_snapshot() -> ClipboardSnapshot {
     ClipboardSnapshot::Empty
 }
 
+#[cfg(not(target_os = "windows"))]
+fn capture_clipboard_snapshot() -> ClipboardSnapshot {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(value) => value,
+        Err(_) => return ClipboardSnapshot::Empty,
+    };
+
+    if let Ok(paths) = clipboard.get().file_list() {
+        if !paths.is_empty() {
+            return ClipboardSnapshot::Files {
+                paths: paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+            };
+        }
+    }
+
+    let text = clipboard.get_text().ok().filter(|value| !value.is_empty());
+    if let Ok(html) = clipboard.get_html() {
+        if !html.trim().is_empty() {
+            return ClipboardSnapshot::Text {
+                text: text.clone().unwrap_or_default(),
+                html: Some(html),
+            };
+        }
+    }
+
+    if let Ok(image) = clipboard.get_image() {
+        if let Some(buffer) = image::RgbaImage::from_raw(
+            image.width as u32,
+            image.height as u32,
+            image.bytes.into_owned(),
+        ) {
+            let mut png = Vec::new();
+            if buffer
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .is_ok()
+            {
+                return ClipboardSnapshot::Image {
+                    data_url: format!(
+                        "data:image/png;base64,{}",
+                        general_purpose::STANDARD.encode(png)
+                    ),
+                };
+            }
+        }
+    }
+
+    text.map_or(ClipboardSnapshot::Empty, |text| ClipboardSnapshot::Text {
+        text,
+        html: None,
+    })
+}
+
 async fn restore_clipboard_snapshot(snapshot: ClipboardSnapshot) -> AppResult<()> {
     match snapshot {
         ClipboardSnapshot::Empty => {
@@ -156,7 +212,7 @@ async fn restore_clipboard_snapshot(snapshot: ClipboardSnapshot) -> AppResult<()
             {
                 let mut clipboard = arboard::Clipboard::new().map_err(AppError::from)?;
                 clipboard
-                    .set_text(String::new())
+                    .clear()
                     .map_err(|e| AppError::Internal(format!("Clipboard error: {}", e)))?;
             }
 
@@ -277,7 +333,7 @@ pub async fn paste_text_directly(app_handle: tauri::AppHandle, content: String) 
     }
 
     handle_window_focus_for_paste(&app_handle).await?;
-    send_paste_keystroke("game_mode", Some(&content), Some("text"));
+    send_paste_keystroke("game_mode", Some(&content), Some("text"))?;
     hide_window_after_paste(&app_handle).await;
     play_paste_sound_if_enabled(&app_handle);
 
@@ -341,6 +397,7 @@ pub async fn paste_content_transiently(
             .unwrap_or(current_type == "rich_text" && html_content.as_deref().is_some()),
     )
     .await?;
+    let temporary_clipboard = capture_clipboard_snapshot();
 
     let paste_result = perform_paste_action(
         &app_handle,
@@ -353,8 +410,19 @@ pub async fn paste_content_transiently(
     )
     .await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    let restore_result = restore_clipboard_snapshot(previous_clipboard).await;
+    #[cfg(target_os = "linux")]
+    let restore_delay = std::time::Duration::from_millis(600);
+    #[cfg(not(target_os = "linux"))]
+    let restore_delay = std::time::Duration::from_millis(250);
+    tokio::time::sleep(restore_delay).await;
+
+    // Do not overwrite a clipboard value created by the target application or
+    // by the user while the transient paste was in flight.
+    let restore_result = if capture_clipboard_snapshot() == temporary_clipboard {
+        restore_clipboard_snapshot(previous_clipboard).await
+    } else {
+        Ok(())
+    };
 
     paste_result?;
     restore_result?;
@@ -558,11 +626,23 @@ async fn copy_content_to_system_clipboard(
                     crate::LAST_APP_SET_HASH_ALT.store(secondary_hash, Ordering::SeqCst);
                     crate::LAST_APP_SET_IMAGE_VISUAL_HASH.store(visual_hash, Ordering::SeqCst);
                 } else {
+                    #[cfg(target_os = "windows")]
                     unsafe {
                         crate::infrastructure::windows_api::win_clipboard::set_clipboard_files(
-                            vec![content.to_string()],
+                            content.lines().map(str::to_string).collect(),
                         )
                         .map_err(AppError::from)?;
+                    }
+
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let paths: Vec<std::path::PathBuf> = content
+                            .lines()
+                            .filter(|path| !path.trim().is_empty())
+                            .map(std::path::PathBuf::from)
+                            .collect();
+                        let mut clipboard = arboard::Clipboard::new().map_err(AppError::from)?;
+                        clipboard.set().file_list(&paths).map_err(AppError::from)?;
                     }
                 }
             } else if content_type == "image" {
@@ -591,43 +671,65 @@ async fn copy_content_to_system_clipboard(
         ct if ct == "rich_text" || (paste_with_format && html_content.is_some()) => {
             if let Some(html) = html_content {
                 if paste_with_format {
-                    let (html_without_named_formats, preserved_named_formats) =
-                        split_rich_html_and_named_formats(html);
-                    let (clean_html, fallback_image_data_url) =
-                        split_rich_html_and_image_fallback(&html_without_named_formats);
-                    let html_for_paste = if clean_html.trim().is_empty() {
-                        html_without_named_formats.as_str()
-                    } else {
-                        clean_html.as_str()
-                    };
-                    let cf_html = generate_cf_html(html_for_paste);
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let (html_without_named_formats, _) =
+                            split_rich_html_and_named_formats(html);
+                        let (clean_html, _) =
+                            split_rich_html_and_image_fallback(&html_without_named_formats);
+                        let html_for_paste = if clean_html.trim().is_empty() {
+                            html_without_named_formats
+                        } else {
+                            clean_html
+                        };
+                        let mut clipboard = arboard::Clipboard::new().map_err(AppError::from)?;
+                        clipboard
+                            .set_html(html_for_paste, Some(content.to_string()))
+                            .map_err(AppError::from)?;
+                    }
 
-                    let rich_image_bytes = fallback_image_data_url
-                        .as_deref()
-                        .and_then(resolve_rich_image_fallback_bytes)
-                        .or_else(|| {
-                            extract_first_image_data_url_from_html(html_for_paste)
-                                .and_then(|data_url| resolve_rich_image_fallback_bytes(&data_url))
-                        });
+                    #[cfg(target_os = "windows")]
+                    {
+                        let (html_without_named_formats, preserved_named_formats) =
+                            split_rich_html_and_named_formats(html);
+                        let (clean_html, fallback_image_data_url) =
+                            split_rich_html_and_image_fallback(&html_without_named_formats);
+                        let html_for_paste = if clean_html.trim().is_empty() {
+                            html_without_named_formats.as_str()
+                        } else {
+                            clean_html.as_str()
+                        };
+                        let cf_html = generate_cf_html(html_for_paste);
 
-                    if let Some(bytes) = rich_image_bytes {
-                        let (primary_hash, secondary_hash, visual_hash) =
-                            copy_image_bytes_to_clipboard(bytes, current_time)?;
-                        crate::LAST_APP_SET_HASH.store(primary_hash, Ordering::SeqCst);
-                        crate::LAST_APP_SET_HASH_ALT.store(secondary_hash, Ordering::SeqCst);
-                        crate::LAST_APP_SET_IMAGE_VISUAL_HASH.store(visual_hash, Ordering::SeqCst);
-                        unsafe {
-                            crate::infrastructure::windows_api::win_clipboard::append_clipboard_text_and_html(content, &cf_html)
+                        let rich_image_bytes = fallback_image_data_url
+                            .as_deref()
+                            .and_then(resolve_rich_image_fallback_bytes)
+                            .or_else(|| {
+                                extract_first_image_data_url_from_html(html_for_paste).and_then(
+                                    |data_url| resolve_rich_image_fallback_bytes(&data_url),
+                                )
+                            });
+
+                        if let Some(bytes) = rich_image_bytes {
+                            let (primary_hash, secondary_hash, visual_hash) =
+                                copy_image_bytes_to_clipboard(bytes, current_time)?;
+                            crate::LAST_APP_SET_HASH.store(primary_hash, Ordering::SeqCst);
+                            crate::LAST_APP_SET_HASH_ALT.store(secondary_hash, Ordering::SeqCst);
+                            crate::LAST_APP_SET_IMAGE_VISUAL_HASH
+                                .store(visual_hash, Ordering::SeqCst);
+                            unsafe {
+                                crate::infrastructure::windows_api::win_clipboard::append_clipboard_text_and_html(content, &cf_html)
                                     .map_err(AppError::from)?;
-                            crate::infrastructure::windows_api::win_clipboard::append_named_clipboard_formats(&preserved_named_formats)
+                                crate::infrastructure::windows_api::win_clipboard::append_named_clipboard_formats(&preserved_named_formats)
                                     .map_err(AppError::from)?;
-                        }
-                    } else {
-                        unsafe {
-                            crate::infrastructure::windows_api::win_clipboard::set_clipboard_text_and_html(content, &cf_html)
+                            }
+                        } else {
+                            unsafe {
+                                crate::infrastructure::windows_api::win_clipboard::set_clipboard_text_and_html(content, &cf_html)
                                 .map_err(AppError::from)?;
-                            crate::infrastructure::windows_api::win_clipboard::append_named_clipboard_formats(&preserved_named_formats)
+                                crate::infrastructure::windows_api::win_clipboard::append_named_clipboard_formats(&preserved_named_formats)
                                 .map_err(AppError::from)?;
+                            }
                         }
                     }
                 } else {
@@ -805,6 +907,7 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
         hasher.finish()
     };
 
+    #[cfg(target_os = "windows")]
     let gif_temp_path = unsafe {
         crate::infrastructure::windows_api::win_clipboard::set_clipboard_image_with_formats(
             crate::infrastructure::windows_api::win_clipboard::ImageData {
@@ -818,6 +921,19 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
         .map_err(AppError::from)?
     };
 
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut clipboard = arboard::Clipboard::new().map_err(AppError::from)?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: std::borrow::Cow::Owned(raw_bytes),
+            })
+            .map_err(AppError::from)?;
+    }
+
+    #[cfg(target_os = "windows")]
     if let Some(path) = gif_temp_path {
         // Also hash the temp path to prevent echo on CF_HDROP
         let normalized = path.trim().replace("\r\n", "\n");
@@ -904,7 +1020,7 @@ async fn perform_paste_action(
         .unwrap_or_else(|| "shift_insert".to_string());
 
     // Send paste keystroke
-    send_paste_keystroke(&paste_method, content, Some(content_type));
+    send_paste_keystroke(&paste_method, content, Some(content_type))?;
 
     // Hide after paste if not pinned
     hide_window_after_paste(app_handle).await;
@@ -938,7 +1054,11 @@ async fn hide_window_after_paste(app_handle: &tauri::AppHandle) {
     }
 }
 
-pub fn send_paste_keystroke(method: &str, content: Option<&str>, content_type: Option<&str>) {
+pub fn send_paste_keystroke(
+    method: &str,
+    content: Option<&str>,
+    content_type: Option<&str>,
+) -> AppResult<()> {
     println!("[DEBUG] Sending paste keystroke using method: {}", method);
     #[cfg(target_os = "windows")]
     unsafe {
@@ -1283,16 +1403,88 @@ pub fn send_paste_keystroke(method: &str, content: Option<&str>, content_type: O
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("osascript")
+        let output = std::process::Command::new("osascript")
             .args([
                 "-e",
                 "tell application \"System Events\" to keystroke \"v\" using command down",
             ])
-            .spawn()
-            .ok();
+            .output()
+            .map_err(|error| {
+                AppError::Internal(format!("Failed to run macOS paste command: {error}"))
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(AppError::Validation(if stderr.is_empty() {
+                "macOS paste permission was denied; enable Accessibility access for TieZ"
+                    .to_string()
+            } else {
+                format!(
+                    "macOS paste permission was denied; enable Accessibility access for TieZ: {stderr}"
+                )
+            }));
+        }
     }
+
+    #[cfg(target_os = "linux")]
+    send_linux_paste_keystroke(method)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn send_linux_paste_keystroke(method: &str) -> AppResult<()> {
+    let use_shift_insert = method == "shift_insert";
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = std::env::var_os("DISPLAY").is_some();
+    let mut attempts: Vec<(&str, Vec<&str>)> = Vec::new();
+
+    if wayland {
+        attempts.push(if use_shift_insert {
+            ("wtype", vec!["-M", "shift", "-k", "Insert", "-m", "shift"])
+        } else {
+            ("wtype", vec!["-M", "ctrl", "-k", "v", "-m", "ctrl"])
+        });
+    }
+    if x11 {
+        attempts.push(if use_shift_insert {
+            ("xdotool", vec!["key", "--clearmodifiers", "shift+Insert"])
+        } else {
+            ("xdotool", vec!["key", "--clearmodifiers", "ctrl+v"])
+        });
+    }
+
+    if attempts.is_empty() {
+        return Err(AppError::Validation(
+            "No supported Linux desktop session was detected; content was copied, paste it manually"
+                .to_string(),
+        ));
+    }
+
+    let mut errors = Vec::new();
+    for (program, args) in attempts {
+        match std::process::Command::new(program).args(&args).output() {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                errors.push(if stderr.is_empty() {
+                    format!("{program} exited with {}", output.status)
+                } else {
+                    format!("{program}: {stderr}")
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                errors.push(format!("{program} is not installed"));
+            }
+            Err(error) => errors.push(format!("{program}: {error}")),
+        }
+    }
+
+    Err(AppError::Validation(format!(
+        "Linux paste injection failed ({}); content remains on the clipboard for manual paste",
+        errors.join("; ")
+    )))
 }
 
 fn handle_post_paste_actions(

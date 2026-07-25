@@ -1,6 +1,7 @@
 use crate::database::ENCRYPT_PREFIX;
 use crate::domain::models::ClipboardEntry;
 use crate::infrastructure::encryption;
+use crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository;
 use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -209,66 +210,65 @@ impl TagRepository for SqliteTagRepository {
         name: &str,
         data_dir: Option<&std::path::Path>,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-        conn.execute("DELETE FROM saved_tags WHERE name = ?", params![name])
-            .map_err(|e| e.to_string())?;
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT h.id, h.content_type, h.content_hash
-                 FROM clipboard_history h
-                 INNER JOIN entry_tags t ON t.entry_id = h.id
-                 WHERE t.tag = ?",
-            )
-            .map_err(|e| e.to_string())?;
-        let entries: Vec<(i64, String, i64)> = stmt
-            .query_map(params![name], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .collect();
-        drop(stmt);
-
-        let deleted_at = now_ms();
-        for (id, content_type, content_hash) in entries {
-            if content_hash != 0 {
-                conn.execute(
-                    "INSERT INTO cloud_sync_tombstones (content_type, content_hash, deleted_at)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(content_type, content_hash)
-                     DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
-                    params![content_type, content_hash, deleted_at],
+        let entries = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT h.id, h.content, h.html_content, h.is_external
+                     FROM clipboard_history h
+                     INNER JOIN entry_tags t ON t.entry_id = h.id
+                     WHERE t.tag = ?",
                 )
                 .map_err(|e| e.to_string())?;
-            }
-
-            if let Some(dir) = data_dir {
-                let attachments_dir = dir.join("attachments");
-                let mut stmt_content = conn
-                    .prepare("SELECT content, is_external FROM clipboard_history WHERE id = ?")
-                    .map_err(|e| e.to_string())?;
-
-                if let Ok(entry) = stmt_content.query_row([id], |row| {
-                    let content_raw: String = row.get(0)?;
-                    let is_ext: i32 = row.get(1)?;
-                    Ok((content_raw, is_ext == 1))
-                }) {
-                    if entry.1 {
-                        let content_path = self.maybe_decrypt_text(&entry.0);
-                        let path = std::path::Path::new(&content_path);
-                        if path.starts_with(&attachments_dir) && path.exists() {
-                            let _ = std::fs::remove_file(path);
-                        }
-                    }
-                }
-            }
-
-            conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id])
+            let rows = stmt
+                .query_map(params![name], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i32>(3)? == 1,
+                    ))
+                })
                 .map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])
-                .map_err(|e| e.to_string())?;
+            let mut entries = Vec::new();
+            for row in rows {
+                entries.push(row.map_err(|e| e.to_string())?);
+            }
+            entries
+        };
+
+        let clipboard_repo = SqliteClipboardRepository::new(self.conn.clone());
+        let mut cleanup_paths = HashSet::new();
+        if let Some(dir) = data_dir {
+            let attachments_dir = dir.join("attachments");
+            for (_, content, html, is_external) in &entries {
+                cleanup_paths.extend(clipboard_repo.collect_attachment_paths_for_cleanup(
+                    content,
+                    html.as_deref(),
+                    *is_external,
+                    &attachments_dir,
+                ));
+            }
+        }
+
+        // Tombstones, entry metadata/history, normalized tags, and the saved tag
+        // are one database unit. Filesystem cleanup is deliberately deferred until
+        // after commit so a database rollback never leaves retained rows without files.
+        for (id, _, _, _) in &entries {
+            clipboard_repo.delete_with_conn(&tx, *id, None)?;
+        }
+        tx.execute("DELETE FROM saved_tags WHERE name = ?", params![name])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+
+        if let Some(dir) = data_dir {
+            clipboard_repo.cleanup_unreferenced_attachment_paths_with_conn(
+                &conn,
+                cleanup_paths,
+                &dir.join("attachments"),
+            );
         }
         Ok(())
     }
@@ -377,7 +377,9 @@ mod tests {
                 id INTEGER PRIMARY KEY,
                 content_type TEXT NOT NULL,
                 content TEXT NOT NULL,
+                html_content TEXT,
                 content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL DEFAULT 2,
                 tags TEXT NOT NULL DEFAULT '[]',
                 is_external INTEGER NOT NULL DEFAULT 0,
                 sync_updated_at INTEGER NOT NULL DEFAULT 0,
@@ -391,8 +393,9 @@ mod tests {
              CREATE TABLE cloud_sync_tombstones (
                 content_type TEXT NOT NULL,
                 content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 deleted_at INTEGER NOT NULL,
-                PRIMARY KEY (content_type, content_hash)
+                PRIMARY KEY (content_type, content_hash, hash_version)
              );",
         )
         .expect("create tag test schema");
@@ -443,8 +446,170 @@ mod tests {
             .expect("read tombstone");
         assert_eq!(history_count, 0);
         assert_eq!(content_type, "text");
-        assert_eq!(content_hash, 4242);
+        assert_eq!(
+            content_hash,
+            crate::database::calc_text_hash("shared") as i64
+        );
         assert!(deleted_at > 0);
+    }
+
+    #[test]
+    fn tombstone_failure_keeps_tagged_entry() {
+        let conn = setup_tag_db();
+        {
+            let guard = conn.lock().expect("lock tag test db");
+            guard
+                .execute_batch(
+                    "INSERT INTO saved_tags (name) VALUES ('remove-me');
+                     INSERT INTO clipboard_history
+                        (id, content_type, content, content_hash, tags)
+                        VALUES (1, 'text', 'hello', 42, '[\"remove-me\"]');
+                     INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remove-me');
+                     CREATE TRIGGER reject_tombstone BEFORE INSERT ON cloud_sync_tombstones
+                     BEGIN SELECT RAISE(ABORT, 'tombstone unavailable'); END;",
+                )
+                .expect("seed failed-delete fixture");
+        }
+
+        let error = SqliteTagRepository::new(conn.clone())
+            .delete_globally("remove-me", None)
+            .expect_err("tombstone insertion must fail");
+        assert!(error.contains("tombstone unavailable"));
+        let guard = conn.lock().expect("lock tag test db");
+        let remaining: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM clipboard_history WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained entry");
+        let saved_tag_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM saved_tags WHERE name = 'remove-me'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained saved tag");
+        let entry_tag_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1 AND tag = 'remove-me'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained normalized tag");
+        let tombstone_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count rolled-back tombstones");
+        assert_eq!(remaining, 1);
+        assert_eq!(saved_tag_count, 1);
+        assert_eq!(entry_tag_count, 1);
+        assert_eq!(tombstone_count, 0);
+    }
+
+    #[test]
+    fn deleting_global_tag_reuses_attachment_cleanup() {
+        let conn = setup_tag_db();
+        let root = std::env::temp_dir().join(format!(
+            "tiez-tag-delete-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let attachments = root.join("attachments");
+        std::fs::create_dir_all(&attachments).expect("create attachments dir");
+        let attachment = attachments.join("payload.txt");
+        std::fs::write(&attachment, b"payload").expect("write attachment");
+        {
+            let guard = conn.lock().expect("lock tag test db");
+            guard
+                .execute("INSERT INTO saved_tags (name) VALUES ('remove-me')", [])
+                .expect("insert saved tag");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                     (id, content_type, content, content_hash, tags, is_external)
+                     VALUES (1, 'file', ?1, 4242, '[\"remove-me\"]', 1)",
+                    [attachment.to_string_lossy().as_ref()],
+                )
+                .expect("insert external entry");
+            guard
+                .execute(
+                    "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remove-me')",
+                    [],
+                )
+                .expect("insert normalized tag");
+        }
+
+        SqliteTagRepository::new(conn)
+            .delete_globally("remove-me", Some(&root))
+            .expect("delete global tag");
+
+        assert!(!attachment.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn global_tag_delete_preserves_shared_rich_fallback() {
+        let conn = setup_tag_db();
+        let root = std::env::temp_dir().join(format!(
+            "tiez-tag-shared-rich-delete-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let attachments = root.join("attachments");
+        std::fs::create_dir_all(&attachments).expect("create attachments dir");
+        let fallback = attachments.join("shared-fallback.png");
+        std::fs::write(&fallback, b"shared fallback").expect("write shared fallback");
+        let html = format!(
+            "<p>shared</p><!--TIEZ_RICH_IMAGE:file://{}-->",
+            fallback.to_string_lossy()
+        );
+        {
+            let guard = conn.lock().expect("lock tag test db");
+            guard
+                .execute_batch("INSERT INTO saved_tags (name) VALUES ('remove-me');")
+                .expect("insert saved tag");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                     (id, content_type, content, html_content, content_hash, tags)
+                     VALUES (1, 'rich_text', 'delete me', ?1, 41, '[\"remove-me\"]'),
+                            (2, 'rich_text', 'keep me', ?1, 42, '[]')",
+                    [html],
+                )
+                .expect("insert shared rich-text entries");
+            guard
+                .execute(
+                    "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remove-me')",
+                    [],
+                )
+                .expect("insert normalized tag");
+        }
+
+        SqliteTagRepository::new(conn.clone())
+            .delete_globally("remove-me", Some(&root))
+            .expect("delete global tag");
+
+        assert!(
+            fallback.exists(),
+            "a surviving row still references the fallback"
+        );
+        let guard = conn.lock().expect("lock shared fallback result db");
+        let remaining: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM clipboard_history WHERE id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count surviving row");
+        assert_eq!(remaining, 1);
+        drop(guard);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

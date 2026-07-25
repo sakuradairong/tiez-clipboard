@@ -156,11 +156,18 @@ pub async fn paste_next_step(app_handle: tauri::AppHandle) {
                 false
             };
 
-            crate::services::clipboard_ops::send_paste_keystroke(
+            if let Err(err) = crate::services::clipboard_ops::send_paste_keystroke(
                 &paste_method,
                 Some(&content),
                 Some(&c_type),
-            );
+            ) {
+                eprintln!("[ERROR] Sequential paste injection failed: {err}");
+                let mut queue = state.inner().0.lock().unwrap();
+                queue.items.push_front(id);
+                drop(queue);
+                let _ = app_handle.emit("queue-finished", ());
+                return;
+            }
 
             // Settle time
             std::thread::sleep(std::time::Duration::from_millis(20));

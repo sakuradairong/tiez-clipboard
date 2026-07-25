@@ -650,8 +650,13 @@ fn start_services(app: &App, s: &StartupSettings, app_handle: AppHandle) {
     // Daily app announcement ping
     init_announcement_ping(app, &db_state.settings_repo);
 
-    // Register active hotkeys based on current settings.
-    let _ = crate::app::commands::register_hotkey(app_handle.clone(), s.main_hotkey.clone());
+    // Register active hotkeys based on current settings. A malformed persisted
+    // shortcut must not hide failures or prevent unrelated shortcuts being restored.
+    if let Err(error) =
+        crate::app::commands::register_hotkey(app_handle.clone(), s.main_hotkey.clone())
+    {
+        eprintln!("Failed to restore one or more startup hotkeys: {error}");
+    }
 
     // Win+V Optimization
     if db_state

@@ -1,4 +1,6 @@
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::{hash::Hash, time::Duration};
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
@@ -100,25 +102,122 @@ pub fn listen_clipboard(callback: Arc<dyn Fn() + Send + Sync + 'static>) {
         });
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     std::thread::spawn(move || {
-        let mut last_hash = 0u64;
-        let mut clipboard = arboard::Clipboard::new().unwrap();
+        use objc2::rc::autoreleasepool;
+        use objc2_app_kit::NSPasteboard;
+
+        let pasteboard = autoreleasepool(|_| unsafe { NSPasteboard::generalPasteboard() });
+        let mut last_change_count = autoreleasepool(|_| unsafe { pasteboard.changeCount() });
+        println!(">>> [CLIPBOARD] macOS change-count listener started.");
+
         loop {
-            // Very primitive polling, relies on higher layers to deduplicate properly.
-            if let Ok(text) = clipboard.get_text() {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                text.hash(&mut hasher);
-                let current_hash = hasher.finish();
-                if current_hash != last_hash {
-                    last_hash = current_hash;
-                    callback();
-                }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let change_count = autoreleasepool(|_| unsafe { pasteboard.changeCount() });
+            if change_count != last_change_count {
+                last_change_count = change_count;
+                callback();
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
         }
     });
+
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(move || {
+        use clipboard_rs::{ClipboardHandler, ClipboardWatcher, ClipboardWatcherContext};
+
+        struct CallbackHandler {
+            callback: Arc<dyn Fn() + Send + Sync + 'static>,
+        }
+
+        impl ClipboardHandler for CallbackHandler {
+            fn on_clipboard_change(&mut self) {
+                (self.callback)();
+            }
+        }
+
+        let watcher_callback = callback.clone();
+        let watcher_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut watcher = ClipboardWatcherContext::<CallbackHandler>::new()
+                .expect("failed to initialize X11 clipboard watcher");
+            watcher.add_handler(CallbackHandler {
+                callback: watcher_callback,
+            });
+            println!(">>> [CLIPBOARD] Linux XFixes listener started.");
+            watcher.start_watch();
+        }));
+
+        if watcher_result.is_err() {
+            eprintln!(
+                "[WARN] XFixes clipboard listener unavailable; using content polling fallback"
+            );
+            poll_linux_clipboard(callback);
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn poll_linux_clipboard(callback: Arc<dyn Fn() + Send + Sync + 'static>) {
+    let mut clipboard = None;
+    let mut last_fingerprint = None;
+
+    loop {
+        if clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(mut value) => {
+                    last_fingerprint = linux_clipboard_fingerprint(&mut value);
+                    clipboard = Some(value);
+                }
+                Err(error) => {
+                    eprintln!("[WARN] Clipboard initialization failed: {error}");
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(300));
+        let current = clipboard.as_mut().and_then(linux_clipboard_fingerprint);
+
+        if let Some(current_fingerprint) = current {
+            if last_fingerprint.is_some() && last_fingerprint != Some(current_fingerprint) {
+                callback();
+            }
+            last_fingerprint = Some(current_fingerprint);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_fingerprint(clipboard: &mut arboard::Clipboard) -> Option<u64> {
+    use std::hash::Hasher;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut found = false;
+
+    if let Ok(files) = clipboard.get().file_list() {
+        "files".hash(&mut hasher);
+        files.hash(&mut hasher);
+        found = true;
+    }
+    if let Ok(html) = clipboard.get_html() {
+        "html".hash(&mut hasher);
+        html.hash(&mut hasher);
+        found = true;
+    }
+    if let Ok(text) = clipboard.get_text() {
+        "text".hash(&mut hasher);
+        text.hash(&mut hasher);
+        found = true;
+    }
+    if let Ok(image) = clipboard.get_image() {
+        "image".hash(&mut hasher);
+        image.width.hash(&mut hasher);
+        image.height.hash(&mut hasher);
+        image.bytes.hash(&mut hasher);
+        found = true;
+    }
+
+    found.then(|| hasher.finish())
 }
 
 #[cfg(target_os = "windows")]

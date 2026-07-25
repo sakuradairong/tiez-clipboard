@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import SettingsPanel from "../components/SettingsPanel";
+import type SettingsPanel from "../components/SettingsPanel";
 import type { AppState } from "../../app/types";
 import type { Locale } from "../../../shared/types";
 
@@ -7,6 +7,7 @@ type SettingsPanelProps = ComponentProps<typeof SettingsPanel>;
 
 interface UseSettingsPanelPropsOptions {
   t: (key: string) => string;
+  pushToast: (msg: string, duration?: number) => unknown;
   theme: string;
   language: Locale;
   colorMode: string;
@@ -30,6 +31,7 @@ interface UseSettingsPanelPropsOptions {
 
 export const useSettingsPanelProps = ({
   t,
+  pushToast,
   theme,
   language,
   colorMode,
@@ -236,6 +238,7 @@ export const useSettingsPanelProps = ({
 
   return {
     t,
+    pushToast,
     theme,
     language,
     colorMode,

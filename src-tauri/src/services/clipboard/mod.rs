@@ -462,6 +462,7 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
     None
 }
 
+#[cfg(target_os = "windows")]
 pub fn start_clipboard_monitor(app_handle: AppHandle) {
     use std::sync::{Arc, Mutex};
 
@@ -1063,6 +1064,204 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
             }
         }
     }));
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn start_clipboard_monitor(app_handle: AppHandle) {
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex};
+
+    struct MonitorState {
+        last_content_hash: u64,
+        last_process_time: u64,
+    }
+
+    let state = Arc::new(Mutex::new(MonitorState {
+        last_content_hash: 0,
+        last_process_time: 0,
+    }));
+    let app_clone = app_handle.clone();
+    let state_lock = state.clone();
+
+    crate::services::clipboard_listener::listen_clipboard(Arc::new(move || {
+        if crate::CLIPBOARD_MONITOR_PAUSED.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // Clipboard owners may publish formats in multiple steps. A short delay
+        // avoids taking a partial snapshot without adding noticeable latency.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+
+        let app = app_clone.clone();
+        let mut clipboard = match Clipboard::new() {
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[WARN] Failed to open clipboard after change: {error}");
+                return;
+            }
+        };
+        let source_snapshot =
+            crate::infrastructure::windows_api::window_tracker::get_clipboard_source_app_info();
+        let settings = app.state::<SettingsState>();
+
+        let files = clipboard
+            .get()
+            .file_list()
+            .ok()
+            .filter(|paths| !paths.is_empty());
+        let text = clipboard
+            .get_text()
+            .ok()
+            .map(|value| normalize_clipboard_plain_text(&value))
+            .filter(|value| !value.trim().is_empty());
+        let html = if settings.capture_rich_text.load(Ordering::Relaxed) {
+            clipboard
+                .get_html()
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            None
+        };
+        let image = clipboard.get_image().ok();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let mut monitor_state = match state_lock.lock() {
+            Ok(value) => value,
+            Err(error) => error.into_inner(),
+        };
+
+        let mut process_hash = |hash: u64| {
+            if hash != 0
+                && hash == monitor_state.last_content_hash
+                && now.saturating_sub(monitor_state.last_process_time) < 750
+            {
+                return false;
+            }
+            monitor_state.last_content_hash = hash;
+            monitor_state.last_process_time = now;
+            true
+        };
+
+        if let Some(paths) = files {
+            let display_paths: Vec<String> = paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            let content = display_paths.join("\n");
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            "files".hash(&mut hasher);
+            content.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            if process_hash(hash)
+                && settings.capture_files.load(Ordering::Relaxed)
+                && !is_recent_self_copy(calc_text_hash(&content))
+            {
+                process_new_entry(
+                    &app,
+                    ClipboardData::Files(display_paths),
+                    None,
+                    Some(source_snapshot),
+                );
+            }
+            return;
+        }
+
+        if let (Some(text), Some(html)) = (text.as_ref(), html.as_ref()) {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            "rich_text".hash(&mut hasher);
+            text.hash(&mut hasher);
+            html.hash(&mut hasher);
+            let hash = hasher.finish();
+
+            if process_hash(hash) && !is_recent_self_copy(calc_text_hash(text)) {
+                process_new_entry(
+                    &app,
+                    ClipboardData::RichText {
+                        text: text.clone(),
+                        html: html.clone(),
+                    },
+                    None,
+                    Some(source_snapshot),
+                );
+            }
+            return;
+        }
+
+        if let Some(image) = image {
+            let raw_bytes = image.bytes.into_owned();
+            let mut raw_hasher = std::collections::hash_map::DefaultHasher::new();
+            raw_bytes.hash(&mut raw_hasher);
+            let raw_hash = raw_hasher.finish();
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            "image".hash(&mut hasher);
+            image.width.hash(&mut hasher);
+            image.height.hash(&mut hasher);
+            raw_bytes.hash(&mut hasher);
+            let hash = hasher.finish();
+            let visual_hash =
+                calc_image_hash_from_rgba(image.width as u32, image.height as u32, &raw_bytes)
+                    .unwrap_or(hash as i64) as u64;
+
+            if process_hash(hash) {
+                if should_ignore_recent_image_echo(raw_hash, visual_hash) {
+                    clear_recent_image_echo_state();
+                } else if let Some(buffer) =
+                    image::RgbaImage::from_raw(image.width as u32, image.height as u32, raw_bytes)
+                {
+                    let mut png = Vec::new();
+                    if buffer
+                        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                        .is_ok()
+                    {
+                        process_new_entry(
+                            &app,
+                            ClipboardData::Image {
+                                data_url: format!(
+                                    "data:image/png;base64,{}",
+                                    base64::engine::general_purpose::STANDARD.encode(png)
+                                ),
+                            },
+                            None,
+                            Some(source_snapshot),
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
+        if let Some(text) = text {
+            let hash = calc_text_hash(&text);
+            if process_hash(hash) && !is_recent_self_copy(hash) {
+                process_new_entry(&app, ClipboardData::Text(text), None, Some(source_snapshot));
+            }
+        }
+    }));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_recent_self_copy(hash: u64) -> bool {
+    let last_hash = crate::LAST_APP_SET_HASH.load(Ordering::SeqCst);
+    let last_hash_alt = crate::LAST_APP_SET_HASH_ALT.load(Ordering::SeqCst);
+    let last_time = crate::LAST_APP_SET_TIMESTAMP.load(Ordering::SeqCst);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let is_echo = last_hash != 0
+        && (hash == last_hash || hash == last_hash_alt)
+        && now.saturating_sub(last_time) < 10;
+    if is_echo {
+        crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
+        crate::LAST_APP_SET_HASH_ALT.store(0, Ordering::SeqCst);
+    }
+    is_echo
 }
 
 pub use pipeline::{ClipboardData, ClipboardPipeline, PipelineContext};

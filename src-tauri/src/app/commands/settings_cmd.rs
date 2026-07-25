@@ -16,18 +16,84 @@ fn normalize_quick_paste_modifier(value: &str) -> &'static str {
     }
 }
 
+fn update_hotkey_setting(
+    app_handle: &AppHandle,
+    slot: &std::sync::Mutex<String>,
+    key: &str,
+    hotkey: String,
+) -> AppResult<()> {
+    let previous = slot
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .clone();
+    *slot.lock().map_err(|e| AppError::Internal(e.to_string()))? = hotkey.clone();
+
+    let db = app_handle.state::<DbState>();
+    if let Err(error) = db.settings_repo.set(key, &hotkey) {
+        *slot.lock().map_err(|e| AppError::Internal(e.to_string()))? = previous;
+        return Err(AppError::from(error));
+    }
+
+    if let Err(registration_error) =
+        crate::app::commands::hotkey_cmd::sync_registered_hotkeys(app_handle)
+    {
+        *slot.lock().map_err(|e| AppError::Internal(e.to_string()))? = previous.clone();
+        let persistence_rollback = db.settings_repo.set(key, &previous);
+        let registration_rollback =
+            crate::app::commands::hotkey_cmd::sync_registered_hotkeys(app_handle);
+        if let Err(error) = persistence_rollback {
+            return Err(AppError::Internal(format!(
+                "{registration_error}; failed to restore setting: {error}"
+            )));
+        }
+        if let Err(error) = registration_rollback {
+            return Err(AppError::Internal(format!(
+                "{registration_error}; failed to restore hotkeys: {error}"
+            )));
+        }
+        return Err(registration_error);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_sequential_mode(
     app_handle: AppHandle,
-    state: State<'_, crate::app_state::SettingsState>,
+    state: State<'_, SettingsState>,
     enabled: bool,
-) {
+) -> AppResult<()> {
+    let previous = state.sequential_mode.load(Ordering::Relaxed);
     state.sequential_mode.store(enabled, Ordering::Relaxed);
-    let db_state = app_handle.state::<DbState>();
-    let _ = db_state
+    let db = app_handle.state::<DbState>();
+    if let Err(error) = db
         .settings_repo
-        .set("app.sequential_mode", &enabled.to_string());
-    let _ = crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle);
+        .set("app.sequential_mode", &enabled.to_string())
+    {
+        state.sequential_mode.store(previous, Ordering::Relaxed);
+        return Err(AppError::from(error));
+    }
+    if let Err(registration_error) =
+        crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle)
+    {
+        state.sequential_mode.store(previous, Ordering::Relaxed);
+        let persistence_rollback = db
+            .settings_repo
+            .set("app.sequential_mode", &previous.to_string());
+        let registration_rollback =
+            crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle);
+        if let Err(error) = persistence_rollback {
+            return Err(AppError::Internal(format!(
+                "{registration_error}; failed to restore setting: {error}"
+            )));
+        }
+        if let Err(error) = registration_rollback {
+            return Err(AppError::Internal(format!(
+                "{registration_error}; failed to restore hotkeys: {error}"
+            )));
+        }
+        return Err(registration_error);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -36,16 +102,12 @@ pub fn set_sequential_hotkey(
     state: State<'_, SettingsState>,
     hotkey: String,
 ) -> AppResult<()> {
-    if let Ok(mut guard) = state.sequential_paste_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.sequential_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-    crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle)
+    update_hotkey_setting(
+        &app_handle,
+        &state.sequential_paste_hotkey,
+        "app.sequential_hotkey",
+        hotkey,
+    )
 }
 
 #[tauri::command]
@@ -54,16 +116,12 @@ pub fn set_rich_paste_hotkey(
     state: State<'_, SettingsState>,
     hotkey: String,
 ) -> AppResult<()> {
-    if let Ok(mut guard) = state.rich_paste_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.rich_paste_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-    crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle)
+    update_hotkey_setting(
+        &app_handle,
+        &state.rich_paste_hotkey,
+        "app.rich_paste_hotkey",
+        hotkey,
+    )
 }
 
 #[tauri::command]
@@ -72,16 +130,12 @@ pub fn set_plain_paste_hotkey(
     state: State<'_, SettingsState>,
     hotkey: String,
 ) -> AppResult<()> {
-    if let Ok(mut guard) = state.plain_paste_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.plain_paste_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-    crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle)
+    update_hotkey_setting(
+        &app_handle,
+        &state.plain_paste_hotkey,
+        "app.plain_paste_hotkey",
+        hotkey,
+    )
 }
 
 #[tauri::command]
@@ -90,16 +144,12 @@ pub fn set_search_hotkey(
     state: State<'_, SettingsState>,
     hotkey: String,
 ) -> AppResult<()> {
-    if let Ok(mut guard) = state.search_hotkey.lock() {
-        *guard = hotkey.clone();
-    }
-
-    let db_state = app_handle.state::<DbState>();
-    db_state
-        .settings_repo
-        .set("app.search_hotkey", &hotkey)
-        .map_err(AppError::from)?;
-    crate::app::commands::hotkey_cmd::sync_registered_hotkeys(&app_handle)
+    update_hotkey_setting(
+        &app_handle,
+        &state.search_hotkey,
+        "app.search_hotkey",
+        hotkey,
+    )
 }
 
 #[tauri::command]
