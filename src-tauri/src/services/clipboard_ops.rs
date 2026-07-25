@@ -163,12 +163,17 @@ fn capture_clipboard_snapshot() -> ClipboardSnapshot {
     }
 
     let text = clipboard.get_text().ok().filter(|value| !value.is_empty());
-    if let Ok(html) = clipboard.get_html() {
-        if !html.trim().is_empty() {
-            return ClipboardSnapshot::Text {
-                text: text.clone().unwrap_or_default(),
-                html: Some(html),
-            };
+    {
+        use clipboard_rs::{Clipboard as _, ClipboardContext};
+        if let Ok(context) = ClipboardContext::new() {
+            if let Ok(html) = context.get_html() {
+                if !html.trim().is_empty() {
+                    return ClipboardSnapshot::Text {
+                        text: text.clone().unwrap_or_default(),
+                        html: Some(html),
+                    };
+                }
+            }
         }
     }
 

@@ -107,13 +107,13 @@ pub fn listen_clipboard(callback: Arc<dyn Fn() + Send + Sync + 'static>) {
         use objc2::rc::autoreleasepool;
         use objc2_app_kit::NSPasteboard;
 
-        let pasteboard = autoreleasepool(|_| unsafe { NSPasteboard::generalPasteboard() });
-        let mut last_change_count = autoreleasepool(|_| unsafe { pasteboard.changeCount() });
+        let pasteboard = autoreleasepool(|_| NSPasteboard::generalPasteboard());
+        let mut last_change_count = autoreleasepool(|_| pasteboard.changeCount());
         println!(">>> [CLIPBOARD] macOS change-count listener started.");
 
         loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
-            let change_count = autoreleasepool(|_| unsafe { pasteboard.changeCount() });
+            let change_count = autoreleasepool(|_| pasteboard.changeCount());
             if change_count != last_change_count {
                 last_change_count = change_count;
                 callback();
@@ -199,10 +199,15 @@ fn linux_clipboard_fingerprint(clipboard: &mut arboard::Clipboard) -> Option<u64
         files.hash(&mut hasher);
         found = true;
     }
-    if let Ok(html) = clipboard.get_html() {
-        "html".hash(&mut hasher);
-        html.hash(&mut hasher);
-        found = true;
+    {
+        use clipboard_rs::{Clipboard as _, ClipboardContext};
+        if let Ok(context) = ClipboardContext::new() {
+            if let Ok(html) = context.get_html() {
+                "html".hash(&mut hasher);
+                html.hash(&mut hasher);
+                found = true;
+            }
+        }
     }
     if let Ok(text) = clipboard.get_text() {
         "text".hash(&mut hasher);

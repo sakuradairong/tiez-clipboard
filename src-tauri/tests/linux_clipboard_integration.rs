@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use arboard::{Clipboard, ImageData};
+use clipboard_rs::{Clipboard as _, ClipboardContext};
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,7 +35,8 @@ fn round_trips_supported_linux_clipboard_formats() {
         .set_html(html.clone(), Some(html_text.clone()))
         .expect("write HTML with text fallback");
     settle();
-    assert_eq!(reader.get_html().expect("read HTML"), html);
+    let rich_reader = ClipboardContext::new().expect("create rich clipboard reader");
+    assert_eq!(rich_reader.get_html().expect("read HTML"), html);
     assert_eq!(
         reader.get_text().expect("read HTML text fallback"),
         html_text

@@ -1115,9 +1115,10 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
             .map(|value| normalize_clipboard_plain_text(&value))
             .filter(|value| !value.trim().is_empty());
         let html = if settings.capture_rich_text.load(Ordering::Relaxed) {
-            clipboard
-                .get_html()
+            use clipboard_rs::{Clipboard as _, ClipboardContext};
+            ClipboardContext::new()
                 .ok()
+                .and_then(|context| context.get_html().ok())
                 .filter(|value| !value.trim().is_empty())
         } else {
             None
