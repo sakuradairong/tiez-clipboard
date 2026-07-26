@@ -284,6 +284,20 @@ pub fn rename_tag_globally(
         .map_err(AppError::from)
 }
 
+fn delete_tag_then_update_session<F>(
+    session: &SessionHistory,
+    tag_name: &str,
+    delete_from_repository: F,
+) -> AppResult<()>
+where
+    F: FnOnce() -> AppResult<()>,
+{
+    delete_from_repository()?;
+    let mut session_items = session.0.lock().unwrap();
+    session_items.retain(|item| !item.tags.iter().any(|tag| tag == tag_name));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn delete_tag_from_all(
     state: State<'_, DbState>,
@@ -291,16 +305,13 @@ pub fn delete_tag_from_all(
     app_data: State<'_, AppDataDir>,
     tag_name: String,
 ) -> AppResult<()> {
-    {
-        let mut session_items = session.inner().0.lock().unwrap();
-        session_items.retain(|item| !item.tags.contains(&tag_name));
-    }
-
     let data_dir = app_data.0.lock().unwrap();
-    state
-        .tag_repo
-        .delete_globally(&tag_name, Some(&data_dir))
-        .map_err(AppError::from)
+    delete_tag_then_update_session(session.inner(), &tag_name, || {
+        state
+            .tag_repo
+            .delete_globally(&tag_name, Some(&data_dir))
+            .map_err(AppError::from)
+    })
 }
 
 #[tauri::command]
@@ -363,4 +374,44 @@ pub fn update_pinned_order(
 #[tauri::command]
 pub fn get_db_count(state: State<'_, DbState>) -> AppResult<i64> {
     state.repo.get_count().map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delete_tag_then_update_session;
+    use crate::app_state::SessionHistory;
+    use crate::domain::models::ClipboardEntry;
+    use crate::error::AppError;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    #[test]
+    fn failed_global_tag_delete_keeps_session_history_consistent() {
+        let entry = ClipboardEntry {
+            id: -1,
+            content_type: "text".to_string(),
+            content: "session item".to_string(),
+            html_content: None,
+            source_app: "test".to_string(),
+            timestamp: 1,
+            preview: "session item".to_string(),
+            is_pinned: false,
+            tags: vec!["remove-me".to_string()],
+            use_count: 0,
+            is_external: false,
+            pinned_order: 0,
+            source_app_path: None,
+            file_preview_exists: true,
+        };
+        let session = SessionHistory(Mutex::new(VecDeque::from([entry])));
+
+        let result = delete_tag_then_update_session(&session, "remove-me", || {
+            Err(AppError::Internal("repository failed".to_string()))
+        });
+
+        assert!(result.is_err());
+        let items = session.0.lock().expect("lock retained session");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].tags, vec!["remove-me"]);
+    }
 }

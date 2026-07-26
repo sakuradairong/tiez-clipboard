@@ -40,6 +40,11 @@ pub fn is_text_type(content_type: &str) -> bool {
     matches!(content_type, "text" | "code" | "url" | "rich_text")
 }
 
+/// Content types whose identity is the normalized, readable text stored in `content`.
+pub fn uses_text_content_hash(content_type: &str) -> bool {
+    is_text_type(content_type) || matches!(content_type, "file" | "video")
+}
+
 fn normalize_text(content: &str) -> String {
     content.replace("\r\n", "\n").replace('\r', "\n")
 }
@@ -48,6 +53,18 @@ pub fn calc_text_hash(content: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let normalized = normalize_text(content);
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Hash used by pre-whitespace-preserving sync payloads. This intentionally
+/// reproduces the historical algorithm byte-for-byte: trim first, normalize
+/// CRLF pairs to LF, and leave standalone CR bytes unchanged.
+pub fn calc_legacy_text_hash(content: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let normalized = content.trim().replace("\r\n", "\n");
     let mut hasher = DefaultHasher::new();
     normalized.hash(&mut hasher);
     hasher.finish()
@@ -568,8 +585,9 @@ mod tests {
             "CREATE TABLE cloud_sync_tombstones (
                 content_type TEXT NOT NULL,
                 content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL DEFAULT 2,
                 deleted_at INTEGER NOT NULL,
-                PRIMARY KEY (content_type, content_hash)
+                PRIMARY KEY (content_type, content_hash, hash_version)
             )",
             [],
         )
@@ -653,5 +671,21 @@ mod tests {
     fn calc_text_hash_preserves_trailing_spaces() {
         assert_ne!(calc_text_hash("hello"), calc_text_hash("hello "));
         assert_eq!(calc_text_hash("hello\r\n"), calc_text_hash("hello\n"));
+    }
+
+    #[test]
+    fn calc_legacy_text_hash_matches_historical_newline_vectors() {
+        assert_eq!(
+            calc_legacy_text_hash("  first\r\nsecond  "),
+            5_035_531_923_625_562_959
+        );
+        assert_eq!(
+            calc_legacy_text_hash("first\nsecond"),
+            5_035_531_923_625_562_959
+        );
+        assert_eq!(
+            calc_legacy_text_hash("first\rsecond"),
+            5_524_992_041_363_797_055
+        );
     }
 }

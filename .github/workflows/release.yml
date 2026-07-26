@@ -7,7 +7,46 @@ on:
   workflow_dispatch:
 
 jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify release versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
+          const cargoLock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
+          const cargoVersion = cargo.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)[1];
+          const lockVersion = cargoLock.match(/\[\[package\]\]\nname = "tiez-app"\nversion = "([^"]+)"/)[1];
+          const versions = [pkg.version, lock.version, lock.packages[''].version, tauri.version, cargoVersion, lockVersion];
+          if (!versions.every(version => version === pkg.version)) {
+            throw new Error(`Release versions do not match: ${versions.join(', ')}`);
+          }
+          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `v${pkg.version}`) {
+            throw new Error(`Tag ${process.env.GITHUB_REF_NAME} does not match v${pkg.version}`);
+          }
+          console.log(`Validated TieZ v${pkg.version}`);
+          NODE
+
   publish-tauri:
+    needs: preflight
     permissions:
       contents: write
     strategy:
@@ -17,7 +56,7 @@ jobs:
           - name: Windows x64
             platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc --bundles nsis'
+            args: '--target x86_64-pc-windows-msvc --bundles nsis,msi'
           - name: Linux x64
             platform: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
@@ -48,7 +87,15 @@ jobs:
             librsvg2-dev \
             patchelf \
             libfuse2 \
-            xdg-utils
+            xdg-utils \
+            xvfb \
+            xdotool
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
 
       - name: install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -58,6 +105,19 @@ jobs:
 
       - name: install frontend dependencies
         run: npm ci
+
+      - name: test frontend
+        run: npm test
+
+      - name: build frontend
+        run: npm run build
+
+      - name: test Rust backend
+        run: npm run test:rust
+
+      - name: test Linux clipboard round trips under X11
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --test linux_clipboard_integration -- --nocapture --test-threads=1
 
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
@@ -72,6 +132,8 @@ jobs:
             Multi-platform release from the maintained TieZ community fork.
 
             Available for Windows x64, Linux x64, macOS Apple Silicon and macOS Intel.
+
+            Linux automatic paste uses xdotool on X11 or wtype on Wayland. macOS builds are not notarized yet and may require explicit Pasteboard and Accessibility permission.
           releaseDraft: true
           prerelease: false
           updaterJsonPreferNsis: true

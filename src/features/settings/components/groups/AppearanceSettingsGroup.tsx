@@ -10,6 +10,7 @@ import {
 } from "../../../../shared/config/themes";
 import type { Locale } from "../../../../shared/types";
 import type { SettingsSubpage } from "../../../app/types";
+import { FORK_SERVICES } from "../../../../shared/config/fork";
 
 interface LabelWithHintProps {
     label: string;
@@ -121,16 +122,18 @@ const AppearanceSettingsGroup = ({
                                 </span>
                             </button>
                         ))}
-                        <button
-                            onClick={() => setSettingsSubpage("theme-store")}
-                            className="btn-icon theme-choice-btn"
-                            type="button"
-                            style={{ gridColumn: "span 3", fontSize: "11px", opacity: 0.85 }}
-                        >
-                            <span className="theme-choice-title">
-                                {t("theme_store") || "🎨 主题商店"}
-                            </span>
-                        </button>
+                        {FORK_SERVICES.themeStoreApiBase && (
+                            <button
+                                onClick={() => setSettingsSubpage("theme-store")}
+                                className="btn-icon theme-choice-btn"
+                                type="button"
+                                style={{ gridColumn: "span 3", fontSize: "11px", opacity: 0.85 }}
+                            >
+                                <span className="theme-choice-title">
+                                    {t("theme_store") || "🎨 主题商店"}
+                                </span>
+                            </button>
+                        )}
                     </div>
                 </div>
 

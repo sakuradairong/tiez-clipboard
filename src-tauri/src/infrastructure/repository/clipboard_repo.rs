@@ -1,6 +1,6 @@
 use crate::database::{
-    calc_image_hash, calc_text_hash, has_sensitive_tag, is_text_type, save_image_to_file,
-    ENCRYPT_PREFIX,
+    calc_image_hash, calc_legacy_text_hash, calc_text_hash, has_sensitive_tag, is_text_type,
+    save_image_to_file, uses_text_content_hash, ENCRYPT_PREFIX,
 };
 use crate::domain::models::ClipboardEntry;
 use crate::infrastructure::encryption;
@@ -21,6 +21,43 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn with_repository_savepoint<T, F>(conn: &Connection, operation: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    const SAVEPOINT: &str = "tiez_clipboard_repository_write";
+    conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT};"))
+        .map_err(|e| e.to_string())?;
+
+    match operation() {
+        Ok(value) => match conn.execute_batch(&format!("RELEASE SAVEPOINT {SAVEPOINT};")) {
+            Ok(()) => Ok(value),
+            Err(release_error) => {
+                let rollback = conn.execute_batch(&format!(
+                    "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
+                ));
+                match rollback {
+                    Ok(()) => Err(release_error.to_string()),
+                    Err(rollback_error) => Err(format!(
+                        "{release_error}; savepoint rollback also failed: {rollback_error}"
+                    )),
+                }
+            }
+        },
+        Err(operation_error) => {
+            let rollback = conn.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
+            ));
+            match rollback {
+                Ok(()) => Err(operation_error),
+                Err(rollback_error) => Err(format!(
+                    "{operation_error}; savepoint rollback also failed: {rollback_error}"
+                )),
+            }
+        }
+    }
 }
 
 fn is_syncable_content_type(content_type: &str) -> bool {
@@ -80,12 +117,31 @@ impl SqliteClipboardRepository {
     }
 
     pub fn encrypt_entry_with_conn(&self, conn: &Connection, id: i64) -> Result<(), String> {
-        let (content_raw, preview_raw, html_raw, content_type, content_hash): (String, String, Option<String>, String, i64) =
-            conn.query_row(
-                "SELECT content, preview, html_content, content_type, content_hash FROM clipboard_history WHERE id = ?",
+        let (content_raw, preview_raw, html_raw, content_type, content_hash, hash_version): (
+            String,
+            String,
+            Option<String>,
+            String,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT content, preview, html_content, content_type, content_hash,
+                        content_hash_version
+                 FROM clipboard_history WHERE id = ?",
                 params![id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2).ok(), row.get(3)?, row.get(4)?)),
-            ).map_err(|e| e.to_string())?;
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2).ok(),
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
 
         let already_encrypted = content_raw.starts_with(ENCRYPT_PREFIX)
             && preview_raw.starts_with(ENCRYPT_PREFIX)
@@ -97,33 +153,73 @@ impl SqliteClipboardRepository {
             return Ok(());
         }
 
-        let content_plain = self.maybe_decrypt_text(&content_raw);
-        let preview_plain = self.maybe_decrypt_text(&preview_raw);
-        let html_plain = html_raw.map(|h| self.maybe_decrypt_text(&h));
+        let content_plain = self
+            .try_decrypt_text(&content_raw)
+            .ok_or_else(|| "failed to decrypt clipboard content; row was preserved".to_string())?;
+        let preview_plain = self
+            .try_decrypt_text(&preview_raw)
+            .ok_or_else(|| "failed to decrypt clipboard preview; row was preserved".to_string())?;
+        let html_plain = html_raw
+            .as_deref()
+            .map(|html| {
+                self.try_decrypt_text(html).ok_or_else(|| {
+                    "failed to decrypt clipboard HTML; row was preserved".to_string()
+                })
+            })
+            .transpose()?;
 
         let content_enc = self.maybe_encrypt_text(&content_plain);
         let preview_enc = self.maybe_encrypt_text(&preview_plain);
         let html_enc = html_plain.as_ref().map(|h| self.maybe_encrypt_text(h));
-        let new_hash = if is_text_type(&content_type) {
-            calc_text_hash(&content_plain) as i64
+        let (new_hash, new_hash_version) = if uses_text_content_hash(&content_type) {
+            (calc_text_hash(&content_plain) as i64, 2)
         } else {
-            content_hash
+            (content_hash, hash_version)
         };
 
         conn.execute(
-            "UPDATE clipboard_history SET content = ?, preview = ?, html_content = ?, content_hash = ? WHERE id = ?",
-            params![content_enc, preview_enc, html_enc, new_hash, id],
-        ).map_err(|e| e.to_string())?;
+            "UPDATE clipboard_history
+             SET content = ?, preview = ?, html_content = ?, content_hash = ?, content_hash_version = ?
+             WHERE id = ?",
+            params![
+                content_enc,
+                preview_enc,
+                html_enc,
+                new_hash,
+                new_hash_version,
+                id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn decrypt_entry_with_conn(&self, conn: &Connection, id: i64) -> Result<(), String> {
-        let (content_raw, preview_raw, html_raw, content_type, content_hash): (String, String, Option<String>, String, i64) =
-            conn.query_row(
-                "SELECT content, preview, html_content, content_type, content_hash FROM clipboard_history WHERE id = ?",
+        let (content_raw, preview_raw, html_raw, content_type, content_hash, hash_version): (
+            String,
+            String,
+            Option<String>,
+            String,
+            i64,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT content, preview, html_content, content_type, content_hash,
+                        content_hash_version
+                 FROM clipboard_history WHERE id = ?",
                 params![id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2).ok(), row.get(3)?, row.get(4)?)),
-            ).map_err(|e| e.to_string())?;
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2).ok(),
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
 
         let any_encrypted = content_raw.starts_with(ENCRYPT_PREFIX)
             || preview_raw.starts_with(ENCRYPT_PREFIX)
@@ -135,19 +231,40 @@ impl SqliteClipboardRepository {
             return Ok(());
         }
 
-        let content_plain = self.maybe_decrypt_text(&content_raw);
-        let preview_plain = self.maybe_decrypt_text(&preview_raw);
-        let html_plain = html_raw.map(|h| self.maybe_decrypt_text(&h));
-        let new_hash = if is_text_type(&content_type) {
-            calc_text_hash(&content_plain) as i64
+        let content_plain = self
+            .try_decrypt_text(&content_raw)
+            .ok_or_else(|| "failed to decrypt clipboard content; row was preserved".to_string())?;
+        let preview_plain = self
+            .try_decrypt_text(&preview_raw)
+            .ok_or_else(|| "failed to decrypt clipboard preview; row was preserved".to_string())?;
+        let html_plain = html_raw
+            .as_deref()
+            .map(|html| {
+                self.try_decrypt_text(html).ok_or_else(|| {
+                    "failed to decrypt clipboard HTML; row was preserved".to_string()
+                })
+            })
+            .transpose()?;
+        let (new_hash, new_hash_version) = if uses_text_content_hash(&content_type) {
+            (calc_text_hash(&content_plain) as i64, 2)
         } else {
-            content_hash
+            (content_hash, hash_version)
         };
 
         conn.execute(
-            "UPDATE clipboard_history SET content = ?, preview = ?, html_content = ?, content_hash = ? WHERE id = ?",
-            params![content_plain, preview_plain, html_plain, new_hash, id],
-        ).map_err(|e| e.to_string())?;
+            "UPDATE clipboard_history
+             SET content = ?, preview = ?, html_content = ?, content_hash = ?, content_hash_version = ?
+             WHERE id = ?",
+            params![
+                content_plain,
+                preview_plain,
+                html_plain,
+                new_hash,
+                new_hash_version,
+                id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -181,6 +298,7 @@ impl SqliteClipboardRepository {
         conn: &Connection,
         content_type: &str,
         content_hash: i64,
+        hash_version: i64,
         deleted_at: i64,
     ) -> Result<(), String> {
         if !is_syncable_content_type(content_type) || content_hash == 0 {
@@ -188,11 +306,12 @@ impl SqliteClipboardRepository {
         }
 
         conn.execute(
-            "INSERT INTO cloud_sync_tombstones (content_type, content_hash, deleted_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(content_type, content_hash)
+            "INSERT INTO cloud_sync_tombstones
+                (content_type, content_hash, hash_version, deleted_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(content_type, content_hash, hash_version)
              DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
-            params![content_type, content_hash, deleted_at],
+            params![content_type, content_hash, hash_version.max(1), deleted_at],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -202,15 +321,24 @@ impl SqliteClipboardRepository {
         &self,
         conn: &Connection,
         content_type: &str,
+        content: &str,
         content_hash: i64,
     ) -> Result<(), String> {
         if !is_syncable_content_type(content_type) || content_hash == 0 {
             return Ok(());
         }
 
+        let legacy_hash = if uses_text_content_hash(content_type) {
+            calc_legacy_text_hash(content) as i64
+        } else {
+            content_hash
+        };
         conn.execute(
-            "DELETE FROM cloud_sync_tombstones WHERE content_type = ?1 AND content_hash = ?2",
-            params![content_type, content_hash],
+            "DELETE FROM cloud_sync_tombstones
+             WHERE content_type = ?1
+               AND ((hash_version <= 1 AND content_hash IN (?2, ?3))
+                 OR (hash_version >= 2 AND content_hash = ?3))",
+            params![content_type, legacy_hash, content_hash],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -230,12 +358,17 @@ impl SqliteClipboardRepository {
         }
     }
 
-    fn maybe_decrypt_text(&self, value: &str) -> String {
+    fn try_decrypt_text(&self, value: &str) -> Option<String> {
         if value.starts_with(ENCRYPT_PREFIX) {
-            encryption::decrypt_value(value).unwrap_or_else(|| value.to_string())
+            encryption::decrypt_value(value).filter(|plain| plain != value)
         } else {
-            value.to_string()
+            Some(value.to_string())
         }
+    }
+
+    fn maybe_decrypt_text(&self, value: &str) -> String {
+        self.try_decrypt_text(value)
+            .unwrap_or_else(|| value.to_string())
     }
 
     fn extract_rich_image_fallback_payload(html: &str) -> Option<String> {
@@ -282,7 +415,7 @@ impl SqliteClipboardRepository {
         }
     }
 
-    fn collect_attachment_paths_for_cleanup(
+    pub(crate) fn collect_attachment_paths_for_cleanup(
         &self,
         content_raw: &str,
         html_raw: Option<&str>,
@@ -292,24 +425,97 @@ impl SqliteClipboardRepository {
         let mut paths = HashSet::new();
 
         if is_external {
-            let content_path = PathBuf::from(self.maybe_decrypt_text(content_raw));
-            if content_path.starts_with(attachments_dir) {
-                paths.insert(content_path);
+            if let Some(content) = self.try_decrypt_text(content_raw) {
+                let content_path = PathBuf::from(content);
+                if content_path.starts_with(attachments_dir) {
+                    paths.insert(content_path);
+                }
             }
         }
 
         if let Some(html_raw_value) = html_raw {
-            let html = self.maybe_decrypt_text(html_raw_value);
-            if let Some(payload) = Self::extract_rich_image_fallback_payload(&html) {
-                if let Some(path) = Self::fallback_payload_to_path(&payload) {
-                    if path.starts_with(attachments_dir) {
-                        paths.insert(path);
+            if let Some(html) = self.try_decrypt_text(html_raw_value) {
+                if let Some(payload) = Self::extract_rich_image_fallback_payload(&html) {
+                    if let Some(path) = Self::fallback_payload_to_path(&payload) {
+                        if path.starts_with(attachments_dir) {
+                            paths.insert(path);
+                        }
                     }
                 }
             }
         }
 
         paths.into_iter().collect()
+    }
+
+    pub(crate) fn cleanup_unreferenced_attachment_paths_with_conn(
+        &self,
+        conn: &Connection,
+        cleanup_paths: impl IntoIterator<Item = PathBuf>,
+        attachments_dir: &std::path::Path,
+    ) {
+        let cleanup_paths: HashSet<PathBuf> = cleanup_paths
+            .into_iter()
+            .filter(|path| path.starts_with(attachments_dir))
+            .collect();
+        if cleanup_paths.is_empty() {
+            return;
+        }
+
+        let mut stmt = match conn.prepare(
+            "SELECT content, html_content, is_external
+             FROM clipboard_history",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return,
+        };
+        let rows = match stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i32>(2)? == 1,
+            ))
+        }) {
+            Ok(rows) => rows,
+            Err(_) => return,
+        };
+
+        let mut referenced_paths = HashSet::new();
+        for row in rows {
+            let Ok((content_raw, html_raw, is_external)) = row else {
+                return;
+            };
+
+            if is_external {
+                let Some(content) = self.try_decrypt_text(&content_raw) else {
+                    // An unreadable encrypted field may contain any candidate path.
+                    // Preserve all files rather than risk deleting a live attachment.
+                    return;
+                };
+                let path = PathBuf::from(content);
+                referenced_paths.insert(std::fs::canonicalize(&path).unwrap_or(path));
+            }
+
+            if let Some(html_raw) = html_raw {
+                let Some(html) = self.try_decrypt_text(&html_raw) else {
+                    // Rich-text fallbacks can also be persisted encrypted. As above,
+                    // inability to inspect a surviving row must fail closed.
+                    return;
+                };
+                if let Some(payload) = Self::extract_rich_image_fallback_payload(&html) {
+                    if let Some(path) = Self::fallback_payload_to_path(&payload) {
+                        referenced_paths.insert(std::fs::canonicalize(&path).unwrap_or(path));
+                    }
+                }
+            }
+        }
+
+        for path in cleanup_paths {
+            let path_identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !referenced_paths.contains(&path_identity) && path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 
     pub fn save_with_conn(
@@ -353,9 +559,6 @@ impl SqliteClipboardRepository {
             calc_text_hash(&final_content) as i64
         };
 
-        // Re-adding an item should clear an older delete tombstone for the same fingerprint.
-        let _ = self.clear_tombstone_with_conn(conn, &entry.content_type, calculated_hash);
-
         let (content, preview, content_hash, html_content) = if should_encrypt {
             let encrypted_content = self.maybe_encrypt_text(&final_content);
             let encrypted_preview = self.maybe_encrypt_text(&entry.preview);
@@ -371,7 +574,7 @@ impl SqliteClipboardRepository {
             )
         } else {
             (
-                final_content,
+                final_content.clone(),
                 entry.preview.clone(),
                 calculated_hash,
                 entry.html_content.clone(),
@@ -391,68 +594,92 @@ impl SqliteClipboardRepository {
             }
         }
 
-        if entry.id > 0 {
-            // Update existing entry (Move to top logic)
-            conn.execute(
-                "UPDATE clipboard_history SET 
-                    content_type = ?1, 
-                    content = ?2, 
-                    html_content = ?3, 
-                    source_app = ?4, 
-                    timestamp = ?5, 
-                    preview = ?6, 
-                    content_hash = ?7, 
-                    tags = ?8, 
-                    is_external = ?9,
-                    source_app_path = ?10,
-                    use_count = use_count + 1,
-                    sync_updated_at = ?11,
-                    sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
-                 WHERE id = ?12",
-                params![
-                    entry.content_type,
-                    content,
-                    html_content,
-                    entry.source_app,
-                    entry.timestamp,
-                    preview,
-                    content_hash,
-                    serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string()),
-                    if final_is_external { 1 } else { 0 },
-                    entry.source_app_path.as_deref(),
-                    entry.timestamp,
-                    entry.id
-                ],
-            )
-            .map_err(|e| e.to_string())?;
-            self.sync_entry_tags_with_conn(conn, entry.id, &cleaned_tags)?;
-            Ok(entry.id)
-        } else {
-            // Insert new entry
-            conn.execute(
-                "INSERT INTO clipboard_history (content_type, content, html_content, source_app, timestamp, preview, is_pinned, content_hash, tags, is_external, pinned_order, source_app_path, sync_updated_at, sync_updated_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), ''))",
-                params![
-                    entry.content_type,
-                    content,
-                    html_content,
-                    entry.source_app,
-                    entry.timestamp,
-                    preview,
-                    if entry.is_pinned { 1 } else { 0 },
-                    content_hash,
-                    serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string()),
-                    if final_is_external { 1 } else { 0 },
-                    entry.pinned_order,
-                    entry.source_app_path.as_deref(),
-                    entry.timestamp
-                ],
-            ).map_err(|e| e.to_string())?;
+        let tags_json = serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string());
 
-            let new_id = conn.last_insert_rowid();
-            self.sync_entry_tags_with_conn(conn, new_id, &cleaned_tags)?;
-            Ok(new_id)
-        }
+        with_repository_savepoint(conn, || {
+            // Re-adding an item must clear an older delete tombstone in the same
+            // database unit as the history row and normalized tags. Version-1
+            // tombstones are ambiguous because pre-version peers emitted both
+            // trimmed and exact hashes, so clear either predecessor representation.
+            self.clear_tombstone_with_conn(
+                conn,
+                &entry.content_type,
+                &final_content,
+                calculated_hash,
+            )?;
+
+            if entry.id > 0 {
+                // Update existing entry (Move to top logic)
+                let affected = conn
+                    .execute(
+                        "UPDATE clipboard_history SET
+                            content_type = ?1,
+                            content = ?2,
+                            html_content = ?3,
+                            source_app = ?4,
+                            timestamp = ?5,
+                            preview = ?6,
+                            content_hash = ?7,
+                            content_hash_version = 2,
+                            tags = ?8,
+                            is_external = ?9,
+                            source_app_path = ?10,
+                            use_count = use_count + 1,
+                            sync_updated_at = ?11,
+                            sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                         WHERE id = ?12",
+                        params![
+                            entry.content_type,
+                            content,
+                            html_content,
+                            entry.source_app,
+                            entry.timestamp,
+                            preview,
+                            content_hash,
+                            tags_json,
+                            if final_is_external { 1 } else { 0 },
+                            entry.source_app_path.as_deref(),
+                            entry.timestamp,
+                            entry.id
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                if affected != 1 {
+                    return Err(format!(
+                        "clipboard entry {} was not found for update",
+                        entry.id
+                    ));
+                }
+                self.sync_entry_tags_with_conn(conn, entry.id, &cleaned_tags)?;
+                Ok(entry.id)
+            } else {
+                // Insert new entry
+                conn.execute(
+                    "INSERT INTO clipboard_history (content_type, content, html_content, source_app, timestamp, preview, is_pinned, content_hash, tags, is_external, pinned_order, source_app_path, sync_updated_at, sync_updated_by)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), ''))",
+                    params![
+                        entry.content_type,
+                        content,
+                        html_content,
+                        entry.source_app,
+                        entry.timestamp,
+                        preview,
+                        if entry.is_pinned { 1 } else { 0 },
+                        content_hash,
+                        tags_json,
+                        if final_is_external { 1 } else { 0 },
+                        entry.pinned_order,
+                        entry.source_app_path.as_deref(),
+                        entry.timestamp
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+
+                let new_id = conn.last_insert_rowid();
+                self.sync_entry_tags_with_conn(conn, new_id, &cleaned_tags)?;
+                Ok(new_id)
+            }
+        })
     }
 
     pub fn delete_with_conn(
@@ -461,68 +688,91 @@ impl SqliteClipboardRepository {
         id: i64,
         data_dir: Option<&std::path::Path>,
     ) -> Result<(), String> {
-        let mut tombstone: Option<(String, i64)> = None;
-        // Check for external files to delete
-        if let Some(dir) = data_dir {
-            let attachments_dir = dir.join("attachments");
-            let mut stmt = conn
-                 .prepare("SELECT content, html_content, is_external, content_type, content_hash FROM clipboard_history WHERE id = ?")
-                 .map_err(|e| e.to_string())?;
+        let entry = conn
+            .query_row(
+                "SELECT content, html_content, is_external, content_type, content_hash,
+                        content_hash_version
+                 FROM clipboard_history WHERE id = ?",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i32>(2)? == 1,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
 
-            if let Ok(entry) = stmt.query_row([id], |row| {
-                let content_raw: String = row.get(0)?;
-                let html_raw: Option<String> = row.get(1).ok();
-                let is_ext: i32 = row.get(2)?;
-                let content_type: String = row.get(3)?;
-                let content_hash: i64 = row.get(4)?;
-                Ok((
-                    content_raw,
-                    html_raw,
-                    is_ext == 1,
-                    content_type,
-                    content_hash,
-                ))
-            }) {
-                let files_to_remove = self.collect_attachment_paths_for_cleanup(
+        let cleanup_paths = data_dir
+            .map(|dir| {
+                self.collect_attachment_paths_for_cleanup(
                     &entry.0,
                     entry.1.as_deref(),
                     entry.2,
-                    &attachments_dir,
-                );
-                for path in files_to_remove {
-                    if path.exists() {
-                        let _ = std::fs::remove_file(path);
-                    }
-                }
-                tombstone = Some((entry.3, entry.4));
+                    &dir.join("attachments"),
+                )
+            })
+            .unwrap_or_default();
+        let may_cleanup_after_savepoint = conn.is_autocommit();
+
+        let readable_content = self.try_decrypt_text(&entry.0);
+        let (tombstone_hash, tombstone_hash_version) = if uses_text_content_hash(&entry.3) {
+            if let Some(content_plain) = readable_content.as_deref() {
+                (calc_text_hash(content_plain) as i64, 2)
+            } else {
+                (entry.4, entry.5)
             }
         } else {
-            let mut stmt = conn
-                .prepare("SELECT content_type, content_hash FROM clipboard_history WHERE id = ?")
+            (entry.4, entry.5)
+        };
+
+        with_repository_savepoint(conn, || {
+            // Tombstone, history, and normalized tags are one database unit. If
+            // legacy ciphertext cannot be decrypted, retain its stored hash
+            // semantics rather than manufacturing a v2 hash from ciphertext bytes.
+            self.upsert_tombstone_with_conn(
+                conn,
+                &entry.3,
+                tombstone_hash,
+                tombstone_hash_version,
+                now_ms(),
+            )?;
+            conn.execute("DELETE FROM clipboard_history WHERE id = ?", [id])
                 .map_err(|e| e.to_string())?;
-            if let Ok(entry) = stmt.query_row([id], |row| {
-                let content_type: String = row.get(0)?;
-                let content_hash: i64 = row.get(1)?;
-                Ok((content_type, content_hash))
-            }) {
-                tombstone = Some(entry);
+            conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+
+        // Releasing the outermost savepoint commits the database operation. When
+        // called inside an owner transaction (the global-tag path), that owner must
+        // keep cleanup deferred until its own commit and therefore passes no data dir.
+        if may_cleanup_after_savepoint {
+            if let Some(dir) = data_dir {
+                self.cleanup_unreferenced_attachment_paths_with_conn(
+                    conn,
+                    cleanup_paths,
+                    &dir.join("attachments"),
+                );
             }
         }
-
-        if let Some((content_type, content_hash)) = tombstone {
-            let _ = self.upsert_tombstone_with_conn(conn, &content_type, content_hash, now_ms());
-        }
-
-        conn.execute("DELETE FROM clipboard_history WHERE id = ?", [id])
-            .map_err(|e| e.to_string())?;
-        let _ = conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id]);
         Ok(())
     }
 
     pub fn delete_metadata_with_conn(&self, conn: &Connection, id: i64) -> Result<(), String> {
+        if conn.is_autocommit() {
+            return Err(
+                "metadata deletion requires an active owner transaction or savepoint".to_string(),
+            );
+        }
         conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])
             .map_err(|e| e.to_string())?;
-        let _ = conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id]);
+        conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -626,7 +876,7 @@ impl SqliteClipboardRepository {
                     };
                     // Actually delete records (and files if needed)
                     for id in &deleted_ids {
-                        let _ = self.delete_with_conn(conn, *id, data_dir);
+                        self.delete_with_conn(conn, *id, data_dir)?;
                     }
                     return Ok(deleted_ids);
                 }
@@ -779,6 +1029,7 @@ impl SqliteClipboardRepository {
                      SET content = ?1,
                          preview = ?2,
                          content_hash = ?3,
+                         content_hash_version = 2,
                          html_content = NULL,
                          content_type = ?4,
                          sync_updated_at = ?5,
@@ -792,6 +1043,7 @@ impl SqliteClipboardRepository {
                      SET content = ?1,
                          preview = ?2,
                          content_hash = ?3,
+                         content_hash_version = 2,
                          html_content = NULL,
                          content_type = ?4,
                          sync_updated_at = ?5,
@@ -1409,9 +1661,13 @@ impl ClipboardRepository for SqliteClipboardRepository {
 #[cfg(test)]
 mod tests {
     use super::{ClipboardRepository, SqliteClipboardRepository};
+    use crate::domain::models::ClipboardEntry;
     use crate::infrastructure::repository::migrations::run_migrations;
     use rusqlite::{params, Connection};
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn search_matches_current_ocr_and_qr_index() {
@@ -1477,5 +1733,481 @@ mod tests {
             .search("8675", 10, false)
             .expect("search stale OCR")
             .is_empty());
+    }
+
+    fn setup_repository_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().expect("open clipboard repository test db");
+        run_migrations(&conn).expect("migrate clipboard repository test db");
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn test_entry(tags: &[&str]) -> ClipboardEntry {
+        ClipboardEntry {
+            id: 0,
+            content_type: "text".to_string(),
+            content: "savepoint payload".to_string(),
+            html_content: None,
+            source_app: "Test".to_string(),
+            source_app_path: None,
+            timestamp: 100,
+            preview: "savepoint payload".to_string(),
+            is_pinned: false,
+            tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
+            use_count: 0,
+            is_external: false,
+            pinned_order: 0,
+            file_preview_exists: true,
+        }
+    }
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("tiez-clipboard-repo-{name}-{unique}"));
+        fs::create_dir_all(&dir).expect("create clipboard repository temp dir");
+        dir
+    }
+
+    #[test]
+    fn save_rolls_back_cleared_tombstone_and_history_when_tag_insert_fails() {
+        let conn = setup_repository_db();
+        let entry = test_entry(&["blocked"]);
+        let hash = crate::database::calc_text_hash(&entry.content) as i64;
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            guard
+                .execute(
+                    "INSERT INTO cloud_sync_tombstones
+                        (content_type, content_hash, hash_version, deleted_at)
+                     VALUES ('text', ?1, 2, 50)",
+                    [hash],
+                )
+                .expect("insert matching tombstone");
+            guard
+                .execute_batch(
+                    "CREATE TRIGGER reject_entry_tag_insert
+                     BEFORE INSERT ON entry_tags
+                     BEGIN SELECT RAISE(ABORT, 'entry tag unavailable'); END;",
+                )
+                .expect("install entry-tag failure trigger");
+        }
+
+        let error = SqliteClipboardRepository::new(conn.clone())
+            .save(&entry, None)
+            .expect_err("tag persistence must fail the save");
+        assert!(error.contains("entry tag unavailable"));
+
+        let guard = conn.lock().expect("lock failed-save result db");
+        let history_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count rolled-back history");
+        let tombstone_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM cloud_sync_tombstones
+                 WHERE content_type = 'text' AND content_hash = ?1 AND hash_version = 2",
+                [hash],
+                |row| row.get(0),
+            )
+            .expect("count restored tombstone");
+        let tag_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM entry_tags", [], |row| row.get(0))
+            .expect("count rolled-back tags");
+        assert_eq!(history_count, 0);
+        assert_eq!(tombstone_count, 1);
+        assert_eq!(tag_count, 0);
+    }
+
+    #[test]
+    fn save_propagates_tombstone_clear_failure_without_writing_history() {
+        let conn = setup_repository_db();
+        let entry = test_entry(&[]);
+        let hash = crate::database::calc_text_hash(&entry.content) as i64;
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            guard
+                .execute(
+                    "INSERT INTO cloud_sync_tombstones
+                        (content_type, content_hash, hash_version, deleted_at)
+                     VALUES ('text', ?1, 2, 50)",
+                    [hash],
+                )
+                .expect("insert matching tombstone");
+            guard
+                .execute_batch(
+                    "CREATE TRIGGER reject_tombstone_clear
+                     BEFORE DELETE ON cloud_sync_tombstones
+                     BEGIN SELECT RAISE(ABORT, 'tombstone unavailable'); END;",
+                )
+                .expect("install tombstone failure trigger");
+        }
+
+        let error = SqliteClipboardRepository::new(conn.clone())
+            .save(&entry, None)
+            .expect_err("tombstone failure must fail the save");
+        assert!(error.contains("tombstone unavailable"));
+
+        let guard = conn.lock().expect("lock failed-save result db");
+        let history_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count absent history");
+        let tombstone_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count retained tombstone");
+        assert_eq!(history_count, 0);
+        assert_eq!(tombstone_count, 1);
+    }
+
+    #[test]
+    fn successful_save_clears_matching_tombstone_and_persists_clean_tags() {
+        let conn = setup_repository_db();
+        let entry = test_entry(&[" work ", "work", ""]);
+        let hash = crate::database::calc_text_hash(&entry.content) as i64;
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            guard
+                .execute(
+                    "INSERT INTO cloud_sync_tombstones
+                        (content_type, content_hash, hash_version, deleted_at)
+                     VALUES ('text', ?1, 2, 50)",
+                    [hash],
+                )
+                .expect("insert matching tombstone");
+        }
+
+        let id = SqliteClipboardRepository::new(conn.clone())
+            .save(&entry, None)
+            .expect("save entry atomically");
+
+        let guard = conn.lock().expect("lock successful-save result db");
+        let tags_json: String = guard
+            .query_row(
+                "SELECT tags FROM clipboard_history WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("read saved tag JSON");
+        let normalized_tags: Vec<String> = guard
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = ?1 ORDER BY tag")
+            .expect("prepare normalized tag query")
+            .query_map([id], |row| row.get(0))
+            .expect("query normalized tags")
+            .collect::<Result<_, _>>()
+            .expect("read normalized tags");
+        let tombstone_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count cleared tombstones");
+        assert_eq!(tags_json, "[\"work\"]");
+        assert_eq!(normalized_tags, vec!["work"]);
+        assert_eq!(tombstone_count, 0);
+    }
+
+    #[test]
+    fn save_savepoint_nests_without_committing_owner_transaction() {
+        let conn = setup_repository_db();
+        let entry = test_entry(&["nested"]);
+        let hash = crate::database::calc_text_hash(&entry.content) as i64;
+        let repo = SqliteClipboardRepository::new(conn.clone());
+        let guard = conn.lock().expect("lock clipboard repository test db");
+        guard
+            .execute(
+                "INSERT INTO cloud_sync_tombstones
+                    (content_type, content_hash, hash_version, deleted_at)
+                 VALUES ('text', ?1, 2, 50)",
+                [hash],
+            )
+            .expect("insert matching tombstone");
+        guard
+            .execute_batch("BEGIN;")
+            .expect("begin owner transaction");
+
+        repo.save_with_conn(&guard, &entry, None)
+            .expect("save inside owner transaction");
+        let in_transaction_history: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count uncommitted history");
+        let in_transaction_tombstones: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count uncommitted tombstones");
+        assert_eq!(in_transaction_history, 1);
+        assert_eq!(in_transaction_tombstones, 0);
+
+        guard
+            .execute_batch("ROLLBACK;")
+            .expect("roll back owner transaction");
+        let final_history: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count rolled-back history");
+        let final_tombstones: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count restored tombstones");
+        assert_eq!(final_history, 0);
+        assert_eq!(final_tombstones, 1);
+    }
+
+    #[test]
+    fn stale_positive_id_save_restores_tombstone_and_preserves_tags() {
+        let conn = setup_repository_db();
+        let mut entry = test_entry(&["new"]);
+        entry.id = 999;
+        let hash = crate::database::calc_text_hash(&entry.content) as i64;
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            guard
+                .execute(
+                    "INSERT INTO cloud_sync_tombstones
+                        (content_type, content_hash, hash_version, deleted_at)
+                     VALUES ('text', ?1, 2, 50)",
+                    [hash],
+                )
+                .expect("insert matching tombstone");
+            guard
+                .execute(
+                    "INSERT INTO entry_tags (entry_id, tag) VALUES (999, 'old')",
+                    [],
+                )
+                .expect("insert pre-existing normalized tag");
+        }
+
+        let error = SqliteClipboardRepository::new(conn.clone())
+            .save(&entry, None)
+            .expect_err("a stale positive id must fail");
+        assert!(error.contains("was not found for update"));
+
+        let guard = conn.lock().expect("lock stale-save result db");
+        let tombstone_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM cloud_sync_tombstones
+                 WHERE content_type = 'text' AND content_hash = ?1 AND hash_version = 2",
+                [hash],
+                |row| row.get(0),
+            )
+            .expect("count restored tombstone");
+        let tags: Vec<String> = guard
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = 999 ORDER BY tag")
+            .expect("prepare retained tag query")
+            .query_map([], |row| row.get(0))
+            .expect("query retained tags")
+            .collect::<Result<_, _>>()
+            .expect("read retained tags");
+        assert_eq!(tombstone_count, 1);
+        assert_eq!(tags, vec!["old"]);
+    }
+
+    #[test]
+    fn deleting_one_of_two_entries_preserves_shared_image_attachment() {
+        let conn = setup_repository_db();
+        let root = make_temp_dir("shared-image");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachments dir");
+        let attachment = attachments.join("shared.png");
+        fs::write(&attachment, b"shared image").expect("write shared attachment");
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            for id in [1, 2] {
+                guard
+                    .execute(
+                        "INSERT INTO clipboard_history
+                            (id, content_type, content, source_app, timestamp, preview,
+                             content_hash, content_hash_version, tags, is_external,
+                             sync_updated_at, sync_updated_by)
+                         VALUES (?1, 'image', ?2, 'Test', 100, '[Image Content]',
+                                 42, 2, '[]', 1, 100, 'local')",
+                        params![id, attachment.to_string_lossy().as_ref()],
+                    )
+                    .expect("insert shared image entry");
+            }
+        }
+        let repo = SqliteClipboardRepository::new(conn.clone());
+
+        repo.delete(1, Some(&root))
+            .expect("delete first image entry");
+        assert!(
+            attachment.exists(),
+            "the surviving row still references the image"
+        );
+
+        repo.delete(2, Some(&root))
+            .expect("delete second image entry");
+        assert!(
+            !attachment.exists(),
+            "the final deletion may remove the image"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_one_of_two_entries_preserves_shared_rich_fallback() {
+        let conn = setup_repository_db();
+        let root = make_temp_dir("shared-rich-fallback");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachments dir");
+        let fallback = attachments.join("shared-fallback.png");
+        fs::write(&fallback, b"shared fallback").expect("write rich fallback");
+        let html = format!(
+            "<p>shared</p><!--TIEZ_RICH_IMAGE:file://{}-->",
+            fallback.to_string_lossy()
+        );
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            for (id, content, hash) in [(1, "first", 41), (2, "second", 42)] {
+                guard
+                    .execute(
+                        "INSERT INTO clipboard_history
+                            (id, content_type, content, html_content, source_app, timestamp,
+                             preview, content_hash, content_hash_version, tags, is_external,
+                             sync_updated_at, sync_updated_by)
+                         VALUES (?1, 'rich_text', ?2, ?3, 'Test', 100, ?2,
+                                 ?4, 2, '[]', 0, 100, 'local')",
+                        params![id, content, html, hash],
+                    )
+                    .expect("insert shared rich-text entry");
+            }
+        }
+        let repo = SqliteClipboardRepository::new(conn.clone());
+
+        repo.delete(1, Some(&root))
+            .expect("delete first rich-text entry");
+        assert!(
+            fallback.exists(),
+            "the surviving row still references the fallback"
+        );
+
+        repo.delete(2, Some(&root))
+            .expect("delete second rich-text entry");
+        assert!(
+            !fallback.exists(),
+            "the final deletion may remove the fallback"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_local_delete_keeps_database_rows_and_attachment() {
+        let conn = setup_repository_db();
+        let root = make_temp_dir("failed-delete");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachments dir");
+        let attachment = attachments.join("keep.txt");
+        fs::write(&attachment, b"keep me").expect("write retained attachment");
+        {
+            let guard = conn.lock().expect("lock clipboard repository test db");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                        (id, content_type, content, source_app, timestamp, preview,
+                         content_hash, content_hash_version, tags, is_external,
+                         sync_updated_at, sync_updated_by)
+                     VALUES (1, 'file', ?1, 'Test', 100, 'keep.txt', 42, 2,
+                             '[\"blocked\"]', 1, 100, 'local')",
+                    [attachment.to_string_lossy().as_ref()],
+                )
+                .expect("insert external clipboard entry");
+            guard
+                .execute(
+                    "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'blocked')",
+                    [],
+                )
+                .expect("insert normalized tag");
+            guard
+                .execute_batch(
+                    "CREATE TRIGGER reject_entry_tag_delete
+                     BEFORE DELETE ON entry_tags
+                     BEGIN SELECT RAISE(ABORT, 'entry tag delete unavailable'); END;",
+                )
+                .expect("install delete failure trigger");
+        }
+
+        let error = SqliteClipboardRepository::new(conn.clone())
+            .delete(1, Some(&root))
+            .expect_err("tag deletion must fail the local deletion");
+        assert!(error.contains("entry tag delete unavailable"));
+        assert!(attachment.exists());
+
+        let guard = conn.lock().expect("lock failed-delete result db");
+        let history_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM clipboard_history WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained history");
+        let tag_count: i64 = guard
+            .query_row(
+                "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count retained tag");
+        let tombstone_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count rolled-back tombstone");
+        assert_eq!(history_count, 1);
+        assert_eq!(tag_count, 1);
+        assert_eq!(tombstone_count, 0);
+        drop(guard);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleting_undecryptable_legacy_row_preserves_hash_and_version() {
+        let conn = Connection::open_in_memory().expect("open clipboard test db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content TEXT NOT NULL,
+                html_content TEXT,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL
+             );
+             CREATE TABLE entry_tags (entry_id INTEGER NOT NULL, tag TEXT NOT NULL);
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );
+             INSERT INTO clipboard_history
+                (id, content, content_type, content_hash, content_hash_version)
+             VALUES (1, 'dpapi:not-decryptable', 'text', 4242, 1);",
+        )
+        .expect("create legacy deletion fixture");
+        let conn = Arc::new(Mutex::new(conn));
+
+        SqliteClipboardRepository::new(conn.clone())
+            .delete(1, None)
+            .expect("delete legacy row");
+
+        let guard = conn.lock().expect("lock result db");
+        let (hash, version): (i64, i64) = guard
+            .query_row(
+                "SELECT content_hash, hash_version FROM cloud_sync_tombstones",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read preserved tombstone");
+        assert_eq!((hash, version), (4242, 1));
     }
 }

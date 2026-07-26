@@ -53,7 +53,6 @@ export const useHotkeyConfig = ({
   setIsRecordingPlain,
   isRecordingSearch,
   setIsRecordingSearch,
-  saveAppSetting,
   t,
   pushToast
 }: UseHotkeyConfigOptions) => {
@@ -105,17 +104,17 @@ export const useHotkeyConfig = ({
         }
       }
 
-      setHotkey(newHotkey);
-      saveAppSetting("hotkey", newHotkey);
-      await invoke("register_hotkey", { hotkey: newHotkey }).catch((err) => {
-        if (newHotkey) {
-          const errorMsg = t("hotkey_register_failed") + (err?.toString() || "");
-          pushToast(errorMsg, 3000);
-        }
-      });
-      setIsRecording(false);
+      try {
+        await invoke("register_hotkey", { hotkey: newHotkey });
+        setHotkey(newHotkey);
+      } catch (err) {
+        const errorMsg = t("hotkey_register_failed") + (err?.toString() || "");
+        pushToast(errorMsg, 5000);
+      } finally {
+        setIsRecording(false);
+      }
     },
-    [checkHotkeyConflict, pushToast, saveAppSetting, setHotkey, setIsRecording, t]
+    [checkHotkeyConflict, pushToast, setHotkey, setIsRecording, t]
   );
 
   const updateSequentialHotkey = useCallback(
@@ -137,17 +136,21 @@ export const useHotkeyConfig = ({
         }
       }
 
-      setSequentialHotkey(newHotkey);
-      saveAppSetting("sequential_hotkey", newHotkey);
-      await invoke("set_sequential_hotkey", { hotkey: newHotkey }).catch(console.error);
-      setIsRecordingSequential(false);
+      try {
+        await invoke("set_sequential_hotkey", { hotkey: newHotkey });
+        setSequentialHotkey(newHotkey);
+      } catch (err) {
+        pushToast(`${t("hotkey_register_failed")}${err?.toString() || ""}`, 5000);
+      } finally {
+        setIsRecordingSequential(false);
+      }
     },
     [
       checkHotkeyConflict,
       pushToast,
-      saveAppSetting,
       setSequentialHotkey,
-      setIsRecordingSequential
+      setIsRecordingSequential,
+      t
     ]
   );
 
@@ -170,17 +173,21 @@ export const useHotkeyConfig = ({
         }
       }
 
-      setRichPasteHotkey(newHotkey);
-      saveAppSetting("rich_paste_hotkey", newHotkey);
-      await invoke("set_rich_paste_hotkey", { hotkey: newHotkey }).catch(console.error);
-      setIsRecordingRich(false);
+      try {
+        await invoke("set_rich_paste_hotkey", { hotkey: newHotkey });
+        setRichPasteHotkey(newHotkey);
+      } catch (err) {
+        pushToast(`${t("hotkey_register_failed")}${err?.toString() || ""}`, 5000);
+      } finally {
+        setIsRecordingRich(false);
+      }
     },
     [
       checkHotkeyConflict,
       pushToast,
-      saveAppSetting,
       setRichPasteHotkey,
-      setIsRecordingRich
+      setIsRecordingRich,
+      t
     ]
   );
 
@@ -203,12 +210,17 @@ export const useHotkeyConfig = ({
         }
       }
 
-      setPlainPasteHotkey(newHotkey);
-      saveAppSetting("plain_paste_hotkey", newHotkey);
-      await invoke("set_plain_paste_hotkey", { hotkey: newHotkey }).catch(console.error);
-      setIsRecordingPlain(false);
+      try {
+        await invoke("set_plain_paste_hotkey", { hotkey: newHotkey });
+        setPlainPasteHotkey(newHotkey);
+      } catch (err) {
+        const errorMsg = `${t("hotkey_register_failed")}${err?.toString() || ""}`;
+        pushToast(errorMsg, 5000);
+      } finally {
+        setIsRecordingPlain(false);
+      }
     },
-    [checkHotkeyConflict, pushToast, saveAppSetting, setPlainPasteHotkey, setIsRecordingPlain]
+    [checkHotkeyConflict, pushToast, setPlainPasteHotkey, setIsRecordingPlain, t]
   );
 
   const updateSearchHotkey = useCallback(
@@ -230,17 +242,21 @@ export const useHotkeyConfig = ({
         }
       }
 
-      setSearchHotkey(newHotkey);
-      saveAppSetting("search_hotkey", newHotkey);
-      await invoke("set_search_hotkey", { hotkey: newHotkey }).catch(console.error);
-      setIsRecordingSearch(false);
+      try {
+        await invoke("set_search_hotkey", { hotkey: newHotkey });
+        setSearchHotkey(newHotkey);
+      } catch (err) {
+        pushToast(`${t("hotkey_register_failed")}${err?.toString() || ""}`, 5000);
+      } finally {
+        setIsRecordingSearch(false);
+      }
     },
     [
       checkHotkeyConflict,
       pushToast,
-      saveAppSetting,
       setSearchHotkey,
-      setIsRecordingSearch
+      setIsRecordingSearch,
+      t
     ]
   );
 

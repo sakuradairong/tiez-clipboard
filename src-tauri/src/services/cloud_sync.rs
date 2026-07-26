@@ -1,7 +1,10 @@
 use crate::app::commands::file_cmd::{image_ext_from_mime, save_emoji_favorite_bytes_to_dir};
-use crate::database::DbState;
+use crate::database::{
+    calc_legacy_text_hash, has_sensitive_tag, uses_text_content_hash, DbState, ENCRYPT_PREFIX,
+};
 use crate::domain::models::ClipboardEntry;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::encryption;
 use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
 use base64::Engine;
@@ -49,6 +52,12 @@ const WEBDAV_RETRY_BASE_DELAY_MS: u64 = 600;
 const WEBDAV_HEAD_REBUILD_INTERVAL_SECS: i64 = 5 * 60;
 const WEBDAV_HEAD_FILENAME: &str = "head.json";
 const WEBDAV_BLOB_CACHE_MAX_ENTRIES: usize = 5000;
+const HASH_VERSION_LEGACY: i64 = 1;
+const HASH_VERSION_WHITESPACE: i64 = 2;
+
+fn default_hash_version() -> i64 {
+    HASH_VERSION_LEGACY
+}
 
 static CLOUD_SYNC_TASK_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLOUD_SYNC_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -152,6 +161,8 @@ struct CloudSyncItem {
     pub content: String,
     #[serde(default)]
     pub content_hash: i64,
+    #[serde(default = "default_hash_version")]
+    pub hash_version: i64,
     #[serde(default)]
     pub deleted_at: i64,
     #[serde(default)]
@@ -690,6 +701,23 @@ fn encode_emoji_favorites_setting(raw: &str) -> Option<String> {
     serde_json::to_string(&encoded).ok()
 }
 
+fn emoji_sync_payload_hash(sync_payload: &str) -> i64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    use std::hash::{Hash, Hasher};
+    sync_payload.hash(&mut hasher);
+    hasher.finish() as i64
+}
+
+fn merged_emoji_suppression_hash(
+    remote_paths: &[String],
+    merged_paths: &[String],
+    merged_sync_payload: &str,
+) -> Option<i64> {
+    // Both path lists are materialized, sorted, and deduplicated. Equality is
+    // therefore proof that the exact resulting local payload came from remote.
+    (remote_paths == merged_paths).then(|| emoji_sync_payload_hash(merged_sync_payload))
+}
+
 fn materialize_emoji_favorite_paths(app: &AppHandle, raw: &str) -> AppResult<Vec<String>> {
     let items: Vec<String> = serde_json::from_str(raw)
         .map_err(|e| AppError::Validation(format!("invalid emoji favorites payload: {}", e)))?;
@@ -796,13 +824,57 @@ fn normalize_item_for_sync(mut item: CloudSyncItem) -> Option<CloudSyncItem> {
     Some(item)
 }
 
+fn uses_text_sync_hash(content_type: &str) -> bool {
+    uses_text_content_hash(content_type)
+}
+
 fn compute_sync_content_hash(content_type: &str, content: &str) -> i64 {
     match content_type {
         "image" => crate::database::calc_image_hash(content).unwrap_or(0),
-        "text" | "code" | "url" | "rich_text" | "file" | "video" => {
+        content_type if uses_text_sync_hash(content_type) => {
             crate::database::calc_text_hash(content) as i64
         }
         _ => 0,
+    }
+}
+
+fn compute_legacy_sync_content_hash(content_type: &str, content: &str) -> i64 {
+    if uses_text_sync_hash(content_type) {
+        calc_legacy_text_hash(content) as i64
+    } else {
+        compute_sync_content_hash(content_type, content)
+    }
+}
+
+fn canonicalize_incoming_live_hash(item: &mut CloudSyncItem) {
+    if item.deleted_at > 0 {
+        return;
+    }
+
+    if uses_text_sync_hash(&item.content_type) {
+        // A buggy/pre-version peer may have uploaded locally encrypted bytes. Do
+        // not relabel those bytes as a v2 plaintext hash unless they are readable.
+        let Some(plain_content) = try_decode_persisted_sync_text(&item.content) else {
+            return;
+        };
+        item.content = plain_content;
+        item.content_hash = compute_sync_content_hash(&item.content_type, &item.content);
+        item.hash_version = HASH_VERSION_WHITESPACE;
+    } else if item.content_type == "image"
+        && item.hash_version <= HASH_VERSION_LEGACY
+        && !item.content.trim().is_empty()
+    {
+        // Image identity did not change in v2. Blob-backed images reach this point
+        // after enrichment, so prefer a hash recomputed from the materialized image.
+        // If the image is no longer readable, a supplied legacy hash is still the
+        // same identity and can safely participate in v2 lookup.
+        let recomputed_hash = compute_sync_content_hash(&item.content_type, &item.content);
+        if recomputed_hash != 0 {
+            item.content_hash = recomputed_hash;
+        }
+        if item.content_hash != 0 {
+            item.hash_version = HASH_VERSION_WHITESPACE;
+        }
     }
 }
 
@@ -831,7 +903,10 @@ fn sync_key_for_item(item: &CloudSyncItem) -> Option<String> {
     if hash == 0 {
         return None;
     }
-    Some(format!("{}:{}", item.content_type, hash))
+    Some(format!(
+        "{}:{}:{}",
+        item.content_type, item.hash_version, hash
+    ))
 }
 
 fn sync_digest_for_item(item: &CloudSyncItem) -> String {
@@ -844,8 +919,9 @@ fn sync_digest_for_item(item: &CloudSyncItem) -> String {
     let preview_hash = crate::database::calc_text_hash(&item.preview);
     let source_hash = crate::database::calc_text_hash(&item.source_app);
     let meta = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         resolved_content_hash(item),
+        item.hash_version,
         item.timestamp,
         item.updated_at,
         item.updated_by,
@@ -1050,6 +1126,96 @@ fn replace_local_sync_index(
     Ok(())
 }
 
+fn try_decode_persisted_sync_text(value: &str) -> Option<String> {
+    if value.starts_with(ENCRYPT_PREFIX) {
+        encryption::decrypt_value(value).filter(|plain| plain != value)
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn decode_persisted_sync_text(value: String) -> String {
+    try_decode_persisted_sync_text(&value).unwrap_or(value)
+}
+
+fn encode_persisted_sync_text(value: &str, sensitive: bool) -> AppResult<String> {
+    if !sensitive {
+        return Ok(value.to_string());
+    }
+    #[cfg(not(feature = "portable"))]
+    {
+        encryption::encrypt_value(value).ok_or_else(|| {
+            AppError::Internal("failed to encrypt sensitive synced content".to_string())
+        })
+    }
+    #[cfg(feature = "portable")]
+    {
+        Ok(value.to_string())
+    }
+}
+
+fn load_persisted_sync_item(conn: &rusqlite::Connection, id: i64) -> AppResult<CloudSyncItem> {
+    conn.query_row(
+        "SELECT content_type, content, content_hash, html_content, source_app, timestamp,
+                sync_updated_at, sync_updated_by, preview, is_pinned, tags, use_count, pinned_order,
+                content_hash_version
+         FROM clipboard_history WHERE id = ?1",
+        rusqlite::params![id],
+        |row| {
+            let tags_json: String = row.get(10)?;
+            Ok(CloudSyncItem {
+                content_type: row.get(0)?,
+                content: decode_persisted_sync_text(row.get(1)?),
+                content_hash: row.get(2)?,
+                hash_version: row.get(13)?,
+                deleted_at: 0,
+                html_content: row
+                    .get::<_, Option<String>>(3)?
+                    .map(decode_persisted_sync_text),
+                content_blob_hash: None,
+                html_blob_hash: None,
+                source_app: row.get(4)?,
+                timestamp: row.get(5)?,
+                updated_at: row.get(6)?,
+                updated_by: row.get(7)?,
+                preview: decode_persisted_sync_text(row.get(8)?),
+                is_pinned: row.get(9)?,
+                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+                use_count: row.get(11)?,
+                pinned_order: row.get(12)?,
+            })
+        },
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+fn persisted_tombstone_sync_item(
+    content_type: &str,
+    content_hash: i64,
+    hash_version: i64,
+    deleted_at: i64,
+) -> CloudSyncItem {
+    CloudSyncItem {
+        content_type: content_type.to_string(),
+        content: String::new(),
+        content_hash,
+        hash_version,
+        deleted_at,
+        html_content: None,
+        content_blob_hash: None,
+        html_blob_hash: None,
+        source_app: "sync".to_string(),
+        timestamp: deleted_at,
+        updated_at: deleted_at,
+        updated_by: String::new(),
+        preview: String::new(),
+        is_pinned: false,
+        tags: Vec::new(),
+        use_count: 0,
+        pinned_order: 0,
+    }
+}
+
 fn record_remote_sync_digest(conn: &rusqlite::Connection, item: &CloudSyncItem) -> AppResult<()> {
     let mut normalized = item.clone();
     normalized.content_hash = resolved_content_hash(item);
@@ -1099,18 +1265,26 @@ fn get_setting_i64(app: &AppHandle, key: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn set_setting_i64_result(app: &AppHandle, key: &str, value: i64) -> AppResult<()> {
+    let db_state = app
+        .try_state::<DbState>()
+        .ok_or_else(|| AppError::Internal("DB state unavailable".to_string()))?;
+    db_state
+        .settings_repo
+        .set(key, &value.to_string())
+        .map_err(AppError::from)
+}
+
 fn set_setting_i64(app: &AppHandle, key: &str, value: i64) {
-    if let Some(db_state) = app.try_state::<DbState>() {
-        let _ = db_state.settings_repo.set(key, &value.to_string());
-    }
+    let _ = set_setting_i64_result(app, key, value);
 }
 
 fn get_local_webdav_op_seq(app: &AppHandle) -> i64 {
     get_setting_i64(app, CLOUD_SYNC_WEBDAV_LOCAL_SEQ_KEY, 0)
 }
 
-fn set_local_webdav_op_seq(app: &AppHandle, seq: i64) {
-    set_setting_i64(app, CLOUD_SYNC_WEBDAV_LOCAL_SEQ_KEY, seq);
+fn set_local_webdav_op_seq(app: &AppHandle, seq: i64) -> AppResult<()> {
+    set_setting_i64_result(app, CLOUD_SYNC_WEBDAV_LOCAL_SEQ_KEY, seq)
 }
 
 fn load_webdav_op_cursor_map(app: &AppHandle) -> HashMap<String, i64> {
@@ -1205,22 +1379,33 @@ fn collect_local_syncable_items(
         }
     }
 
-    let sync_versions: HashMap<i64, (i64, String)> = {
+    let sync_versions: HashMap<i64, (i64, String, i64, i64)> = {
         let conn = db_state
             .conn
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut stmt = conn
-            .prepare("SELECT id, sync_updated_at, sync_updated_by FROM clipboard_history")
+            .prepare(
+                "SELECT id, sync_updated_at, sync_updated_by, content_hash, content_hash_version
+                 FROM clipboard_history",
+            )
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut versions = HashMap::new();
         for row in rows {
-            let (id, updated_at, updated_by) =
+            let (id, updated_at, updated_by, content_hash, hash_version) =
                 row.map_err(|e| AppError::Internal(e.to_string()))?;
-            versions.insert(id, (updated_at, updated_by));
+            versions.insert(id, (updated_at, updated_by, content_hash, hash_version));
         }
         versions
     };
@@ -1228,14 +1413,15 @@ fn collect_local_syncable_items(
     let mut items: Vec<CloudSyncItem> = entries
         .into_iter()
         .filter_map(|e| {
-            let (updated_at, updated_by) = sync_versions
+            let (updated_at, updated_by, persisted_hash, persisted_hash_version) = sync_versions
                 .get(&e.id)
                 .cloned()
-                .unwrap_or_else(|| (e.timestamp, String::new()));
+                .unwrap_or_else(|| (e.timestamp, String::new(), 0, HASH_VERSION_WHITESPACE));
             let normalized = normalize_item_for_sync(CloudSyncItem {
                 content_type: e.content_type,
                 content: e.content,
                 content_hash: 0,
+                hash_version: HASH_VERSION_WHITESPACE,
                 deleted_at: 0,
                 html_content: e.html_content,
                 content_blob_hash: None,
@@ -1251,7 +1437,12 @@ fn collect_local_syncable_items(
                 pinned_order: e.pinned_order,
             })?;
             let mut item = normalized;
-            item.content_hash = compute_sync_content_hash(&item.content_type, &item.content);
+            item.content_hash = if persisted_hash != 0 {
+                persisted_hash
+            } else {
+                compute_sync_content_hash(&item.content_type, &item.content)
+            };
+            item.hash_version = persisted_hash_version;
             Some(item)
         })
         .collect();
@@ -1286,7 +1477,7 @@ fn collect_local_tombstones(
 
     let mut stmt = conn
         .prepare(
-            "SELECT content_type, content_hash, deleted_at
+            "SELECT content_type, content_hash, hash_version, deleted_at
              FROM cloud_sync_tombstones
              ORDER BY deleted_at ASC",
         )
@@ -1297,13 +1488,14 @@ fn collect_local_tombstones(
                 content_type: row.get(0)?,
                 content: String::new(),
                 content_hash: row.get(1)?,
-                deleted_at: row.get(2)?,
+                hash_version: row.get(2)?,
+                deleted_at: row.get(3)?,
                 html_content: None,
                 content_blob_hash: None,
                 html_blob_hash: None,
                 source_app: "sync".to_string(),
-                timestamp: row.get(2)?,
-                updated_at: row.get(2)?,
+                timestamp: row.get(3)?,
+                updated_at: row.get(3)?,
                 updated_by: String::new(),
                 preview: String::new(),
                 is_pinned: false,
@@ -1325,12 +1517,65 @@ fn collect_local_tombstones(
     Ok(items)
 }
 
+fn with_sync_entry_savepoint<T, F>(conn: &rusqlite::Connection, operation: F) -> AppResult<T>
+where
+    F: FnOnce() -> AppResult<T>,
+{
+    const SAVEPOINT: &str = "tiez_sync_entry_update";
+    conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT};"))
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    match operation() {
+        Ok(value) => match conn.execute_batch(&format!("RELEASE SAVEPOINT {SAVEPOINT};")) {
+            Ok(()) => Ok(value),
+            Err(release_error) => {
+                let rollback = conn.execute_batch(&format!(
+                    "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
+                ));
+                match rollback {
+                    Ok(()) => Err(AppError::Internal(release_error.to_string())),
+                    Err(rollback_error) => Err(AppError::Internal(format!(
+                        "{release_error}; savepoint rollback also failed: {rollback_error}"
+                    ))),
+                }
+            }
+        },
+        Err(operation_error) => {
+            let rollback = conn.execute_batch(&format!(
+                "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
+            ));
+            match rollback {
+                Ok(()) => Err(operation_error),
+                Err(rollback_error) => Err(AppError::Internal(format!(
+                    "{operation_error}; savepoint rollback also failed: {rollback_error}"
+                ))),
+            }
+        }
+    }
+}
+
 fn update_existing_entry_from_sync(
     conn: &rusqlite::Connection,
     id: i64,
     item: &CloudSyncItem,
     effective_timestamp: i64,
 ) -> AppResult<(bool, bool)> {
+    let (local_content_raw, local_html_raw, local_content_hash, local_hash_version): (
+        String,
+        Option<String>,
+        i64,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT content, html_content, content_hash, content_hash_version
+             FROM clipboard_history WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let local_content = decode_persisted_sync_text(local_content_raw);
+    let local_html = local_html_raw.map(decode_persisted_sync_text);
+
     let (
         local_timestamp,
         local_is_pinned,
@@ -1371,25 +1616,30 @@ fn update_existing_entry_from_sync(
     let remote_updated_at = item_updated_at(item);
     let remote_version = (remote_updated_at, item.updated_by.as_str());
     let local_version = (local_updated_at, local_updated_by.as_str());
+    let local_preview_plain = decode_persisted_sync_text(local_preview.clone());
     let remote_metadata_key = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
         effective_timestamp,
         item.is_pinned,
         item.pinned_order,
         item.preview,
         item.source_app,
         item.use_count,
-        remote_tags_json
+        remote_tags_json,
+        item.content,
+        item.html_content.as_deref().unwrap_or_default()
     );
     let local_metadata_key = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
         local_timestamp,
         local_is_pinned,
         local_pinned_order,
-        local_preview,
+        local_preview_plain,
         local_source_app,
         local_use_count,
-        local_tags_json
+        local_tags_json,
+        local_content,
+        local_html.as_deref().unwrap_or_default()
     );
     let remote_wins = remote_version > local_version
         || (remote_version == local_version && remote_metadata_key > local_metadata_key);
@@ -1408,14 +1658,31 @@ fn update_existing_entry_from_sync(
     let mut is_external = local_is_external;
     let mut updated_at = local_updated_at;
     let mut updated_by = local_updated_by;
+    let mut content = None;
+    let mut html_content = None;
+    let mut content_hash = local_content_hash;
+    let mut hash_version = local_hash_version;
 
     if remote_wins {
+        let sensitive = has_sensitive_tag(&item.tags);
         timestamp = effective_timestamp;
         is_pinned = item.is_pinned;
         pinned_order = item.pinned_order;
-        if !item.preview.is_empty() {
-            preview = item.preview.clone();
-        }
+        let winning_preview = if item.preview.is_empty() {
+            local_preview_plain.as_str()
+        } else {
+            item.preview.as_str()
+        };
+        preview = encode_persisted_sync_text(winning_preview, sensitive)?;
+        content = Some(encode_persisted_sync_text(&item.content, sensitive)?);
+        html_content = Some(
+            item.html_content
+                .as_deref()
+                .map(|html| encode_persisted_sync_text(html, sensitive))
+                .transpose()?,
+        );
+        content_hash = resolved_content_hash(item);
+        hash_version = item.hash_version;
         if item.source_app != "sync" && !item.source_app.is_empty() {
             source_app = item.source_app.clone();
             source_app_path = None;
@@ -1434,216 +1701,330 @@ fn update_existing_entry_from_sync(
     }
 
     if changed {
-        conn.execute(
-            "UPDATE clipboard_history SET
-                timestamp = ?1,
-                is_pinned = ?2,
-                pinned_order = ?3,
-                preview = ?4,
-                source_app = ?5,
-                use_count = ?6,
-                tags = ?7,
-                source_app_path = ?8,
-                is_external = ?9,
-                sync_updated_at = ?10,
-                sync_updated_by = ?11
-             WHERE id = ?12",
-            rusqlite::params![
-                timestamp,
-                is_pinned,
-                pinned_order,
-                preview,
-                source_app,
-                use_count,
-                tags_json,
-                source_app_path,
-                if is_external { 1 } else { 0 },
-                updated_at,
-                updated_by,
-                id
-            ],
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-        if tags_json != local_tags_json {
+        with_sync_entry_savepoint(conn, || {
             conn.execute(
-                "DELETE FROM entry_tags WHERE entry_id = ?",
-                rusqlite::params![id],
+                "UPDATE clipboard_history SET
+                    timestamp = ?1,
+                    is_pinned = ?2,
+                    pinned_order = ?3,
+                    preview = ?4,
+                    source_app = ?5,
+                    use_count = ?6,
+                    tags = ?7,
+                    source_app_path = ?8,
+                    is_external = ?9,
+                    sync_updated_at = ?10,
+                    sync_updated_by = ?11,
+                    content = COALESCE(?12, content),
+                    html_content = CASE WHEN ?12 IS NULL THEN html_content ELSE ?13 END,
+                    content_hash = ?14,
+                    content_hash_version = ?15
+                 WHERE id = ?16",
+                rusqlite::params![
+                    timestamp,
+                    is_pinned,
+                    pinned_order,
+                    preview,
+                    source_app,
+                    use_count,
+                    tags_json,
+                    source_app_path,
+                    if is_external { 1 } else { 0 },
+                    updated_at,
+                    updated_by,
+                    content,
+                    html_content,
+                    content_hash,
+                    hash_version,
+                    id
+                ],
             )
             .map_err(|e| AppError::Internal(e.to_string()))?;
-            for tag in &item.tags {
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?, ?)",
-                    rusqlite::params![id, tag],
-                );
+
+            if remote_wins {
+                conn.execute(
+                    "DELETE FROM entry_tags WHERE entry_id = ?",
+                    rusqlite::params![id],
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+                for tag in &item.tags {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?, ?)",
+                        rusqlite::params![id, tag],
+                    )
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                }
             }
-        }
+            Ok(())
+        })?;
     }
 
     Ok((changed, remote_accepted))
 }
 
-fn apply_remote_changes(
-    app: &AppHandle,
-    remote_items: &[CloudSyncItem],
-    prefs: &CloudSyncContentPrefs,
+fn legacy_hash_matches_content(content_type: &str, content: &str, hash: i64) -> bool {
+    compute_legacy_sync_content_hash(content_type, content) == hash
+}
+
+fn remote_tombstone_matches_stored_entry(
+    content_type: &str,
+    remote_hash: i64,
+    remote_hash_version: i64,
+    stored_content: &str,
+    stored_hash: i64,
+    stored_hash_version: i64,
+) -> bool {
+    if remote_hash_version <= HASH_VERSION_LEGACY {
+        // Version-1/unversioned tombstones are ambiguous: historical peers
+        // produced both trim-equivalent hashes and exact pre-version hashes.
+        stored_hash == remote_hash
+            || try_decode_persisted_sync_text(stored_content)
+                .is_some_and(|plain| legacy_hash_matches_content(content_type, &plain, remote_hash))
+    } else {
+        // Never apply a v2 deletion to a legacy row merely because the numeric
+        // hash happens to collide; both sides must use whitespace semantics.
+        stored_hash_version >= HASH_VERSION_WHITESPACE && stored_hash == remote_hash
+    }
+}
+
+fn matching_tombstone_deleted_at(
+    conn: &rusqlite::Connection,
+    item: &CloudSyncItem,
+) -> AppResult<i64> {
+    let exact_hash = resolved_content_hash(item);
+    let legacy_hash = compute_legacy_sync_content_hash(&item.content_type, &item.content);
+    conn.query_row(
+        "SELECT COALESCE(MAX(deleted_at), 0) FROM cloud_sync_tombstones
+         WHERE content_type = ?1
+           AND ((hash_version <= 1 AND content_hash IN (?2, ?3))
+             OR (?4 >= 2 AND hash_version >= 2 AND content_hash = ?3))",
+        rusqlite::params![
+            item.content_type,
+            legacy_hash,
+            exact_hash,
+            item.hash_version
+        ],
+        |row| row.get(0),
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))
+}
+
+fn clear_matching_tombstones(conn: &rusqlite::Connection, item: &CloudSyncItem) -> AppResult<()> {
+    let exact_hash = resolved_content_hash(item);
+    let legacy_hash = compute_legacy_sync_content_hash(&item.content_type, &item.content);
+    conn.execute(
+        "DELETE FROM cloud_sync_tombstones
+         WHERE content_type = ?1 AND deleted_at <= ?4
+           AND ((hash_version <= 1 AND content_hash IN (?2, ?3))
+             OR (?5 >= 2 AND hash_version >= 2 AND content_hash = ?3))",
+        rusqlite::params![
+            item.content_type,
+            legacy_hash,
+            exact_hash,
+            item_updated_at(item),
+            item.hash_version
+        ],
+    )
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
+fn apply_remote_tombstone_with_conn(
+    repo: &crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository,
+    conn: &rusqlite::Connection,
+    item: &CloudSyncItem,
+    data_dir: Option<&Path>,
 ) -> AppResult<usize> {
-    if remote_items.is_empty() {
+    let remote_hash = resolved_content_hash(item);
+    if remote_hash == 0 || item.deleted_at <= 0 {
         return Ok(0);
     }
 
-    let db_state = app
-        .try_state::<DbState>()
-        .ok_or_else(|| AppError::Internal("DB state unavailable".to_string()))?;
-    let mut applied = 0usize;
-    let app_data_dir = get_app_data_dir(app);
-    for item in remote_items {
-        if item.content_type == "emoji_sync" {
-            if !prefs.emoji {
-                continue;
-            }
-            if let Err(e) = merge_remote_emojis(app, &item.content) {
-                println!("Error merging remote emojis: {}", e);
-            }
-            applied += 1;
-            continue;
-        }
-
-        if !is_cloud_clipboard_content_type(&item.content_type) {
-            continue;
-        }
-        if !prefs.includes_content_type(&item.content_type) {
-            continue;
-        }
-
-        let conn = db_state
-            .conn
-            .lock()
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        let effective_timestamp = if item.timestamp > 0 {
-            item.timestamp
-        } else {
-            now_ms()
-        };
-
-        let remote_hash = if item.content_hash != 0 {
-            item.content_hash
-        } else {
-            compute_sync_content_hash(&item.content_type, &item.content)
-        };
-
-        if item.deleted_at > 0 {
-            if remote_hash == 0 {
-                continue;
-            }
-            let tombstone_ts = item.deleted_at.max(effective_timestamp);
-            conn.execute(
-                "INSERT INTO cloud_sync_tombstones (content_type, content_hash, deleted_at)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(content_type, content_hash)
-                 DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
-                rusqlite::params![item.content_type, remote_hash, tombstone_ts],
+    let may_cleanup_after_savepoint = conn.is_autocommit();
+    let (applied, cleanup_paths) = with_sync_entry_savepoint(conn, || {
+        let tombstone_ts = item.deleted_at;
+        let hash_version = item.hash_version.max(HASH_VERSION_LEGACY);
+        conn.execute(
+            "INSERT INTO cloud_sync_tombstones
+                (content_type, content_hash, hash_version, deleted_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(content_type, content_hash, hash_version)
+             DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
+            rusqlite::params![item.content_type, remote_hash, hash_version, tombstone_ts],
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+        let persisted_tombstone_ts = conn
+            .query_row(
+                "SELECT deleted_at FROM cloud_sync_tombstones
+                 WHERE content_type = ?1 AND content_hash = ?2 AND hash_version = ?3",
+                rusqlite::params![item.content_type, remote_hash, hash_version],
+                |row| row.get::<_, i64>(0),
             )
             .map_err(|e| AppError::Internal(e.to_string()))?;
-            let persisted_tombstone_ts = conn
-                .query_row(
-                    "SELECT deleted_at FROM cloud_sync_tombstones
-                     WHERE content_type = ?1 AND content_hash = ?2",
-                    rusqlite::params![item.content_type, remote_hash],
-                    |row| row.get::<_, i64>(0),
+
+        let entries = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, sync_updated_at, sync_updated_by, content, content_hash,
+                            content_hash_version, html_content, is_external
+                     FROM clipboard_history WHERE content_type = ?1",
                 )
                 .map_err(|e| AppError::Internal(e.to_string()))?;
-
-            let entries = {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, sync_updated_at, sync_updated_by
-                         FROM clipboard_history
-                         WHERE content_type = ?1 AND content_hash = ?2",
-                    )
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                let rows = stmt
-                    .query_map(rusqlite::params![item.content_type, remote_hash], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                let mut entries = Vec::new();
-                for row in rows {
-                    entries.push(row.map_err(|e| AppError::Internal(e.to_string()))?);
+            let rows = stmt
+                .query_map(rusqlite::params![item.content_type], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i32>(7)? == 1,
+                    ))
+                })
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut entries = Vec::new();
+            for row in rows {
+                let entry = row.map_err(|e| AppError::Internal(e.to_string()))?;
+                if remote_tombstone_matches_stored_entry(
+                    &item.content_type,
+                    remote_hash,
+                    hash_version,
+                    &entry.3,
+                    entry.4,
+                    entry.5,
+                ) {
+                    entries.push(entry);
                 }
-                entries
-            };
-            let mut deletion_accepted = true;
-            for (id, local_updated_at, local_updated_by) in entries {
-                if (tombstone_ts, item.updated_by.as_str())
-                    < (local_updated_at, local_updated_by.as_str())
-                {
-                    deletion_accepted = false;
-                    continue;
-                }
-                db_state
-                    .repo
-                    .delete_with_conn(&conn, id, app_data_dir.as_deref())
-                    .map_err(AppError::Internal)?;
-                applied += 1;
             }
-            // delete_with_conn creates a local-time tombstone. Preserve the remote
-            // revision so pulling a deletion does not generate a newer echo delete.
-            conn.execute(
-                "UPDATE cloud_sync_tombstones SET deleted_at = ?3
-                 WHERE content_type = ?1 AND content_hash = ?2",
-                rusqlite::params![item.content_type, remote_hash, persisted_tombstone_ts],
-            )
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-            if deletion_accepted && persisted_tombstone_ts == tombstone_ts {
-                record_remote_sync_digest(&conn, item)?;
-            }
-            continue;
-        }
+            entries
+        };
 
-        if item.content.trim().is_empty() {
-            continue;
-        }
-
-        if remote_hash != 0 {
-            let tombstone_deleted_at = conn
-                .query_row(
-                    "SELECT deleted_at FROM cloud_sync_tombstones WHERE content_type = ?1 AND content_hash = ?2 LIMIT 1",
-                    rusqlite::params![item.content_type, remote_hash],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap_or(0);
-            if tombstone_deleted_at >= item_updated_at(item) {
+        let mut applied = 0;
+        let mut deletion_accepted = true;
+        let mut cleanup_paths = HashSet::new();
+        for (id, local_updated_at, local_updated_by, content, _, _, html, is_external) in entries {
+            if (tombstone_ts, item.updated_by.as_str())
+                < (local_updated_at, local_updated_by.as_str())
+            {
+                deletion_accepted = false;
                 continue;
             }
+
+            if let Some(dir) = data_dir {
+                cleanup_paths.extend(repo.collect_attachment_paths_for_cleanup(
+                    &content,
+                    html.as_deref(),
+                    is_external,
+                    &dir.join("attachments"),
+                ));
+            }
+            // A remote deletion already has its authoritative tombstone. Remove only
+            // the local row metadata so no newer local-time/v2 echo is manufactured.
+            // The surrounding sync savepoint owns both metadata statements.
+            repo.delete_metadata_with_conn(conn, id)
+                .map_err(AppError::Internal)?;
+            applied += 1;
         }
 
-        let existing = db_state
-            .repo
-            .find_by_content_with_conn(&conn, &item.content, Some(&item.content_type))
-            .map_err(AppError::Internal)?;
+        if deletion_accepted && persisted_tombstone_ts == tombstone_ts {
+            let persisted = persisted_tombstone_sync_item(
+                &item.content_type,
+                remote_hash,
+                hash_version,
+                persisted_tombstone_ts,
+            );
+            record_remote_sync_digest(conn, &persisted)?;
+        }
 
-        if let Some(id) = existing {
+        Ok((applied, cleanup_paths))
+    })?;
+
+    if may_cleanup_after_savepoint {
+        if let Some(dir) = data_dir {
+            repo.cleanup_unreferenced_attachment_paths_with_conn(
+                conn,
+                cleanup_paths,
+                &dir.join("attachments"),
+            );
+        }
+    }
+
+    Ok(applied)
+}
+
+fn find_existing_entry_for_sync(
+    conn: &rusqlite::Connection,
+    item: &CloudSyncItem,
+) -> AppResult<Option<i64>> {
+    let remote_hash = resolved_content_hash(item);
+    if remote_hash != 0 {
+        return Ok(conn
+            .query_row(
+                "SELECT id FROM clipboard_history
+                 WHERE content_type = ?1 AND content_hash = ?2
+                   AND ((?3 >= 2 AND content_hash_version >= 2)
+                     OR (?3 <= 1 AND content_hash_version <= 1))
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![item.content_type, remote_hash, item.hash_version],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok());
+    }
+
+    // Hashless payloads cannot participate in versioned lookup. Exact stored
+    // content is the only safe fallback (principally for unsupported images).
+    Ok(conn
+        .query_row(
+            "SELECT id FROM clipboard_history
+             WHERE content_type = ?1 AND content = ?2
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![item.content_type, item.content],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok())
+}
+
+fn apply_remote_emoji_item<F>(
+    item: &CloudSyncItem,
+    prefs: &CloudSyncContentPrefs,
+    merge: F,
+) -> AppResult<bool>
+where
+    F: FnOnce(&str) -> AppResult<()>,
+{
+    if item.content_type != "emoji_sync" || !prefs.emoji {
+        return Ok(false);
+    }
+    merge(&item.content)?;
+    Ok(true)
+}
+
+fn apply_remote_live_item_with_conn(
+    repo: &crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository,
+    conn: &rusqlite::Connection,
+    item: &CloudSyncItem,
+    effective_timestamp: i64,
+    data_dir: Option<&Path>,
+) -> AppResult<usize> {
+    with_sync_entry_savepoint(conn, || {
+        let remote_hash = resolved_content_hash(item);
+        if remote_hash != 0 && matching_tombstone_deleted_at(conn, item)? >= item_updated_at(item) {
+            return Ok(0);
+        }
+
+        if let Some(id) = find_existing_entry_for_sync(conn, item)? {
             let (changed, remote_accepted) =
-                update_existing_entry_from_sync(&conn, id, item, effective_timestamp)?;
-            if changed {
-                applied += 1;
-            }
+                update_existing_entry_from_sync(conn, id, item, effective_timestamp)?;
             if remote_hash != 0 {
-                let _ = conn.execute(
-                    "DELETE FROM cloud_sync_tombstones
-                     WHERE content_type = ?1 AND content_hash = ?2 AND deleted_at <= ?3",
-                    rusqlite::params![item.content_type, remote_hash, item_updated_at(item)],
-                );
+                clear_matching_tombstones(conn, item)?;
             }
             if remote_accepted {
-                record_remote_sync_digest(&conn, item)?;
+                let persisted = load_persisted_sync_item(conn, id)?;
+                record_remote_sync_digest(conn, &persisted)?;
             }
-            continue;
+            return Ok(usize::from(changed));
         }
 
         let preview = if item.preview.trim().is_empty() {
@@ -1675,26 +2056,103 @@ fn apply_remote_changes(
             file_preview_exists: true,
         };
 
-        let inserted_id = db_state
-            .repo
-            .save_with_conn(&conn, &entry, app_data_dir.as_deref())
+        let inserted_id = repo
+            .save_with_conn(conn, &entry, data_dir)
             .map_err(AppError::Internal)?;
-        conn.execute(
-            "UPDATE clipboard_history
-             SET sync_updated_at = ?1, sync_updated_by = ?2
-             WHERE id = ?3",
-            rusqlite::params![item_updated_at(item), item.updated_by, inserted_id],
-        )
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-        if remote_hash != 0 {
-            let _ = conn.execute(
-                "DELETE FROM cloud_sync_tombstones
-                 WHERE content_type = ?1 AND content_hash = ?2 AND deleted_at <= ?3",
-                rusqlite::params![item.content_type, remote_hash, item_updated_at(item)],
-            );
+        let affected = conn
+            .execute(
+                "UPDATE clipboard_history
+                 SET sync_updated_at = ?1,
+                     sync_updated_by = ?2,
+                     content_hash = CASE WHEN ?3 != 0 THEN ?3 ELSE content_hash END,
+                     content_hash_version = ?4
+                 WHERE id = ?5",
+                rusqlite::params![
+                    item_updated_at(item),
+                    item.updated_by,
+                    remote_hash,
+                    item.hash_version,
+                    inserted_id
+                ],
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if affected != 1 {
+            return Err(AppError::Internal(format!(
+                "new synced clipboard entry {inserted_id} disappeared before metadata update"
+            )));
         }
-        record_remote_sync_digest(&conn, item)?;
-        applied += 1;
+        if remote_hash != 0 {
+            clear_matching_tombstones(conn, item)?;
+        }
+        let persisted = load_persisted_sync_item(conn, inserted_id)?;
+        record_remote_sync_digest(conn, &persisted)?;
+        Ok(1)
+    })
+}
+
+fn apply_remote_changes(
+    app: &AppHandle,
+    remote_items: &[CloudSyncItem],
+    prefs: &CloudSyncContentPrefs,
+) -> AppResult<usize> {
+    if remote_items.is_empty() {
+        return Ok(0);
+    }
+
+    let db_state = app
+        .try_state::<DbState>()
+        .ok_or_else(|| AppError::Internal("DB state unavailable".to_string()))?;
+    let mut applied = 0usize;
+    let app_data_dir = get_app_data_dir(app);
+    for remote_item in remote_items {
+        let mut normalized_item = remote_item.clone();
+        canonicalize_incoming_live_hash(&mut normalized_item);
+        let item = &normalized_item;
+        if item.content_type == "emoji_sync" {
+            if apply_remote_emoji_item(item, prefs, |content| merge_remote_emojis(app, content))? {
+                applied += 1;
+            }
+            continue;
+        }
+
+        if !is_cloud_clipboard_content_type(&item.content_type) {
+            continue;
+        }
+        if !prefs.includes_content_type(&item.content_type) {
+            continue;
+        }
+
+        let conn = db_state
+            .conn
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let effective_timestamp = if item.timestamp > 0 {
+            item.timestamp
+        } else {
+            now_ms()
+        };
+
+        if item.deleted_at > 0 {
+            applied += apply_remote_tombstone_with_conn(
+                &db_state.repo,
+                &conn,
+                item,
+                app_data_dir.as_deref(),
+            )?;
+            continue;
+        }
+
+        if item.content.trim().is_empty() {
+            continue;
+        }
+
+        applied += apply_remote_live_item_with_conn(
+            &db_state.repo,
+            &conn,
+            item,
+            effective_timestamp,
+            app_data_dir.as_deref(),
+        )?;
     }
 
     Ok(applied)
@@ -3071,7 +3529,6 @@ async fn sync_once_webdav(
     let client = build_http_client()?;
     let paths = ensure_webdav_directories(&client, cfg).await?;
     let mut sync_head = resolve_webdav_sync_head(app, &client, cfg, &paths, now).await?;
-    let mut sync_head_dirty = false;
     let mut webdav_blob_cache = load_webdav_blob_cache(app);
     let should_pull_snapshot = force_snapshot
         || should_pull_webdav_snapshot(
@@ -3085,7 +3542,12 @@ async fn sync_once_webdav(
 
     let mut uploaded_items = 0usize;
     if !delta_items.is_empty() {
-        let mut next_seq = get_local_webdav_op_seq(app);
+        let published_seq = sync_head
+            .devices
+            .get(&cfg.device_id)
+            .map(|device| device.latest_op_seq)
+            .unwrap_or(0);
+        let mut next_seq = get_local_webdav_op_seq(app).max(published_seq);
         let mut processed_delta = delta_items.clone();
         process_items_blobs_before_push(
             &client,
@@ -3102,13 +3564,17 @@ async fn sync_once_webdav(
             next_seq = next_seq.saturating_add(1);
             upload_webdav_ops_batch(&client, cfg, &paths.ops_path, next_seq, chunk).await?;
         }
-        set_local_webdav_op_seq(app, next_seq);
-        replace_local_sync_index(app, &collapsed_index)?;
-        uploaded_items += delta_items.len();
+        // Publish discoverability before suppressing these local deltas. If the head
+        // write fails, the sequence/index remain unchanged and the idempotent op files
+        // are retried on the next run rather than becoming permanently invisible.
         update_webdav_head_device(&mut sync_head, &cfg.device_id, |device| {
             device.latest_op_seq = device.latest_op_seq.max(next_seq);
         });
-        sync_head_dirty = true;
+        sync_head.updated_at = now_ms();
+        upload_webdav_sync_head(&client, cfg, &paths.head_path, &sync_head).await?;
+        set_local_webdav_op_seq(app, next_seq)?;
+        replace_local_sync_index(app, &collapsed_index)?;
+        uploaded_items += delta_items.len();
     }
 
     if cloud_sync_cancel_requested() {
@@ -3148,14 +3614,24 @@ async fn sync_once_webdav(
     // Incremental Emoji Sync check
     if let Ok(emoji_op) = check_and_create_emoji_sync_op(app) {
         if let Some(op) = emoji_op {
-            let next_seq = get_local_webdav_op_seq(app).saturating_add(1);
+            let emoji_hash = op.content_hash;
+            let published_seq = sync_head
+                .devices
+                .get(&cfg.device_id)
+                .map(|device| device.latest_op_seq)
+                .unwrap_or(0);
+            let next_seq = get_local_webdav_op_seq(app)
+                .max(published_seq)
+                .saturating_add(1);
             upload_webdav_ops_batch(&client, cfg, &paths.ops_path, next_seq, &[op]).await?;
-            set_local_webdav_op_seq(app, next_seq);
-            uploaded_items += 1;
             update_webdav_head_device(&mut sync_head, &cfg.device_id, |device| {
                 device.latest_op_seq = device.latest_op_seq.max(next_seq);
             });
-            sync_head_dirty = true;
+            sync_head.updated_at = now_ms();
+            upload_webdav_sync_head(&client, cfg, &paths.head_path, &sync_head).await?;
+            set_local_webdav_op_seq(app, next_seq)?;
+            LAST_PUSHED_EMOJI_HASH.store(emoji_hash, Ordering::Relaxed);
+            uploaded_items += 1;
         }
     }
 
@@ -3200,25 +3676,26 @@ async fn sync_once_webdav(
         )
         .await?;
         uploaded_items += snapshot_items.len();
+        let snapshot_updated_at = now_ms();
         update_webdav_head_device(&mut sync_head, &cfg.device_id, |device| {
             device.latest_op_seq = device.latest_op_seq.max(latest_op_seq);
-            device.snapshot_updated_at = device.snapshot_updated_at.max(now_ms());
+            device.snapshot_updated_at = device.snapshot_updated_at.max(snapshot_updated_at);
             device.snapshot_op_seq = device.snapshot_op_seq.max(latest_op_seq);
         });
         let local_settings =
             upload_webdav_settings_snapshot(app, &client, cfg, &paths.settings_path).await?;
         uploaded_items += local_settings.len();
+        let settings_updated_at = now_ms();
         update_webdav_head_device(&mut sync_head, &cfg.device_id, |device| {
-            device.settings_updated_at = device.settings_updated_at.max(now_ms());
+            device.settings_updated_at = device.settings_updated_at.max(settings_updated_at);
         });
-        sync_head_dirty = true;
-        set_setting_i64(app, CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY, now);
-        let _ = cleanup_local_webdav_ops(&client, cfg, &paths.ops_path, latest_op_seq).await;
-    }
 
-    if sync_head_dirty {
+        // Publication is the commit point: retry without advancing the local snapshot
+        // clock or deleting covered operations unless the updated head is discoverable.
         sync_head.updated_at = now_ms();
         upload_webdav_sync_head(&client, cfg, &paths.head_path, &sync_head).await?;
+        set_setting_i64_result(app, CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY, now)?;
+        let _ = cleanup_local_webdav_ops(&client, cfg, &paths.ops_path, latest_op_seq).await;
     }
 
     if received_items > 0 {
@@ -3549,21 +4026,17 @@ fn check_and_create_emoji_sync_op(app: &AppHandle) -> AppResult<Option<CloudSync
         return Ok(None);
     }
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    sync_payload.hash(&mut hasher);
-    let current_hash = hasher.finish() as i64;
+    let current_hash = emoji_sync_payload_hash(&sync_payload);
 
     if current_hash == LAST_PUSHED_EMOJI_HASH.load(Ordering::Relaxed) {
         return Ok(None);
     }
 
-    LAST_PUSHED_EMOJI_HASH.store(current_hash, Ordering::Relaxed);
-
     Ok(Some(CloudSyncItem {
         content_type: "emoji_sync".to_string(),
         content: sync_payload,
         content_hash: current_hash,
+        hash_version: HASH_VERSION_WHITESPACE,
         deleted_at: 0,
         html_content: None,
         content_blob_hash: None,
@@ -3605,29 +4078,26 @@ fn merge_remote_emojis(app: &AppHandle, remote_json: &str) -> AppResult<()> {
     let normalized_local_json = serde_json::to_string(&local_paths).unwrap_or_default();
 
     let mut merged: std::collections::HashSet<String> = local_paths.iter().cloned().collect();
-    for path in remote_paths {
-        merged.insert(path);
+    for path in &remote_paths {
+        merged.insert(path.clone());
     }
 
     let mut merged_paths: Vec<String> = merged.into_iter().collect();
     merged_paths.sort();
+    let new_json = serde_json::to_string(&merged_paths).unwrap_or_default();
 
     if merged_paths != local_paths || normalized_local_json != local_json {
-        let new_json = serde_json::to_string(&merged_paths).unwrap_or_default();
         db_state
             .settings_repo
             .set(EMOJI_FAVORITES_SETTING_KEY, &new_json)
             .map_err(AppError::from)?;
-
-        // Update local hash to prevent echoing back the same data.
-        let sync_payload =
-            encode_emoji_favorites_setting(&new_json).unwrap_or_else(|| "[]".to_string());
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::{Hash, Hasher};
-        sync_payload.hash(&mut hasher);
-        LAST_PUSHED_EMOJI_HASH.store(hasher.finish() as i64, Ordering::Relaxed);
-
         let _ = app.emit("settings-changed", ());
+    }
+
+    let sync_payload =
+        encode_emoji_favorites_setting(&new_json).unwrap_or_else(|| "[]".to_string());
+    if let Some(hash) = merged_emoji_suppression_hash(&remote_paths, &merged_paths, &sync_payload) {
+        LAST_PUSHED_EMOJI_HASH.store(hash, Ordering::Relaxed);
     }
 
     Ok(())
@@ -3636,14 +4106,21 @@ fn merge_remote_emojis(app: &AppHandle, remote_json: &str) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        collapse_items_by_sync_key, normalize_item_for_sync, record_remote_sync_digest,
+        apply_remote_emoji_item, apply_remote_live_item_with_conn,
+        apply_remote_tombstone_with_conn, canonicalize_incoming_live_hash,
+        clear_matching_tombstones, collapse_items_by_sync_key, decode_persisted_sync_text,
+        emoji_sync_payload_hash, find_existing_entry_for_sync, load_persisted_sync_item,
+        matching_tombstone_deleted_at, merged_emoji_suppression_hash, normalize_item_for_sync,
+        record_remote_sync_digest, remote_tombstone_matches_stored_entry,
         rewrite_rich_html_resources_for_sync, sync_digest_for_item, sync_key_for_item,
-        update_existing_entry_from_sync, CloudSyncItem, RICH_IMAGE_FALLBACK_PREFIX,
-        RICH_IMAGE_FALLBACK_SUFFIX,
+        update_existing_entry_from_sync, CloudSyncItem, HASH_VERSION_LEGACY,
+        HASH_VERSION_WHITESPACE, RICH_IMAGE_FALLBACK_PREFIX, RICH_IMAGE_FALLBACK_SUFFIX,
     };
+    use crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository;
     use rusqlite::Connection;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const TEST_PNG_BYTES: &[u8] = &[
@@ -3667,6 +4144,7 @@ mod tests {
             content_type: "text".to_string(),
             content: "shared".to_string(),
             content_hash: crate::database::calc_text_hash("shared") as i64,
+            hash_version: HASH_VERSION_WHITESPACE,
             deleted_at: 0,
             html_content: None,
             content_blob_hash: None,
@@ -3683,11 +4161,251 @@ mod tests {
         }
     }
 
+    #[test]
+    fn emoji_merge_failure_propagates_to_sync_caller() {
+        let mut item = test_sync_item(10, "remote", &[]);
+        item.content_type = "emoji_sync".to_string();
+        item.content = "not valid emoji data".to_string();
+        let error =
+            apply_remote_emoji_item(&item, &super::CloudSyncContentPrefs::default(), |_| {
+                Err(crate::error::AppError::Internal("merge failed".to_string()))
+            })
+            .expect_err("emoji merge error must propagate");
+        assert!(error.to_string().contains("merge failed"));
+    }
+
+    #[test]
+    fn exact_remote_emoji_payload_suppresses_echo_upload() {
+        let remote_paths = vec!["remote-favorite.png".to_string()];
+        let merged_paths = remote_paths.clone();
+        let resulting_payload = r#"["data:image/png;base64,cmVtb3Rl"]"#;
+
+        let last_pushed =
+            merged_emoji_suppression_hash(&remote_paths, &merged_paths, resulting_payload)
+                .expect("exact remote result should be suppressible");
+
+        assert_eq!(last_pushed, emoji_sync_payload_hash(resulting_payload));
+    }
+
+    #[test]
+    fn remote_plus_local_emoji_union_remains_pending_for_upload() {
+        let remote_paths = vec!["remote-favorite.png".to_string()];
+        let merged_paths = vec![
+            "local-favorite.png".to_string(),
+            "remote-favorite.png".to_string(),
+        ];
+        let resulting_payload =
+            r#"["data:image/png;base64,bG9jYWw=","data:image/png;base64,cmVtb3Rl"]"#;
+
+        assert_eq!(
+            merged_emoji_suppression_hash(&remote_paths, &merged_paths, resulting_payload),
+            None,
+            "the enlarged union must not update LAST_PUSHED_EMOJI_HASH"
+        );
+    }
+
+    #[test]
+    fn old_live_payload_is_canonicalized_to_whitespace_preserving_hash() {
+        let raw = r#"{
+            "content_type":"text","content":"hello ",
+            "content_hash":123,"deleted_at":0,"source_app":"old-peer",
+            "timestamp":10,"preview":"hello "
+        }"#;
+        let mut item: CloudSyncItem = serde_json::from_str(raw).expect("deserialize v1 item");
+        assert_eq!(item.hash_version, HASH_VERSION_LEGACY);
+
+        canonicalize_incoming_live_hash(&mut item);
+
+        assert_eq!(item.hash_version, HASH_VERSION_WHITESPACE);
+        assert_eq!(
+            item.content_hash,
+            crate::database::calc_text_hash("hello ") as i64
+        );
+        assert_ne!(
+            item.content_hash,
+            crate::database::calc_text_hash("hello") as i64
+        );
+    }
+
+    #[test]
+    fn unversioned_hashless_image_matches_migrated_v2_row_and_tombstone() {
+        let content = super::image_data_url_from_blob_bytes(TEST_PNG_BYTES)
+            .expect("create test image data url");
+        let expected_hash = crate::database::calc_image_hash(&content).expect("hash test image");
+        let mut item: CloudSyncItem = serde_json::from_value(serde_json::json!({
+            "content_type": "image",
+            "content": content,
+            "content_hash": 0,
+            "source_app": "old-peer",
+            "timestamp": 100,
+            "updated_at": 100,
+            "preview": "[Image Content]"
+        }))
+        .expect("deserialize unversioned image");
+        assert_eq!(item.hash_version, HASH_VERSION_LEGACY);
+
+        canonicalize_incoming_live_hash(&mut item);
+
+        assert_eq!(item.hash_version, HASH_VERSION_WHITESPACE);
+        assert_eq!(item.content_hash, expected_hash);
+
+        let conn = Connection::open_in_memory().expect("open image identity db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL
+             );
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );",
+        )
+        .expect("create image identity schema");
+        conn.execute(
+            "INSERT INTO clipboard_history
+                (id, content_type, content_hash, content_hash_version)
+             VALUES (1, 'image', ?1, 2)",
+            [expected_hash],
+        )
+        .expect("insert migrated v2 image row");
+        conn.execute(
+            "INSERT INTO cloud_sync_tombstones
+                (content_type, content_hash, hash_version, deleted_at)
+             VALUES ('image', ?1, 2, 200)",
+            [expected_hash],
+        )
+        .expect("insert v2 image tombstone");
+
+        assert_eq!(
+            find_existing_entry_for_sync(&conn, &item).expect("match migrated image row"),
+            Some(1)
+        );
+        let tombstone_deleted_at =
+            matching_tombstone_deleted_at(&conn, &item).expect("match v2 image tombstone");
+        assert_eq!(tombstone_deleted_at, 200);
+        assert!(tombstone_deleted_at >= super::item_updated_at(&item));
+    }
+
+    #[test]
+    fn unversioned_image_uses_supplied_hash_when_recomputation_is_unavailable() {
+        let mut item = test_sync_item(100, "old-peer", &[]);
+        item.content_type = "image".to_string();
+        item.content = "/definitely/missing/tiez-sync-image.png".to_string();
+        item.content_hash = 42;
+        item.hash_version = HASH_VERSION_LEGACY;
+
+        canonicalize_incoming_live_hash(&mut item);
+
+        assert_eq!(item.content_hash, 42);
+        assert_eq!(item.hash_version, HASH_VERSION_WHITESPACE);
+    }
+
+    #[test]
+    fn legacy_tombstones_accept_trimmed_and_pre_version_exact_hashes() {
+        let conn = Connection::open_in_memory().expect("open tombstone db");
+        conn.execute_batch(
+            "CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );",
+        )
+        .expect("create tombstone table");
+
+        let mut spaced = test_sync_item(50, "old-peer", &[]);
+        spaced.content = "hello ".to_string();
+        canonicalize_incoming_live_hash(&mut spaced);
+        let legacy_trimmed = crate::database::calc_legacy_text_hash("hello ") as i64;
+        let pre_version_exact = crate::database::calc_text_hash("hello ") as i64;
+
+        for predecessor_hash in [legacy_trimmed, pre_version_exact] {
+            conn.execute("DELETE FROM cloud_sync_tombstones", [])
+                .expect("clear predecessor tombstone");
+            conn.execute(
+                "INSERT INTO cloud_sync_tombstones
+                    (content_type, content_hash, hash_version, deleted_at)
+                 VALUES ('text', ?1, 1, 100)",
+                [predecessor_hash],
+            )
+            .expect("insert v1 tombstone");
+            assert_eq!(
+                matching_tombstone_deleted_at(&conn, &spaced)
+                    .expect("match ambiguous v1 tombstone"),
+                100
+            );
+        }
+
+        conn.execute("DELETE FROM cloud_sync_tombstones", [])
+            .expect("clear predecessor tombstones");
+        for predecessor_hash in [legacy_trimmed, pre_version_exact] {
+            conn.execute(
+                "INSERT INTO cloud_sync_tombstones
+                    (content_type, content_hash, hash_version, deleted_at)
+                 VALUES ('text', ?1, 1, 40)",
+                [predecessor_hash],
+            )
+            .expect("insert clearable v1 tombstone");
+        }
+        clear_matching_tombstones(&conn, &spaced).expect("clear ambiguous v1 tombstones");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count cleared tombstones");
+        assert_eq!(remaining, 0);
+
+        conn.execute(
+            "INSERT INTO cloud_sync_tombstones
+                (content_type, content_hash, hash_version, deleted_at)
+             VALUES ('text', ?1, 2, 100)",
+            [crate::database::calc_text_hash("hello") as i64],
+        )
+        .expect("insert v2 tombstone");
+        assert_eq!(
+            matching_tombstone_deleted_at(&conn, &spaced).expect("check exact v2 tombstone"),
+            0
+        );
+    }
+
+    #[test]
+    fn remote_v1_tombstone_matching_accepts_both_predecessor_algorithms() {
+        let stored_content = "hello ";
+        let stored_exact = crate::database::calc_text_hash(stored_content) as i64;
+        assert!(remote_tombstone_matches_stored_entry(
+            "text",
+            crate::database::calc_legacy_text_hash(stored_content) as i64,
+            HASH_VERSION_LEGACY,
+            stored_content,
+            stored_exact,
+            HASH_VERSION_WHITESPACE,
+        ));
+        assert!(remote_tombstone_matches_stored_entry(
+            "text",
+            stored_exact,
+            HASH_VERSION_LEGACY,
+            stored_content,
+            stored_exact,
+            HASH_VERSION_WHITESPACE,
+        ));
+    }
+
     fn setup_merge_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory merge db");
         conn.execute_batch(
             "CREATE TABLE clipboard_history (
                 id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL DEFAULT 'text',
+                content TEXT NOT NULL DEFAULT 'shared',
+                content_hash INTEGER NOT NULL DEFAULT 0,
+                content_hash_version INTEGER NOT NULL DEFAULT 2,
+                html_content TEXT,
                 timestamp INTEGER NOT NULL,
                 is_pinned INTEGER NOT NULL DEFAULT 0,
                 pinned_order INTEGER NOT NULL DEFAULT 0,
@@ -3705,13 +4423,398 @@ mod tests {
                 tag TEXT NOT NULL,
                 PRIMARY KEY (entry_id, tag)
              );
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );
+             CREATE TABLE cloud_sync_local_index (
+                sync_key TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+             );
+             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO settings (key, value) VALUES ('app.anon_id', 'local-device');",
+        )
+        .expect("create merge schema");
+        conn
+    }
+
+    #[test]
+    fn v2_existing_lookup_does_not_alias_undecryptable_v1_row() {
+        let conn = setup_merge_db();
+        let hash = crate::database::calc_text_hash("hello ") as i64;
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, content, content_hash, content_hash_version, timestamp, preview, source_app,
+              sync_updated_at, sync_updated_by)
+             VALUES (1, 'dpapi:not-decryptable', ?1, 1, 100, 'legacy', 'Test', 100, 'old')",
+            [hash],
+        )
+        .expect("insert undecryptable legacy row");
+        let mut item = test_sync_item(200, "new", &[]);
+        item.content = "hello ".to_string();
+        canonicalize_incoming_live_hash(&mut item);
+
+        assert_eq!(
+            find_existing_entry_for_sync(&conn, &item).expect("lookup compatible entry"),
+            None
+        );
+        let (stored_hash, stored_version): (i64, i64) = conn
+            .query_row(
+                "SELECT content_hash, content_hash_version FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read preserved legacy identity");
+        assert_eq!((stored_hash, stored_version), (hash, HASH_VERSION_LEGACY));
+    }
+
+    #[test]
+    fn v2_remote_deletion_requires_v2_stored_hash_semantics() {
+        let hash = crate::database::calc_text_hash("hello ") as i64;
+        assert!(!remote_tombstone_matches_stored_entry(
+            "text",
+            hash,
+            HASH_VERSION_WHITESPACE,
+            "dpapi:not-decryptable",
+            hash,
+            HASH_VERSION_LEGACY,
+        ));
+        assert!(remote_tombstone_matches_stored_entry(
+            "text",
+            hash,
+            HASH_VERSION_WHITESPACE,
+            "hello ",
+            hash,
+            HASH_VERSION_WHITESPACE,
+        ));
+    }
+
+    #[test]
+    fn pulled_tombstone_cleans_metadata_and_attachment_without_echo() {
+        let root = make_temp_dir("remote-tombstone");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachment directory");
+        let attachment = attachments.join("remote-delete.txt");
+        fs::write(&attachment, b"payload").expect("write attachment");
+        let content = attachment.to_string_lossy().to_string();
+        let content_hash = crate::database::calc_text_hash(&content) as i64;
+
+        let conn = Connection::open_in_memory().expect("open remote deletion db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL,
+                html_content TEXT,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL,
+                sync_updated_by TEXT NOT NULL
+             );
+             CREATE TABLE entry_tags (
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (entry_id, tag)
+             );
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );
              CREATE TABLE cloud_sync_local_index (
                 sync_key TEXT PRIMARY KEY,
                 digest TEXT NOT NULL
              );",
         )
-        .expect("create merge schema");
-        conn
+        .expect("create remote deletion schema");
+        conn.execute(
+            "INSERT INTO clipboard_history
+                (id, content_type, content, content_hash, content_hash_version, is_external,
+                 sync_updated_at, sync_updated_by)
+             VALUES (1, 'file', ?1, ?2, 2, 1, 10, 'local')",
+            rusqlite::params![content, content_hash],
+        )
+        .expect("insert remotely deleted row");
+        conn.execute(
+            "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remote')",
+            [],
+        )
+        .expect("insert remotely deleted metadata");
+        let shared = Arc::new(Mutex::new(conn));
+        let repo = SqliteClipboardRepository::new(shared.clone());
+        let mut tombstone = test_sync_item(999, "remote", &[]);
+        tombstone.content_type = "file".to_string();
+        tombstone.content.clear();
+        tombstone.content_hash = content_hash;
+        tombstone.hash_version = HASH_VERSION_WHITESPACE;
+        tombstone.deleted_at = 77;
+        tombstone.timestamp = 999;
+
+        {
+            let guard = shared.lock().expect("lock remote deletion db");
+            assert_eq!(
+                apply_remote_tombstone_with_conn(&repo, &guard, &tombstone, Some(&root))
+                    .expect("apply remote tombstone"),
+                1
+            );
+            let history_count: i64 = guard
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get(0)
+                })
+                .expect("count deleted history");
+            let tag_count: i64 = guard
+                .query_row("SELECT COUNT(*) FROM entry_tags", [], |row| row.get(0))
+                .expect("count deleted tags");
+            let tombstones: Vec<(i64, i64)> = {
+                let mut stmt = guard
+                    .prepare(
+                        "SELECT hash_version, deleted_at FROM cloud_sync_tombstones
+                         ORDER BY hash_version",
+                    )
+                    .expect("prepare tombstone query");
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .expect("query tombstones")
+                    .collect::<Result<_, _>>()
+                    .expect("read tombstones")
+            };
+            assert_eq!(history_count, 0);
+            assert_eq!(tag_count, 0);
+            assert_eq!(tombstones, vec![(HASH_VERSION_WHITESPACE, 77)]);
+        }
+        assert!(!attachment.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn setup_remote_tombstone_failure_fixture(
+        name: &str,
+        failure_trigger: &str,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        Arc<Mutex<Connection>>,
+        SqliteClipboardRepository,
+        CloudSyncItem,
+    ) {
+        let root = make_temp_dir(name);
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachment directory");
+        let attachment = attachments.join("keep-on-failure.txt");
+        fs::write(&attachment, b"payload").expect("write attachment");
+        let content = attachment.to_string_lossy().to_string();
+        let content_hash = crate::database::calc_text_hash(&content) as i64;
+
+        let conn = Connection::open_in_memory().expect("open remote deletion db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL,
+                html_content TEXT,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL,
+                sync_updated_by TEXT NOT NULL
+             );
+             CREATE TABLE entry_tags (
+                entry_id INTEGER NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (entry_id, tag)
+             );
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );
+             CREATE TABLE cloud_sync_local_index (
+                sync_key TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+             );",
+        )
+        .expect("create remote deletion schema");
+        conn.execute(
+            "INSERT INTO clipboard_history
+                (id, content_type, content, content_hash, content_hash_version, is_external,
+                 sync_updated_at, sync_updated_by)
+             VALUES (1, 'file', ?1, ?2, 2, 1, 10, 'local')",
+            rusqlite::params![content, content_hash],
+        )
+        .expect("insert remotely deleted row");
+        conn.execute(
+            "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'remote')",
+            [],
+        )
+        .expect("insert remotely deleted tag");
+        conn.execute_batch(failure_trigger)
+            .expect("install remote deletion failure trigger");
+
+        let shared = Arc::new(Mutex::new(conn));
+        let repo = SqliteClipboardRepository::new(shared.clone());
+        let mut tombstone = test_sync_item(999, "remote", &[]);
+        tombstone.content_type = "file".to_string();
+        tombstone.content.clear();
+        tombstone.content_hash = content_hash;
+        tombstone.deleted_at = 77;
+        tombstone.timestamp = 999;
+        (root, attachment, shared, repo, tombstone)
+    }
+
+    fn assert_failed_remote_tombstone_is_atomic(
+        root: PathBuf,
+        attachment: PathBuf,
+        shared: Arc<Mutex<Connection>>,
+        repo: SqliteClipboardRepository,
+        tombstone: CloudSyncItem,
+        expected_error: &str,
+    ) {
+        {
+            let guard = shared.lock().expect("lock remote deletion db");
+            let error =
+                apply_remote_tombstone_with_conn(&repo, &guard, &tombstone, Some(root.as_path()))
+                    .expect_err("remote deletion must fail atomically");
+            assert!(error.to_string().contains(expected_error));
+
+            for (table, expected) in [
+                ("clipboard_history", 1_i64),
+                ("entry_tags", 1_i64),
+                ("cloud_sync_tombstones", 0_i64),
+                ("cloud_sync_local_index", 0_i64),
+            ] {
+                let count: i64 = guard
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .expect("count atomic remote deletion state");
+                assert_eq!(count, expected, "unexpected row count in {table}");
+            }
+        }
+        assert!(
+            attachment.exists(),
+            "cleanup must wait for a successful commit"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_tombstone_entry_tag_failure_rolls_back_all_state_and_cleanup() {
+        let fixture = setup_remote_tombstone_failure_fixture(
+            "remote-tombstone-tag-failure",
+            "CREATE TRIGGER reject_remote_tag_delete
+             BEFORE DELETE ON entry_tags
+             BEGIN SELECT RAISE(ABORT, 'remote tag delete unavailable'); END;",
+        );
+        assert_failed_remote_tombstone_is_atomic(
+            fixture.0,
+            fixture.1,
+            fixture.2,
+            fixture.3,
+            fixture.4,
+            "remote tag delete unavailable",
+        );
+    }
+
+    #[test]
+    fn remote_tombstone_digest_failure_rolls_back_all_state_and_cleanup() {
+        let fixture = setup_remote_tombstone_failure_fixture(
+            "remote-tombstone-digest-failure",
+            "CREATE TRIGGER reject_remote_delete_digest
+             BEFORE INSERT ON cloud_sync_local_index
+             BEGIN SELECT RAISE(ABORT, 'remote digest unavailable'); END;",
+        );
+        assert_failed_remote_tombstone_is_atomic(
+            fixture.0,
+            fixture.1,
+            fixture.2,
+            fixture.3,
+            fixture.4,
+            "remote digest unavailable",
+        );
+    }
+
+    #[test]
+    fn remote_tombstone_preserves_fallback_referenced_by_surviving_entry() {
+        let root = make_temp_dir("remote-shared-fallback");
+        let attachments = root.join("attachments");
+        fs::create_dir_all(&attachments).expect("create attachment directory");
+        let fallback = attachments.join("shared-fallback.png");
+        fs::write(&fallback, b"shared fallback").expect("write fallback");
+        let html = format!(
+            "<p>shared</p><!--TIEZ_RICH_IMAGE:file://{}-->",
+            fallback.to_string_lossy()
+        );
+        let conn = Connection::open_in_memory().expect("open remote deletion db");
+        conn.execute_batch(
+            "CREATE TABLE clipboard_history (
+                id INTEGER PRIMARY KEY,
+                content_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                content_hash_version INTEGER NOT NULL,
+                html_content TEXT,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                sync_updated_at INTEGER NOT NULL,
+                sync_updated_by TEXT NOT NULL
+             );
+             CREATE TABLE entry_tags (entry_id INTEGER NOT NULL, tag TEXT NOT NULL);
+             CREATE TABLE cloud_sync_tombstones (
+                content_type TEXT NOT NULL,
+                content_hash INTEGER NOT NULL,
+                hash_version INTEGER NOT NULL,
+                deleted_at INTEGER NOT NULL,
+                PRIMARY KEY (content_type, content_hash, hash_version)
+             );
+             CREATE TABLE cloud_sync_local_index (
+                sync_key TEXT PRIMARY KEY,
+                digest TEXT NOT NULL
+             );",
+        )
+        .expect("create remote deletion schema");
+        conn.execute(
+            "INSERT INTO clipboard_history
+                (id, content_type, content, content_hash, content_hash_version, html_content,
+                 sync_updated_at, sync_updated_by)
+             VALUES (1, 'rich_text', 'delete me', 41, 2, ?1, 10, 'local'),
+                    (2, 'rich_text', 'keep me', 42, 2, ?1, 10, 'local')",
+            [html],
+        )
+        .expect("insert shared fallback entries");
+        let shared = Arc::new(Mutex::new(conn));
+        let repo = SqliteClipboardRepository::new(shared.clone());
+        let mut tombstone = test_sync_item(999, "remote", &[]);
+        tombstone.content_type = "rich_text".to_string();
+        tombstone.content.clear();
+        tombstone.content_hash = 41;
+        tombstone.deleted_at = 77;
+
+        {
+            let guard = shared.lock().expect("lock remote deletion db");
+            assert_eq!(
+                apply_remote_tombstone_with_conn(&repo, &guard, &tombstone, Some(&root))
+                    .expect("apply remote tombstone"),
+                1
+            );
+            let surviving: i64 = guard
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_history WHERE id = 2",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count surviving fallback reference");
+            assert_eq!(surviving, 1);
+        }
+        assert!(
+            fallback.exists(),
+            "the surviving row still references the fallback"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3790,6 +4893,255 @@ mod tests {
     }
 
     #[test]
+    fn remote_tag_insert_failure_rolls_back_history_and_normalized_tags() {
+        let conn = setup_merge_db();
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, content, timestamp, preview, source_app, tags, sync_updated_at, sync_updated_by)
+             VALUES (1, 'shared', 100, 'local preview', 'Local', '[\"old\"]', 200, 'device-a')",
+            [],
+        )
+        .expect("insert local entry");
+        conn.execute(
+            "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'old')",
+            [],
+        )
+        .expect("insert old tag");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_synced_tag
+             BEFORE INSERT ON entry_tags
+             WHEN NEW.tag = 'blocked'
+             BEGIN SELECT RAISE(ABORT, 'synced tag unavailable'); END;",
+        )
+        .expect("install synced-tag failure trigger");
+
+        let newer = test_sync_item(300, "device-b", &["blocked"]);
+        let error = update_existing_entry_from_sync(&conn, 1, &newer, newer.timestamp)
+            .expect_err("normalized tag insertion must reject the entire merge");
+        assert!(error.to_string().contains("synced tag unavailable"));
+
+        let (tags, preview, source_app, updated_at, updated_by): (
+            String,
+            String,
+            String,
+            i64,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT tags, preview, source_app, sync_updated_at, sync_updated_by
+                 FROM clipboard_history WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read rolled-back history");
+        let entry_tags: Vec<String> = conn
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = 1 ORDER BY tag")
+            .expect("prepare rolled-back tag query")
+            .query_map([], |row| row.get(0))
+            .expect("query rolled-back tags")
+            .collect::<Result<_, _>>()
+            .expect("read rolled-back tags");
+        let digest_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cloud_sync_local_index", [], |row| {
+                row.get(0)
+            })
+            .expect("count unrecorded remote digests");
+        assert_eq!(tags, "[\"old\"]");
+        assert_eq!(preview, "local preview");
+        assert_eq!(source_app, "Local");
+        assert_eq!(updated_at, 200);
+        assert_eq!(updated_by, "device-a");
+        assert_eq!(entry_tags, vec!["old"]);
+        assert_eq!(digest_count, 0);
+    }
+
+    fn assert_failed_live_apply_is_atomic(
+        existing_entry: bool,
+        failure_trigger: &str,
+        expected_error: &str,
+    ) {
+        let conn = setup_merge_db();
+        let item = test_sync_item(300, "device-b", &["remote"]);
+        conn.execute(
+            "INSERT INTO cloud_sync_tombstones
+                (content_type, content_hash, hash_version, deleted_at)
+             VALUES ('text', ?1, 2, 50)",
+            [item.content_hash],
+        )
+        .expect("insert matching tombstone");
+        if existing_entry {
+            conn.execute(
+                "INSERT INTO clipboard_history
+                    (id, content, content_hash, timestamp, preview, source_app, tags,
+                     sync_updated_at, sync_updated_by)
+                 VALUES (1, 'shared', ?1, 100, 'local preview', 'Local',
+                         '[\"old\"]', 200, 'device-a')",
+                [item.content_hash],
+            )
+            .expect("insert existing local entry");
+            conn.execute(
+                "INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'old')",
+                [],
+            )
+            .expect("insert existing local tag");
+        }
+        conn.execute_batch(failure_trigger)
+            .expect("install live apply failure trigger");
+
+        let shared = Arc::new(Mutex::new(conn));
+        let repo = SqliteClipboardRepository::new(shared.clone());
+        let guard = shared.lock().expect("lock live apply db");
+        let error = apply_remote_live_item_with_conn(&repo, &guard, &item, item.timestamp, None)
+            .expect_err("remote live apply must fail atomically");
+        assert!(error.to_string().contains(expected_error));
+
+        let history_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get(0)
+            })
+            .expect("count live history");
+        let tags: Vec<String> = guard
+            .prepare("SELECT tag FROM entry_tags ORDER BY tag")
+            .expect("prepare live tag query")
+            .query_map([], |row| row.get(0))
+            .expect("query live tags")
+            .collect::<Result<_, _>>()
+            .expect("read live tags");
+        let tombstone_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                row.get(0)
+            })
+            .expect("count retained tombstone");
+        let digest_count: i64 = guard
+            .query_row("SELECT COUNT(*) FROM cloud_sync_local_index", [], |row| {
+                row.get(0)
+            })
+            .expect("count rolled-back digest");
+
+        if existing_entry {
+            let (preview, tags_json, updated_at, updated_by): (String, String, i64, String) = guard
+                .query_row(
+                    "SELECT preview, tags, sync_updated_at, sync_updated_by
+                     FROM clipboard_history WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("read rolled-back existing entry");
+            assert_eq!(history_count, 1);
+            assert_eq!(tags, vec!["old"]);
+            assert_eq!(preview, "local preview");
+            assert_eq!(tags_json, "[\"old\"]");
+            assert_eq!((updated_at, updated_by.as_str()), (200, "device-a"));
+        } else {
+            assert_eq!(history_count, 0);
+            assert!(tags.is_empty());
+        }
+        assert_eq!(tombstone_count, 1);
+        assert_eq!(
+            digest_count, 0,
+            "a failed pull must not create an echo-suppression index"
+        );
+    }
+
+    #[test]
+    fn existing_remote_live_digest_failure_rolls_back_content_tags_and_tombstone() {
+        assert_failed_live_apply_is_atomic(
+            true,
+            "CREATE TRIGGER reject_live_digest
+             BEFORE INSERT ON cloud_sync_local_index
+             BEGIN SELECT RAISE(ABORT, 'live digest unavailable'); END;",
+            "live digest unavailable",
+        );
+    }
+
+    #[test]
+    fn new_remote_live_digest_failure_rolls_back_insert_tags_and_tombstone() {
+        assert_failed_live_apply_is_atomic(
+            false,
+            "CREATE TRIGGER reject_new_live_digest
+             BEFORE INSERT ON cloud_sync_local_index
+             BEGIN SELECT RAISE(ABORT, 'new live digest unavailable'); END;",
+            "new live digest unavailable",
+        );
+    }
+
+    #[test]
+    fn existing_remote_live_tombstone_clear_failure_rolls_back_merge() {
+        assert_failed_live_apply_is_atomic(
+            true,
+            "CREATE TRIGGER reject_live_tombstone_clear
+             BEFORE DELETE ON cloud_sync_tombstones
+             BEGIN SELECT RAISE(ABORT, 'live tombstone clear unavailable'); END;",
+            "live tombstone clear unavailable",
+        );
+    }
+
+    #[test]
+    fn new_remote_live_tombstone_clear_failure_rolls_back_insert() {
+        assert_failed_live_apply_is_atomic(
+            false,
+            "CREATE TRIGGER reject_new_live_tombstone_clear
+             BEFORE DELETE ON cloud_sync_tombstones
+             BEGIN SELECT RAISE(ABORT, 'new live tombstone clear unavailable'); END;",
+            "new live tombstone clear unavailable",
+        );
+    }
+
+    #[test]
+    fn newer_rich_text_payload_converges_while_sensitive_fields_stay_protected() {
+        let conn = setup_merge_db();
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, content_type, content, content_hash, html_content, timestamp, preview,
+              source_app, tags, sync_updated_at, sync_updated_by)
+             VALUES (1, 'rich_text', 'hello', ?1, '<p>old</p>', 100, 'hello',
+                     'Test', '[\"sensitive\"]', 200, 'device-a')",
+            [crate::database::calc_text_hash("hello") as i64],
+        )
+        .expect("insert local rich entry");
+
+        let mut newer = test_sync_item(300, "device-b", &["sensitive"]);
+        newer.content_type = "rich_text".to_string();
+        newer.html_content = Some("<p><strong>new</strong></p>".to_string());
+        let (changed, accepted) =
+            update_existing_entry_from_sync(&conn, 1, &newer, newer.timestamp)
+                .expect("merge rich payload");
+
+        assert!(changed);
+        assert!(accepted);
+        let persisted = load_persisted_sync_item(&conn, 1).expect("load persisted rich item");
+        assert_eq!(persisted.content, "shared");
+        assert_eq!(persisted.html_content, newer.html_content);
+        let (raw_content, raw_html): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content, html_content FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read protected rich fields");
+        assert_eq!(decode_persisted_sync_text(raw_content.clone()), "shared");
+        assert_eq!(
+            raw_html.clone().map(decode_persisted_sync_text),
+            newer.html_content
+        );
+        #[cfg(all(windows, not(feature = "portable")))]
+        {
+            assert!(raw_content.starts_with(crate::database::ENCRYPT_PREFIX));
+            assert!(raw_html
+                .as_deref()
+                .is_some_and(|html| html.starts_with(crate::database::ENCRYPT_PREFIX)));
+        }
+    }
+
+    #[test]
     fn pulled_remote_digest_is_recorded_to_prevent_echo_upload() {
         let conn = setup_merge_db();
         let item = test_sync_item(300, "device-b", &["remote"]);
@@ -3805,6 +5157,37 @@ mod tests {
             )
             .expect("read remote digest");
         assert_eq!(digest, sync_digest_for_item(&item));
+    }
+
+    #[test]
+    fn merged_digest_uses_persisted_max_use_count_not_raw_remote_payload() {
+        let conn = setup_merge_db();
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, content, content_hash, timestamp, preview, source_app, tags, use_count,
+              sync_updated_at, sync_updated_by)
+             VALUES (1, 'shared', ?1, 100, 'shared', 'Test', '[\"local\"]', 9, 200, 'device-a')",
+            [crate::database::calc_text_hash("shared") as i64],
+        )
+        .expect("insert local entry");
+        let remote = test_sync_item(300, "device-b", &["remote"]);
+        let (_, accepted) = update_existing_entry_from_sync(&conn, 1, &remote, remote.timestamp)
+            .expect("merge remote metadata");
+        assert!(accepted);
+
+        let persisted = load_persisted_sync_item(&conn, 1).expect("load merged item");
+        assert_eq!(persisted.use_count, 9);
+        record_remote_sync_digest(&conn, &persisted).expect("record merged digest");
+        let key = sync_key_for_item(&persisted).expect("sync key");
+        let digest: String = conn
+            .query_row(
+                "SELECT digest FROM cloud_sync_local_index WHERE sync_key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .expect("read merged digest");
+        assert_eq!(digest, sync_digest_for_item(&persisted));
+        assert_ne!(digest, sync_digest_for_item(&remote));
     }
 
     #[test]
@@ -3853,6 +5236,7 @@ mod tests {
             content_type: "rich_text".to_string(),
             content: "hello".to_string(),
             content_hash: 0,
+            hash_version: HASH_VERSION_WHITESPACE,
             deleted_at: 0,
             html_content: Some(format!(
                 "<p>Hello</p><img src=\"{}\">",

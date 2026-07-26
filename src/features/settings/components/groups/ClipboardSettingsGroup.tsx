@@ -24,6 +24,7 @@ interface ClipboardSettingsGroupProps {
     persistentLimit: number;
     setPersistentLimit: (val: number) => void;
     saveAppSetting: (key: string, val: string) => void;
+    pushToast: (msg: string, duration?: number) => unknown;
     deduplicate: boolean;
     setDeduplicate: (val: boolean) => void;
     captureFiles: boolean;
@@ -511,14 +512,18 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                                 className="cb"
                                 type="checkbox"
                                 checked={props.sequentialMode}
-                                onChange={(e) => {
-                                    const val = e.target.checked;
-                                    props.setSequentialModeState(val);
-                                    invoke('set_sequential_mode', { enabled: val }).catch(console.error);
-                                    if (val) {
-                                        if (props.checkHotkeyConflict(props.sequentialHotkey, 'sequential')) {
-                                            props.updateSequentialHotkey("");
-                                        }
+                                onChange={async (e) => {
+                                    const input = e.currentTarget;
+                                    const val = input.checked;
+                                    try {
+                                        await invoke('set_sequential_mode', { enabled: val });
+                                        props.setSequentialModeState(val);
+                                    } catch (err) {
+                                        input.checked = props.sequentialMode;
+                                        props.pushToast(
+                                            `${props.t('hotkey_register_failed')}${err?.toString() || ''}`,
+                                            5000
+                                        );
                                     }
                                 }}
                             />
@@ -526,8 +531,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                         </label>
                     </div>
 
-                    {props.sequentialMode && (
-                        <div className="setting-item">
+                    <div className="setting-item">
                             <div className="item-label-group">
                                 <span className="item-label">{props.t('sequential_paste_hotkey_label')}</span>
                                 <span className="hint">{props.isRecordingSequential ? props.t('hotkey_recording_esc') : props.t('hotkey_click_hint')}</span>
@@ -572,7 +576,6 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                                 )}
                             </div>
                         </div>
-                    )}
 
                     <div className="setting-item">
                         <props.LabelWithHint

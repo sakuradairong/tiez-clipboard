@@ -1081,6 +1081,7 @@ const App = () => {
 
   const settingsPanelProps = useSettingsPanelProps({
     t,
+    pushToast,
     theme,
     language,
     colorMode,
