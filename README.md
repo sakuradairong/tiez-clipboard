@@ -1,147 +1,102 @@
-<p align="left">
-  <img src="docs/images/logo.png" width="32" vertical-align="middle" />
-  <b>Making fragmented information flow effortlessly.</b>
-</p>
-
----
-
 <div align="center">
-  <img src="docs/images/logo.png" alt="TieZ Hero Logo" width="300" />
-
-### **STAY FAST. STAY SYNCED.**
-
-  | STATUS | LICENSE | PLATFORM | STACK |
-  | :--- | :--- | :--- | :--- |
-  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20LINUX%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
-
-  [English](./README.md) | [简体中文](./README.zh-CN.md)
+  <img src="docs/images/logo.png" alt="TieZ logo" width="220" />
+  <h1>TieZ</h1>
+  <p>A fast, local-first clipboard manager for Windows, Linux, and macOS.</p>
+  <p>
+    <img src="https://img.shields.io/badge/status-community%20maintained-4CAF50" alt="Community maintained" />
+    <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/license-GPL--3.0-FF9800" alt="GPL-3.0 license" /></a>
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-f44336" alt="Windows, Linux, and macOS" />
+    <img src="https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-2196F3" alt="Tauri 2, React, and Rust" />
+  </p>
+  <p>
+    <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
+  </p>
+  <p>
+    <a href="../../releases"><strong>Download</strong></a>
+    · <a href="./CHANGELOG.md">Changelog</a>
+    · <a href="./CONTRIBUTING.md">Contributing</a>
+  </p>
 </div>
 
 ---
 
-## Maintenance Status
+TieZ keeps frequently used clipboard content close at hand without moving your history into a hosted service. It captures common clipboard formats, makes them searchable, and provides focused workflows for organizing, syncing, and pasting content.
 
-> This repository is now maintained as a community fork.
+## Highlights
 
-- The original upstream project appears to be inactive.
-- This fork focuses first on build stability, release reliability, and contributor onboarding.
-- Project-specific infrastructure from the original maintainer, such as website-hosted update services, should be reviewed before shipping production releases from this fork.
+| Area | Capabilities |
+| :--- | :--- |
+| **Capture and paste** | Text, rich HTML, images, files, clipboard history, quick paste, and sequential paste |
+| **Organize and find** | Full-text search, source filtering, pinned items, multi-color tags, and configurable cleanup rules |
+| **Sync and transfer** | WebDAV history sync, MQTT connectivity, and LAN content or file transfer |
+| **Productivity** | Emoji library, external-editor round trips, QR-code recognition, and global shortcuts |
+| **Privacy** | Local-first storage and automatic masking of sensitive preview content |
+| **Desktop experience** | Edge docking, light and dark modes, and four visual themes |
 
-### Fork Maintainer Goals
-
-1. Restore a reproducible build and release flow.
-2. Keep the existing desktop experience working on supported platforms.
-3. Accept focused bug fixes and maintenance improvements before large feature work.
-
-### Contributing to This Fork
-
-- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
-- Review [SECURITY.md](./SECURITY.md) for responsible disclosure guidance.
-- Track maintenance changes in [CHANGELOG.md](./CHANGELOG.md).
-- Download builds from this fork's [Releases](../../releases) page.
+## Theme Preview
 
 <div align="center">
-
-## Theme Gallery
-
-Explore 4 elegant themes designed for every workspace and efficiency scenarios.
-
   <table>
     <tr>
-      <td align="center"><b>Frosted Glass</b><br><img src="docs/images/毛玻璃.png" width="220" /></td>
-      <td align="center"><b>Notebook Style</b><br><img src="docs/images/书.png" width="220" /></td>
-      <td align="center"><b>Sticky Note</b><br><img src="docs/images/便利贴.png" width="220" /></td>
-      <td align="center"><b>3D Interaction</b><br><img src="docs/images/3d.png" width="220" /></td>
+      <td align="center"><b>Frosted Glass</b><br><img src="docs/images/毛玻璃.png" alt="Frosted Glass theme" width="220" /></td>
+      <td align="center"><b>Notebook</b><br><img src="docs/images/书.png" alt="Notebook theme" width="220" /></td>
+      <td align="center"><b>Sticky Note</b><br><img src="docs/images/便利贴.png" alt="Sticky Note theme" width="220" /></td>
+      <td align="center"><b>3D</b><br><img src="docs/images/3d.png" alt="3D theme" width="220" /></td>
     </tr>
   </table>
 </div>
 
----
+## Install
 
-## Why TieZ?
+Download the latest build from the [Releases page](../../releases), then choose the package for your platform.
 
-| Performance | Practicality | Privacy | Sync |
-| :--- | :--- | :--- | :--- |
-| **Instant Access**<br>Native listeners and Rust core ensure absolute speed. | **Power Workflows**<br>Rich text, tags, and AI-assisted actions. | **Local & Private**<br>Local-first storage with smart masking for sensitive data in previews. | **Cloud Fluent**<br>Seamless WebDAV and MQTT cross-device sync. |
-
----
-
-## Key Features
-
-### Core Experience
-
-- **Native Efficiency**: Built with Tauri 2 and Rust for minimum memory footprint.
-- **Smart Capture**: Automatically collects text, rich text (HTML), images, and file paths.
-- **Modern UI**: Supports Mica/Acrylic effects and Dark/Light modes with **4 elegant theme styles**.
-- **Edge Docking**: Automatically hides at the screen edge to stay out of your way.
-
-### Management & Enhancements
-
-- **Tag System**: Organize your history with custom multi-color tags.
-- **Emoji Library**: Comprehensive built-in emoji management for quick access.
-- **Advanced Settings**: Granular control over cleanup rules and app behavior.
-- **Privacy Masking**: Auto-masks sensitive info like IDs and phone numbers in previews.
-
-### Networking & Transport
-
-- **WebDAV Sync**: Your data, your cloud. Complete cross-device history.
-- **LAN File Transfer**: Seamlessly move items between devices on the same network.
-- **Verifcation Code Sync**: Instant transfer of OTP codes to your active device.
-- **MQTT Connectivity**: Optimized for real-time synchronization between devices.
-
-### Productivity Tools
-
-- **External Collaboration**: Open items in external editors with auto-sync back.
-- **Global Search**: Find anything by content, source app, or date.
-- **Sequential Paste**: Optimized workflow for high-frequency copy-paste tasks.
-
----
-
-## Installation
-
-### Platform Support
-
-| Platform | Requirement | Output |
+| Platform | Requirement | Packages |
 | :--- | :--- | :--- |
-| **Windows** | Windows 10/11 (x64 only)<br>*(Windows 11 Recommended)* | NSIS `.exe` / MSI `.msi` installer |
-| **Linux** | Ubuntu 22.04 or a compatible x64 desktop | DEB `.deb` / AppImage |
-| **macOS** | macOS 11+ on Apple Silicon or Intel | DMG `.dmg` |
+| **Windows** | Windows 10 or 11, x64 | NSIS `.exe`, MSI `.msi` |
+| **Linux** | Ubuntu 22.04 or a compatible x64 desktop | DEB `.deb`, AppImage |
+| **macOS** | macOS 11+, Apple Silicon or Intel | DMG `.dmg` |
 
-Linux clipboard capture supports X11/XWayland and compositors implementing the Wayland data-control protocol. Automatic paste uses `xdotool` on X11 or `wtype` on Wayland; when neither is available, TieZ keeps the content on the clipboard and asks you to paste manually instead of treating the operation as successful.
+### Platform Notes
 
-macOS builds are not Apple Developer signed or notarized yet, so Gatekeeper may require explicit approval on first launch. Clipboard history and automatic paste can also require Pasteboard and Accessibility permission in System Settings, especially on recent macOS versions.
+- **Linux clipboard capture:** Supports X11/XWayland and Wayland compositors that implement the data-control protocol.
+- **Linux automatic paste:** Uses `xdotool` on X11 or `wtype` on Wayland. If neither is available, TieZ leaves the requested content on the clipboard for manual paste.
+- **macOS permissions:** Clipboard history and automatic paste may require Pasteboard and Accessibility access in System Settings.
+- **macOS distribution:** Current builds are not signed or notarized with an Apple Developer certificate, so Gatekeeper may require manual approval on first launch.
+- **OCR:** System OCR uses Windows Runtime and is available on Windows only. QR-code recognition is cross-platform.
+- **Portable builds:** A portable ZIP is not currently published.
 
-System OCR currently uses Windows Runtime and is available on Windows only. QR-code recognition remains cross-platform.
+## Development
 
-Current releases do not include a portable ZIP. Repository, issues, releases, and website overrides in `.env` must be HTTPS URLs on `github.com`; invalid values fall back to the maintained repository because the desktop opener is intentionally GitHub-only.
+Install [Node.js LTS](https://nodejs.org/), the [Rust toolchain](https://www.rust-lang.org/tools/install), and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
 
-[**Download the Latest Release →**](../../releases)
+```bash
+npm install
+npm run tauri:dev
+```
 
----
+Run the main validation commands before submitting a change:
 
-## Community & Maintenance
+```bash
+npm test
+npm run build
+npm run test:rust
+```
 
-This fork currently prioritizes maintenance, compatibility, and release continuity.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution scope and pull request guidance.
+
+## Project Status
+
+TieZ is maintained as a community fork. Current priorities are reproducible builds, reliable releases, cross-platform compatibility, and focused bug fixes. Large feature proposals should be discussed in an issue before implementation.
+
+- Report bugs and request features through [Issues](../../issues).
+- Review release changes in [CHANGELOG.md](./CHANGELOG.md).
+- Follow [SECURITY.md](./SECURITY.md) for responsible disclosure.
+- Review legacy updater endpoints, signing credentials, and distribution infrastructure before publishing binaries from a new fork.
+
+## License
+
+TieZ is distributed under the [GNU General Public License v3.0](./LICENSE).
 
 <div align="center">
-  <p><strong>Need help or want to contribute?</strong></p>
-  <p>
-    <a href="../../issues"><strong>Open an issue</strong></a>
-    ·
-    <a href="./CONTRIBUTING.md"><strong>Read the contribution guide</strong></a>
-    ·
-    <a href="./SECURITY.md"><strong>Report security concerns responsibly</strong></a>
-  </p>
-  <p>
-    Please review and replace any legacy upstream links, update endpoints, and signing infrastructure
-    before publishing official binaries from this fork.
-  </p>
-</div>
-
----
-
-<div align="center">
-  Built with technical precision for every efficient developer.
-  <br>
-  <b>Please consider leaving a Star if you find this project useful.</b>
+  <strong>If TieZ is useful to you, consider leaving a Star.</strong>
 </div>

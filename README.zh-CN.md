@@ -1,146 +1,102 @@
-<p align="left">
-  <img src="docs/images/logo.png" width="32" vertical-align="middle" />
-  <b>让碎片化信息轻松流转的剪贴板工具</b>
-</p>
-
----
-
 <div align="center">
-  <img src="docs/images/logo.png" alt="TieZ Hero Logo" width="300" />
-
-### **STAY FAST. STAY SYNCED.**
-
-  | 状态 | 协议 | 平台 | 技术栈 |
-  | :--- | :--- | :--- | :--- |
-  | ![Status](https://img.shields.io/badge/STATUS-COMMUNITY%20MAINTAINED-4CAF50?style=for-the-badge) | [![License](https://img.shields.io/badge/LICENSE-GPL--3.0-FF9800?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0) | ![Platform](https://img.shields.io/badge/PLATFORM-WIN%20%2F%20LINUX%20%2F%20MAC-f44336?style=for-the-badge) | ![Stack](https://img.shields.io/badge/TAURI%202%20%2B%20REACT-2196F3?style=for-the-badge) |
-
-  [English](./README.md) | [简体中文](./README.zh-CN.md)
+  <img src="docs/images/logo.png" alt="TieZ 标志" width="220" />
+  <h1>TieZ</h1>
+  <p>面向 Windows、Linux 和 macOS 的快速、本地优先剪贴板管理器。</p>
+  <p>
+    <img src="https://img.shields.io/badge/status-community%20maintained-4CAF50" alt="社区维护" />
+    <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/license-GPL--3.0-FF9800" alt="GPL-3.0 协议" /></a>
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-f44336" alt="Windows、Linux 和 macOS" />
+    <img src="https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-2196F3" alt="Tauri 2、React 和 Rust" />
+  </p>
+  <p>
+    <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
+  </p>
+  <p>
+    <a href="../../releases"><strong>下载</strong></a>
+    · <a href="./CHANGELOG.md">更新日志</a>
+    · <a href="./CONTRIBUTING.md">参与贡献</a>
+  </p>
 </div>
 
 ---
 
-## 维护状态
+TieZ 将常用剪贴板内容保留在本地，不依赖托管服务存储历史记录。它能够采集常见剪贴板格式，提供快速检索，并覆盖整理、同步和粘贴等日常工作流。
 
-> 当前仓库已作为社区维护分支继续推进。
+## 核心能力
 
-- 原上游项目看起来已经长期缺少维护。
-- 这个 fork 当前优先处理构建稳定性、发布可靠性和贡献者协作入口。
-- 原维护者名下的网站、更新接口、签名与分发基础设施，在本 fork 正式发版前都应重新核查。
+| 领域 | 功能 |
+| :--- | :--- |
+| **采集与粘贴** | 文本、富 HTML、图片、文件、剪贴板历史、快速粘贴和顺序粘贴 |
+| **整理与检索** | 全文搜索、来源筛选、置顶记录、多色标签和可配置清理规则 |
+| **同步与传输** | WebDAV 历史同步、MQTT 连接，以及局域网内容或文件传输 |
+| **效率工具** | Emoji 表情库、外部编辑器回写、二维码识别和全局快捷键 |
+| **隐私保护** | 本地优先存储，以及敏感内容预览自动脱敏 |
+| **桌面体验** | 贴边收纳、亮色与暗色模式，以及四款视觉主题 |
 
-### 当前维护目标
-
-1. 恢复可复现的构建与发布流程。
-2. 保持现有桌面端体验在已支持平台上的可用性。
-3. 在大功能开发前，优先接收聚焦的缺陷修复和维护改进。
-
-### 参与本 Fork 的维护
-
-- 提交 PR 前先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)
-- 安全问题处理请查看 [SECURITY.md](./SECURITY.md)
-- 维护变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 构建产物请前往本 fork 的 [Releases](../../releases) 页面下载
+## 主题预览
 
 <div align="center">
-
-## 主题展示 (Theme Gallery)
-
-探索为各种工作场景和效率场景精心设计的 4 款优雅主题样式。
-
   <table>
     <tr>
-      <td align="center"><b>极简毛玻璃</b><br><img src="docs/images/毛玻璃.png" width="220" /></td>
-      <td align="center"><b>笔记本风格</b><br><img src="docs/images/书.png" width="220" /></td>
-      <td align="center"><b>便利贴风格</b><br><img src="docs/images/便利贴.png" width="220" /></td>
-      <td align="center"><b>3D 动感</b><br><img src="docs/images/3d.png" width="220" /></td>
+      <td align="center"><b>极简毛玻璃</b><br><img src="docs/images/毛玻璃.png" alt="极简毛玻璃主题" width="220" /></td>
+      <td align="center"><b>笔记本</b><br><img src="docs/images/书.png" alt="笔记本主题" width="220" /></td>
+      <td align="center"><b>便利贴</b><br><img src="docs/images/便利贴.png" alt="便利贴主题" width="220" /></td>
+      <td align="center"><b>3D</b><br><img src="docs/images/3d.png" alt="3D 主题" width="220" /></td>
     </tr>
   </table>
 </div>
 
----
+## 下载安装
 
-## 为什么选择 TieZ?
+从 [Releases 页面](../../releases)下载最新版本，并选择对应平台的安装包。
 
-| 极速性能 | 深度工作流 | 本地隐私 | 云端流畅 |
-| :--- | :--- | :--- | :--- |
-| **瞬间响应**<br>Rust 核心层与原生监听器，只为追求毫秒级响应。 | **全能管理**<br>支持富文本、多色标签及高效的 AI 协作。 | **本地安全**<br>数据完全本地化存储，支持对各类敏感信息的预览自动脱敏。 | **多端无感同步**<br>基于 WebDAV 和 MQTT 协议，让剪贴板在设备间流动。 |
-
----
-
-## 核心功能
-
-### 基础体验
-
-- **原生效率**：基于 Tauri 2 和 Rust 构建，极致的内存占用与流畅度。
-- **智能采集**：自动记录文字、富文本 (HTML)、图片、文件和目录路径。
-- **现代美学**：完美支持 云母/亚克力 背景效果及暗黑模式，内置 **5 款经过精心调优的主题样式**。
-- **贴边收纳**：支持自动停靠在屏幕边缘，节省桌面空间且随时呼出。
-
-### 管理与增强
-
-- **标签系统**：通过自定义的多色标签对记录进行分类和整理。
-- **表情管理**：内置完整的 Emoji 表情库，支持快捷搜索与输入。
-- **高级设置**：精细化控制清理规则、全局快捷键映射及各种核心逻辑。
-- **隐私脱敏**：智能识别身份证、手机号、邮箱等隐私信息，预览时自动脱敏。
-
-### 网络与传输
-
-- **WebDAV 同步**：数据由你掌控，实现完美的跨设备历史同步。
-- **局域网传输**：在局域网内无缝且极速地传输文件和内容。
-- **秒传验证码**：手机端收到的短信验证码，瞬间同步至你正在操作的设备。
-- **MQTT 协议**：基于极轻量协议的同步方案，确保不同网络环境下的高实时性。
-
-### 效率提速
-
-- **外部协作**：一键调用外部编辑器修改内容，存盘后自动写回记录。
-- **全局搜索**：支持按内容、所属应用、标签或日期进行全文检索。
-- **顺序粘贴**：为高频办公场景设计的顺序拷贝/顺序粘贴工作流程。
-
----
-
-## 系统要求
-
-### 平台支持
-
-| 平台 | 运行环境要求 | 获取格式 |
+| 平台 | 运行环境 | 安装包 |
 | :--- | :--- | :--- |
-| **Windows** | Windows 10/11（仅 x64）<br>*(推荐使用 Win11)* | NSIS `.exe` / MSI `.msi` 安装包 |
-| **Linux** | Ubuntu 22.04 或兼容的 x64 桌面环境 | DEB `.deb` / AppImage |
-| **macOS** | Apple Silicon 或 Intel 芯片的 macOS 11+ | DMG `.dmg` |
+| **Windows** | Windows 10 或 11，x64 | NSIS `.exe`、MSI `.msi` |
+| **Linux** | Ubuntu 22.04 或兼容的 x64 桌面环境 | DEB `.deb`、AppImage |
+| **macOS** | macOS 11+，Apple Silicon 或 Intel | DMG `.dmg` |
 
-Linux 剪贴板采集支持 X11/XWayland，以及实现 Wayland data-control 协议的桌面环境。自动粘贴在 X11 下使用 `xdotool`、在 Wayland 下使用 `wtype`；如果两者均不可用，TieZ 会保留已复制的内容并提示手动粘贴，不会把操作误判为成功。
+### 平台说明
 
-macOS 构建目前尚未使用 Apple Developer 证书签名或公证，首次启动时可能需要在 Gatekeeper 中手动允许。剪贴板历史和自动粘贴在较新的 macOS 上还可能需要在系统设置中授予剪贴板与辅助功能权限。
+- **Linux 剪贴板采集：** 支持 X11/XWayland，以及实现 data-control 协议的 Wayland 桌面环境。
+- **Linux 自动粘贴：** X11 使用 `xdotool`，Wayland 使用 `wtype`。如果两者均不可用，TieZ 会将目标内容留在剪贴板中，供用户手动粘贴。
+- **macOS 权限：** 剪贴板历史和自动粘贴可能需要在系统设置中授予 Pasteboard 与辅助功能权限。
+- **macOS 分发：** 当前构建尚未使用 Apple Developer 证书签名或公证，首次启动时可能需要手动通过 Gatekeeper 检查。
+- **OCR：** 系统 OCR 基于 Windows Runtime，目前仅支持 Windows；二维码识别支持所有平台。
+- **便携版本：** 当前暂未发布便携版 ZIP。
 
-系统 OCR 当前基于 Windows Runtime，仅 Windows 可用；二维码识别仍支持所有平台。
+## 本地开发
 
-当前发布不包含便携版 ZIP。`.env` 中的仓库、问题、发布和网站地址必须是 `github.com` 上的 HTTPS URL；无效配置会回退到维护仓库，因为桌面端打开外链的权限有意仅限 GitHub。
+请先安装 [Node.js LTS](https://nodejs.org/)、[Rust 工具链](https://www.rust-lang.org/tools/install)，以及当前平台所需的 [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)。
 
-[**前往 Releases 下载最新版本 →**](../../releases)
+```bash
+npm install
+npm run tauri:dev
+```
 
----
+提交改动前，请运行主要验证命令：
 
-## 社区与维护
+```bash
+npm test
+npm run build
+npm run test:rust
+```
 
-当前 fork 以维护延续、兼容性和发布可靠性为优先目标。
+贡献范围和 PR 要求请查看 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+## 项目状态
+
+TieZ 当前作为社区维护分支持续推进，优先处理可复现构建、可靠发布、跨平台兼容和聚焦的缺陷修复。较大的功能提案建议先通过 Issue 讨论。
+
+- 通过 [Issues](../../issues) 反馈缺陷或提交功能建议。
+- 在 [CHANGELOG.md](./CHANGELOG.md) 中查看版本变更。
+- 按照 [SECURITY.md](./SECURITY.md) 的说明反馈安全问题。
+- 从新的 fork 发布二进制前，请重新检查旧版更新接口、签名凭据和分发基础设施。
+
+## 开源协议
+
+TieZ 使用 [GNU General Public License v3.0](./LICENSE) 发布。
 
 <div align="center">
-  <p><strong>需要帮助，或想参与共建？</strong></p>
-  <p>
-    <a href="../../issues"><strong>提交 Issue</strong></a>
-    ·
-    <a href="./CONTRIBUTING.md"><strong>阅读贡献指南</strong></a>
-    ·
-    <a href="./SECURITY.md"><strong>按规范反馈安全问题</strong></a>
-  </p>
-  <p>
-    在本 fork 发布正式二进制前，请先检查并替换所有遗留的上游链接、更新接口、签名与分发基础设施。
-  </p>
-</div>
-
----
-
-<div align="center">
-  为每一个追求极致效率的开发者倾力打造。
-  <br>
-  <b>如果你喜欢这个项目，欢迎点个 Star。</b>
+  <strong>如果 TieZ 对你有帮助，欢迎点一个 Star。</strong>
 </div>
