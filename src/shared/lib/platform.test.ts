@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { detectsWindowsPlatform, isWindowsPlatform } from "./platform";
 
 describe("platform detection", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("detects Windows from either the user agent or navigator platform", () => {
     expect(detectsWindowsPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Linux x86_64"))
       .toBe(true);
@@ -15,6 +19,7 @@ describe("platform detection", () => {
   });
 
   it("is safe when rendered without a browser navigator", () => {
+    vi.stubGlobal("navigator", undefined);
     expect(isWindowsPlatform()).toBe(false);
   });
 });
