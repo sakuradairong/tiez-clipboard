@@ -1,0 +1,366 @@
+{
+  "label": "slint-1.16.1-no-accessibility-visible-80-v2",
+  "command": [
+    "experiments/native-ui-slint/artifacts/tiez-native-ui-poc-no-accessibility"
+  ],
+  "display": ":99",
+  "host": {
+    "platform": "Linux-6.12.95+deb13-amd64-x86_64-with-glibc2.41",
+    "python": "3.13.5"
+  },
+  "sample_state": "visible",
+  "warmup_seconds": 3.0,
+  "samples_per_run": 3,
+  "sample_interval_seconds": 0.25,
+  "state_trigger": {
+    "key": null,
+    "count": 0,
+    "delay_seconds": 0.0,
+    "interval_seconds": 0.1
+  },
+  "runs": [
+    {
+      "process_count": 1,
+      "rss_kib": 18440,
+      "pss_kib": 14218,
+      "private_kib": 13300,
+      "processes": [
+        {
+          "pid": 2929214,
+          "name": "tiez-native-ui-",
+          "rss_kib": 18440,
+          "pss_kib": 14218,
+          "private_kib": 13300
+        }
+      ],
+      "run": 1,
+      "window_ms": 142.3,
+      "state_ms": 142.3,
+      "window_id": "0x200003",
+      "window_pid": 2929214,
+      "samples": [
+        {
+          "process_count": 1,
+          "rss_kib": 18440,
+          "pss_kib": 14218,
+          "private_kib": 13300,
+          "processes": [
+            {
+              "pid": 2929214,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18440,
+              "pss_kib": 14218,
+              "private_kib": 13300
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18440,
+          "pss_kib": 14218,
+          "private_kib": 13300,
+          "processes": [
+            {
+              "pid": 2929214,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18440,
+              "pss_kib": 14218,
+              "private_kib": 13300
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18440,
+          "pss_kib": 14218,
+          "private_kib": 13300,
+          "processes": [
+            {
+              "pid": 2929214,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18440,
+              "pss_kib": 14218,
+              "private_kib": 13300
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 1,
+      "rss_kib": 18580,
+      "pss_kib": 14257,
+      "private_kib": 13336,
+      "processes": [
+        {
+          "pid": 2929234,
+          "name": "tiez-native-ui-",
+          "rss_kib": 18580,
+          "pss_kib": 14257,
+          "private_kib": 13336
+        }
+      ],
+      "run": 2,
+      "window_ms": 292.3,
+      "state_ms": 292.3,
+      "window_id": "0x200003",
+      "window_pid": 2929234,
+      "samples": [
+        {
+          "process_count": 1,
+          "rss_kib": 18580,
+          "pss_kib": 14257,
+          "private_kib": 13336,
+          "processes": [
+            {
+              "pid": 2929234,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18580,
+              "pss_kib": 14257,
+              "private_kib": 13336
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18580,
+          "pss_kib": 14257,
+          "private_kib": 13336,
+          "processes": [
+            {
+              "pid": 2929234,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18580,
+              "pss_kib": 14257,
+              "private_kib": 13336
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18580,
+          "pss_kib": 14257,
+          "private_kib": 13336,
+          "processes": [
+            {
+              "pid": 2929234,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18580,
+              "pss_kib": 14257,
+              "private_kib": 13336
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 1,
+      "rss_kib": 18212,
+      "pss_kib": 13941,
+      "private_kib": 13020,
+      "processes": [
+        {
+          "pid": 2929273,
+          "name": "tiez-native-ui-",
+          "rss_kib": 18212,
+          "pss_kib": 13941,
+          "private_kib": 13020
+        }
+      ],
+      "run": 3,
+      "window_ms": 285.5,
+      "state_ms": 285.5,
+      "window_id": "0x200003",
+      "window_pid": 2929273,
+      "samples": [
+        {
+          "process_count": 1,
+          "rss_kib": 18212,
+          "pss_kib": 13941,
+          "private_kib": 13020,
+          "processes": [
+            {
+              "pid": 2929273,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18212,
+              "pss_kib": 13941,
+              "private_kib": 13020
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18212,
+          "pss_kib": 13941,
+          "private_kib": 13020,
+          "processes": [
+            {
+              "pid": 2929273,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18212,
+              "pss_kib": 13941,
+              "private_kib": 13020
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18212,
+          "pss_kib": 13941,
+          "private_kib": 13020,
+          "processes": [
+            {
+              "pid": 2929273,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18212,
+              "pss_kib": 13941,
+              "private_kib": 13020
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 1,
+      "rss_kib": 18296,
+      "pss_kib": 14074,
+      "private_kib": 13156,
+      "processes": [
+        {
+          "pid": 2929304,
+          "name": "tiez-native-ui-",
+          "rss_kib": 18296,
+          "pss_kib": 14074,
+          "private_kib": 13156
+        }
+      ],
+      "run": 4,
+      "window_ms": 302.2,
+      "state_ms": 302.2,
+      "window_id": "0x200003",
+      "window_pid": 2929304,
+      "samples": [
+        {
+          "process_count": 1,
+          "rss_kib": 18296,
+          "pss_kib": 14074,
+          "private_kib": 13156,
+          "processes": [
+            {
+              "pid": 2929304,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18296,
+              "pss_kib": 14074,
+              "private_kib": 13156
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18296,
+          "pss_kib": 14074,
+          "private_kib": 13156,
+          "processes": [
+            {
+              "pid": 2929304,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18296,
+              "pss_kib": 14074,
+              "private_kib": 13156
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18296,
+          "pss_kib": 14074,
+          "private_kib": 13156,
+          "processes": [
+            {
+              "pid": 2929304,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18296,
+              "pss_kib": 14074,
+              "private_kib": 13156
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 1,
+      "rss_kib": 18192,
+      "pss_kib": 13953,
+      "private_kib": 13032,
+      "processes": [
+        {
+          "pid": 2929332,
+          "name": "tiez-native-ui-",
+          "rss_kib": 18192,
+          "pss_kib": 13953,
+          "private_kib": 13032
+        }
+      ],
+      "run": 5,
+      "window_ms": 278.7,
+      "state_ms": 278.7,
+      "window_id": "0x200003",
+      "window_pid": 2929332,
+      "samples": [
+        {
+          "process_count": 1,
+          "rss_kib": 18192,
+          "pss_kib": 13953,
+          "private_kib": 13032,
+          "processes": [
+            {
+              "pid": 2929332,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18192,
+              "pss_kib": 13953,
+              "private_kib": 13032
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18192,
+          "pss_kib": 13953,
+          "private_kib": 13032,
+          "processes": [
+            {
+              "pid": 2929332,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18192,
+              "pss_kib": 13953,
+              "private_kib": 13032
+            }
+          ]
+        },
+        {
+          "process_count": 1,
+          "rss_kib": 18192,
+          "pss_kib": 13953,
+          "private_kib": 13032,
+          "processes": [
+            {
+              "pid": 2929332,
+              "name": "tiez-native-ui-",
+              "rss_kib": 18192,
+              "pss_kib": 13953,
+              "private_kib": 13032
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "median_window_ms": 285.5,
+    "median_state_ms": 285.5,
+    "median_process_count": 1,
+    "median_rss_kib": 18296,
+    "median_pss_kib": 14074,
+    "median_private_kib": 13156
+  }
+}

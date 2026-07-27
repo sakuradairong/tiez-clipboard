@@ -1,0 +1,17 @@
+[package]
+name = "tiez-native-ui-poc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+resolver = "3"
+publish = false
+
+[features]
+default = ["accessibility"]
+accessibility = ["slint/accessibility"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit-x11", "renderer-software", "software-renderer-systemfonts", "compat-1-2"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+slint = { version = "=1.16.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "software-renderer-systemfonts", "compat-1-2"] }

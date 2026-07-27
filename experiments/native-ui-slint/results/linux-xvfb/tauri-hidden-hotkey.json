@@ -1,0 +1,646 @@
+{
+  "label": "tauri-v0.3.8-webkit-hidden-hotkey",
+  "command": [
+    "/root/.cache/jcode-scratch/tiez-native-ui-bench/tauri-v038/bin/tiez-app"
+  ],
+  "display": ":99",
+  "host": {
+    "platform": "Linux-6.12.95+deb13-amd64-x86_64-with-glibc2.41",
+    "python": "3.13.5"
+  },
+  "sample_state": "hidden",
+  "warmup_seconds": 5.0,
+  "samples_per_run": 3,
+  "sample_interval_seconds": 0.25,
+  "state_trigger": {
+    "key": "Alt+C",
+    "count": 1,
+    "delay_seconds": 2.0,
+    "interval_seconds": 0.1
+  },
+  "runs": [
+    {
+      "process_count": 3,
+      "rss_kib": 623968,
+      "pss_kib": 442035,
+      "private_kib": 348072,
+      "processes": [
+        {
+          "pid": 2925754,
+          "name": "tiez-app",
+          "rss_kib": 189984,
+          "pss_kib": 116344,
+          "private_kib": 76416
+        },
+        {
+          "pid": 2925810,
+          "name": "WebKitNetworkPr",
+          "rss_kib": 72988,
+          "pss_kib": 38545,
+          "private_kib": 24584
+        },
+        {
+          "pid": 2925948,
+          "name": "WebKitWebProces",
+          "rss_kib": 360996,
+          "pss_kib": 287146,
+          "private_kib": 247072
+        }
+      ],
+      "run": 1,
+      "window_ms": 896.9,
+      "state_ms": 2957.6,
+      "window_id": "0x200003",
+      "window_pid": 2925754,
+      "samples": [
+        {
+          "process_count": 3,
+          "rss_kib": 624060,
+          "pss_kib": 442127,
+          "private_kib": 348164,
+          "processes": [
+            {
+              "pid": 2925754,
+              "name": "tiez-app",
+              "rss_kib": 189984,
+              "pss_kib": 116344,
+              "private_kib": 76416
+            },
+            {
+              "pid": 2925810,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72988,
+              "pss_kib": 38545,
+              "private_kib": 24584
+            },
+            {
+              "pid": 2925948,
+              "name": "WebKitWebProces",
+              "rss_kib": 361088,
+              "pss_kib": 287238,
+              "private_kib": 247164
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 623968,
+          "pss_kib": 442035,
+          "private_kib": 348072,
+          "processes": [
+            {
+              "pid": 2925754,
+              "name": "tiez-app",
+              "rss_kib": 189984,
+              "pss_kib": 116344,
+              "private_kib": 76416
+            },
+            {
+              "pid": 2925810,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72988,
+              "pss_kib": 38545,
+              "private_kib": 24584
+            },
+            {
+              "pid": 2925948,
+              "name": "WebKitWebProces",
+              "rss_kib": 360996,
+              "pss_kib": 287146,
+              "private_kib": 247072
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 623968,
+          "pss_kib": 442035,
+          "private_kib": 348072,
+          "processes": [
+            {
+              "pid": 2925754,
+              "name": "tiez-app",
+              "rss_kib": 189984,
+              "pss_kib": 116344,
+              "private_kib": 76416
+            },
+            {
+              "pid": 2925810,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72988,
+              "pss_kib": 38545,
+              "private_kib": 24584
+            },
+            {
+              "pid": 2925948,
+              "name": "WebKitWebProces",
+              "rss_kib": 360996,
+              "pss_kib": 287146,
+              "private_kib": 247072
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 3,
+      "rss_kib": 622224,
+      "pss_kib": 440164,
+      "private_kib": 346096,
+      "processes": [
+        {
+          "pid": 2926112,
+          "name": "tiez-app",
+          "rss_kib": 189808,
+          "pss_kib": 116174,
+          "private_kib": 76240
+        },
+        {
+          "pid": 2926172,
+          "name": "WebKitNetworkPr",
+          "rss_kib": 72928,
+          "pss_kib": 38473,
+          "private_kib": 24504
+        },
+        {
+          "pid": 2926310,
+          "name": "WebKitWebProces",
+          "rss_kib": 359488,
+          "pss_kib": 285517,
+          "private_kib": 245352
+        }
+      ],
+      "run": 2,
+      "window_ms": 879.6,
+      "state_ms": 2967.3,
+      "window_id": "0x200003",
+      "window_pid": 2926112,
+      "samples": [
+        {
+          "process_count": 3,
+          "rss_kib": 622216,
+          "pss_kib": 440156,
+          "private_kib": 346088,
+          "processes": [
+            {
+              "pid": 2926112,
+              "name": "tiez-app",
+              "rss_kib": 189808,
+              "pss_kib": 116174,
+              "private_kib": 76240
+            },
+            {
+              "pid": 2926172,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72928,
+              "pss_kib": 38473,
+              "private_kib": 24504
+            },
+            {
+              "pid": 2926310,
+              "name": "WebKitWebProces",
+              "rss_kib": 359480,
+              "pss_kib": 285509,
+              "private_kib": 245344
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 622224,
+          "pss_kib": 440164,
+          "private_kib": 346096,
+          "processes": [
+            {
+              "pid": 2926112,
+              "name": "tiez-app",
+              "rss_kib": 189808,
+              "pss_kib": 116174,
+              "private_kib": 76240
+            },
+            {
+              "pid": 2926172,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72928,
+              "pss_kib": 38473,
+              "private_kib": 24504
+            },
+            {
+              "pid": 2926310,
+              "name": "WebKitWebProces",
+              "rss_kib": 359488,
+              "pss_kib": 285517,
+              "private_kib": 245352
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 622224,
+          "pss_kib": 440164,
+          "private_kib": 346096,
+          "processes": [
+            {
+              "pid": 2926112,
+              "name": "tiez-app",
+              "rss_kib": 189808,
+              "pss_kib": 116174,
+              "private_kib": 76240
+            },
+            {
+              "pid": 2926172,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72928,
+              "pss_kib": 38473,
+              "private_kib": 24504
+            },
+            {
+              "pid": 2926310,
+              "name": "WebKitWebProces",
+              "rss_kib": 359488,
+              "pss_kib": 285517,
+              "private_kib": 245352
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 3,
+      "rss_kib": 581932,
+      "pss_kib": 400566,
+      "private_kib": 307084,
+      "processes": [
+        {
+          "pid": 2926519,
+          "name": "tiez-app",
+          "rss_kib": 189644,
+          "pss_kib": 116315,
+          "private_kib": 76648
+        },
+        {
+          "pid": 2926579,
+          "name": "WebKitNetworkPr",
+          "rss_kib": 72968,
+          "pss_kib": 38566,
+          "private_kib": 24612
+        },
+        {
+          "pid": 2926717,
+          "name": "WebKitWebProces",
+          "rss_kib": 319320,
+          "pss_kib": 245685,
+          "private_kib": 205824
+        }
+      ],
+      "run": 3,
+      "window_ms": 1012.9,
+      "state_ms": 3108.9,
+      "window_id": "0x200003",
+      "window_pid": 2926519,
+      "samples": [
+        {
+          "process_count": 3,
+          "rss_kib": 582056,
+          "pss_kib": 400690,
+          "private_kib": 307208,
+          "processes": [
+            {
+              "pid": 2926519,
+              "name": "tiez-app",
+              "rss_kib": 189644,
+              "pss_kib": 116315,
+              "private_kib": 76648
+            },
+            {
+              "pid": 2926579,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72968,
+              "pss_kib": 38566,
+              "private_kib": 24612
+            },
+            {
+              "pid": 2926717,
+              "name": "WebKitWebProces",
+              "rss_kib": 319444,
+              "pss_kib": 245809,
+              "private_kib": 205948
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 581932,
+          "pss_kib": 400566,
+          "private_kib": 307084,
+          "processes": [
+            {
+              "pid": 2926519,
+              "name": "tiez-app",
+              "rss_kib": 189644,
+              "pss_kib": 116315,
+              "private_kib": 76648
+            },
+            {
+              "pid": 2926579,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72968,
+              "pss_kib": 38566,
+              "private_kib": 24612
+            },
+            {
+              "pid": 2926717,
+              "name": "WebKitWebProces",
+              "rss_kib": 319320,
+              "pss_kib": 245685,
+              "private_kib": 205824
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 581884,
+          "pss_kib": 400518,
+          "private_kib": 307036,
+          "processes": [
+            {
+              "pid": 2926519,
+              "name": "tiez-app",
+              "rss_kib": 189644,
+              "pss_kib": 116315,
+              "private_kib": 76648
+            },
+            {
+              "pid": 2926579,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72968,
+              "pss_kib": 38566,
+              "private_kib": 24612
+            },
+            {
+              "pid": 2926717,
+              "name": "WebKitWebProces",
+              "rss_kib": 319272,
+              "pss_kib": 245637,
+              "private_kib": 205776
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 3,
+      "rss_kib": 621460,
+      "pss_kib": 439630,
+      "private_kib": 345628,
+      "processes": [
+        {
+          "pid": 2926884,
+          "name": "tiez-app",
+          "rss_kib": 189560,
+          "pss_kib": 115941,
+          "private_kib": 76000
+        },
+        {
+          "pid": 2926945,
+          "name": "WebKitNetworkPr",
+          "rss_kib": 72812,
+          "pss_kib": 38523,
+          "private_kib": 24604
+        },
+        {
+          "pid": 2927083,
+          "name": "WebKitWebProces",
+          "rss_kib": 359088,
+          "pss_kib": 285166,
+          "private_kib": 245024
+        }
+      ],
+      "run": 4,
+      "window_ms": 905.2,
+      "state_ms": 2959.7,
+      "window_id": "0x200003",
+      "window_pid": 2926884,
+      "samples": [
+        {
+          "process_count": 3,
+          "rss_kib": 621472,
+          "pss_kib": 439642,
+          "private_kib": 345640,
+          "processes": [
+            {
+              "pid": 2926884,
+              "name": "tiez-app",
+              "rss_kib": 189560,
+              "pss_kib": 115941,
+              "private_kib": 76000
+            },
+            {
+              "pid": 2926945,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72812,
+              "pss_kib": 38523,
+              "private_kib": 24604
+            },
+            {
+              "pid": 2927083,
+              "name": "WebKitWebProces",
+              "rss_kib": 359100,
+              "pss_kib": 285178,
+              "private_kib": 245036
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 621460,
+          "pss_kib": 439630,
+          "private_kib": 345628,
+          "processes": [
+            {
+              "pid": 2926884,
+              "name": "tiez-app",
+              "rss_kib": 189560,
+              "pss_kib": 115941,
+              "private_kib": 76000
+            },
+            {
+              "pid": 2926945,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72812,
+              "pss_kib": 38523,
+              "private_kib": 24604
+            },
+            {
+              "pid": 2927083,
+              "name": "WebKitWebProces",
+              "rss_kib": 359088,
+              "pss_kib": 285166,
+              "private_kib": 245024
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 621460,
+          "pss_kib": 439630,
+          "private_kib": 345628,
+          "processes": [
+            {
+              "pid": 2926884,
+              "name": "tiez-app",
+              "rss_kib": 189560,
+              "pss_kib": 115941,
+              "private_kib": 76000
+            },
+            {
+              "pid": 2926945,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72812,
+              "pss_kib": 38523,
+              "private_kib": 24604
+            },
+            {
+              "pid": 2927083,
+              "name": "WebKitWebProces",
+              "rss_kib": 359088,
+              "pss_kib": 285166,
+              "private_kib": 245024
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "process_count": 3,
+      "rss_kib": 621356,
+      "pss_kib": 439833,
+      "private_kib": 345972,
+      "processes": [
+        {
+          "pid": 2927258,
+          "name": "tiez-app",
+          "rss_kib": 188692,
+          "pss_kib": 115262,
+          "private_kib": 75396
+        },
+        {
+          "pid": 2927319,
+          "name": "WebKitNetworkPr",
+          "rss_kib": 72852,
+          "pss_kib": 38556,
+          "private_kib": 24652
+        },
+        {
+          "pid": 2927457,
+          "name": "WebKitWebProces",
+          "rss_kib": 359812,
+          "pss_kib": 286015,
+          "private_kib": 245924
+        }
+      ],
+      "run": 5,
+      "window_ms": 888.2,
+      "state_ms": 2946.4,
+      "window_id": "0x200003",
+      "window_pid": 2927258,
+      "samples": [
+        {
+          "process_count": 3,
+          "rss_kib": 621404,
+          "pss_kib": 439881,
+          "private_kib": 346020,
+          "processes": [
+            {
+              "pid": 2927258,
+              "name": "tiez-app",
+              "rss_kib": 188692,
+              "pss_kib": 115262,
+              "private_kib": 75396
+            },
+            {
+              "pid": 2927319,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72852,
+              "pss_kib": 38556,
+              "private_kib": 24652
+            },
+            {
+              "pid": 2927457,
+              "name": "WebKitWebProces",
+              "rss_kib": 359860,
+              "pss_kib": 286063,
+              "private_kib": 245972
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 621356,
+          "pss_kib": 439833,
+          "private_kib": 345972,
+          "processes": [
+            {
+              "pid": 2927258,
+              "name": "tiez-app",
+              "rss_kib": 188692,
+              "pss_kib": 115262,
+              "private_kib": 75396
+            },
+            {
+              "pid": 2927319,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72852,
+              "pss_kib": 38556,
+              "private_kib": 24652
+            },
+            {
+              "pid": 2927457,
+              "name": "WebKitWebProces",
+              "rss_kib": 359812,
+              "pss_kib": 286015,
+              "private_kib": 245924
+            }
+          ]
+        },
+        {
+          "process_count": 3,
+          "rss_kib": 621356,
+          "pss_kib": 439826,
+          "private_kib": 345972,
+          "processes": [
+            {
+              "pid": 2927258,
+              "name": "tiez-app",
+              "rss_kib": 188692,
+              "pss_kib": 115260,
+              "private_kib": 75396
+            },
+            {
+              "pid": 2927319,
+              "name": "WebKitNetworkPr",
+              "rss_kib": 72852,
+              "pss_kib": 38553,
+              "private_kib": 24652
+            },
+            {
+              "pid": 2927457,
+              "name": "WebKitWebProces",
+              "rss_kib": 359812,
+              "pss_kib": 286013,
+              "private_kib": 245924
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "median_window_ms": 896.9,
+    "median_state_ms": 2959.7,
+    "median_process_count": 3,
+    "median_rss_kib": 621460,
+    "median_pss_kib": 439833,
+    "median_private_kib": 345972
+  }
+}
