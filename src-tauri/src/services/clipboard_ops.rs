@@ -626,6 +626,15 @@ fn calculate_content_hash(content: &str) -> (u64, u64) {
     (content_hash, current_time)
 }
 
+pub(crate) fn read_plain_text_exact() -> AppResult<String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(AppError::from)?;
+    clipboard.get_text().map_err(AppError::from)
+}
+
+pub(crate) async fn set_plain_text_from_app(content: &str) -> AppResult<()> {
+    prepare_clipboard_payload(content, "text", None, false).await
+}
+
 pub async fn prepare_clipboard_payload(
     content: &str,
     content_type: &str,

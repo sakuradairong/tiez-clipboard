@@ -153,6 +153,34 @@ pub fn set_search_hotkey(
 }
 
 #[tauri::command]
+pub fn set_relay_send_hotkey(
+    app_handle: AppHandle,
+    state: State<'_, SettingsState>,
+    hotkey: String,
+) -> AppResult<()> {
+    update_hotkey_setting(
+        &app_handle,
+        &state.relay_send_hotkey,
+        "app.relay_send_hotkey",
+        hotkey,
+    )
+}
+
+#[tauri::command]
+pub fn set_relay_fetch_hotkey(
+    app_handle: AppHandle,
+    state: State<'_, SettingsState>,
+    hotkey: String,
+) -> AppResult<()> {
+    update_hotkey_setting(
+        &app_handle,
+        &state.relay_fetch_hotkey,
+        "app.relay_fetch_hotkey",
+        hotkey,
+    )
+}
+
+#[tauri::command]
 pub fn set_deduplication(
     app_handle: AppHandle,
     state: State<'_, crate::app_state::SettingsState>,
@@ -172,6 +200,11 @@ pub fn save_setting(
     key: String,
     mut value: String,
 ) -> AppResult<()> {
+    if key == "clipboard_relay_shared_key" {
+        return Err(AppError::Validation(
+            "接力共享密钥只能通过系统安全密钥库配置".to_string(),
+        ));
+    }
     match key.as_str() {
         "app.arrow_key_selection" => {
             settings_state
@@ -291,7 +324,9 @@ pub fn set_window_pinned(app_handle: AppHandle, state: State<'_, DbState>, pinne
 pub fn get_settings(
     state: State<'_, DbState>,
 ) -> AppResult<std::collections::HashMap<String, String>> {
-    state.settings_repo.get_all().map_err(AppError::from)
+    let mut settings = state.settings_repo.get_all().map_err(AppError::from)?;
+    settings.remove("clipboard_relay_shared_key");
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -540,6 +575,8 @@ pub fn reset_settings(
 ) -> AppResult<()> {
     use crate::database::seed_defaults;
 
+    #[cfg(not(feature = "portable"))]
+    crate::services::relay_key::clear()?;
     state.settings_repo.clear().map_err(AppError::from)?;
     {
         let conn = state.conn.lock().unwrap();
@@ -584,6 +621,16 @@ pub fn reset_settings(
         .get("app.search_hotkey")
         .unwrap_or(Some("Alt+F".to_string()))
         .unwrap_or("Alt+F".to_string());
+    let relay_send_hotkey = state
+        .settings_repo
+        .get("app.relay_send_hotkey")
+        .unwrap_or(Some(String::new()))
+        .unwrap_or_default();
+    let relay_fetch_hotkey = state
+        .settings_repo
+        .get("app.relay_fetch_hotkey")
+        .unwrap_or(Some(String::new()))
+        .unwrap_or_default();
     let quick_paste_modifier = state
         .settings_repo
         .get("app.quick_paste_modifier")
@@ -611,6 +658,14 @@ pub fn reset_settings(
     {
         let mut guard = settings_state.search_hotkey.lock().unwrap();
         *guard = search_hotkey.clone();
+    }
+    {
+        let mut guard = settings_state.relay_send_hotkey.lock().unwrap();
+        *guard = relay_send_hotkey;
+    }
+    {
+        let mut guard = settings_state.relay_fetch_hotkey.lock().unwrap();
+        *guard = relay_fetch_hotkey;
     }
     {
         let mut guard = settings_state.quick_paste_modifier.lock().unwrap();

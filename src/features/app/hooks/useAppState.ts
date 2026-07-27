@@ -58,6 +58,8 @@ export const useAppState = (): AppState => {
   const [richPasteHotkey, setRichPasteHotkey] = useState<string>("Alt+Shift+V");
   const [plainPasteHotkey, setPlainPasteHotkey] = useState<string>("");
   const [searchHotkey, setSearchHotkey] = useState<string>("Alt+F");
+  const [relaySendHotkey, setRelaySendHotkey] = useState<string>("");
+  const [relayFetchHotkey, setRelayFetchHotkey] = useState<string>("");
   const [quickPasteModifier, setQuickPasteModifier] =
     useState<QuickPasteModifier>("disabled");
   const [sequentialMode, setSequentialModeState] = useState(false);
@@ -66,6 +68,8 @@ export const useAppState = (): AppState => {
   const [isRecordingRich, setIsRecordingRich] = useState(false);
   const [isRecordingPlain, setIsRecordingPlain] = useState(false);
   const [isRecordingSearch, setIsRecordingSearch] = useState(false);
+  const [isRecordingRelaySend, setIsRecordingRelaySend] = useState(false);
+  const [isRecordingRelayFetch, setIsRecordingRelayFetch] = useState(false);
   const [deleteAfterPaste, setDeleteAfterPaste] = useState(false);
   const [moveToTopAfterPaste, setMoveToTopAfterPaste] = useState(true);
   const [privacyProtection, setPrivacyProtection] = useState(true);
@@ -249,6 +253,10 @@ export const useAppState = (): AppState => {
     setPlainPasteHotkey,
     searchHotkey,
     setSearchHotkey,
+    relaySendHotkey,
+    setRelaySendHotkey,
+    relayFetchHotkey,
+    setRelayFetchHotkey,
     quickPasteModifier,
     setQuickPasteModifier,
     sequentialMode,
@@ -263,6 +271,10 @@ export const useAppState = (): AppState => {
     setIsRecordingPlain,
     isRecordingSearch,
     setIsRecordingSearch,
+    isRecordingRelaySend,
+    setIsRecordingRelaySend,
+    isRecordingRelayFetch,
+    setIsRecordingRelayFetch,
     deleteAfterPaste,
     setDeleteAfterPaste,
     moveToTopAfterPaste,

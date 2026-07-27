@@ -7,6 +7,19 @@ use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 
+pub(crate) fn normalize_hotkey_aliases(hotkey: &str) -> String {
+    hotkey
+        .split('+')
+        .map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "win" | "windows" | "command" | "cmd" | "meta" => "Super".to_string(),
+            "option" => "Alt".to_string(),
+            "control" => "Ctrl".to_string(),
+            _ => part.trim().to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 fn register_shortcut(app_handle: &AppHandle, hotkey: &str) -> AppResult<()> {
     if hotkey.is_empty()
         || hotkey.eq_ignore_ascii_case("MouseMiddle")
@@ -15,7 +28,7 @@ fn register_shortcut(app_handle: &AppHandle, hotkey: &str) -> AppResult<()> {
         return Ok(());
     }
 
-    let normalized = hotkey.replace("Win", "Super");
+    let normalized = normalize_hotkey_aliases(hotkey);
     let shortcut = normalized
         .parse::<Shortcut>()
         .map_err(|_| AppError::Validation(format!("invalid hotkey: {hotkey}")))?;
@@ -64,12 +77,28 @@ pub(crate) fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
         .lock()
         .map_err(|e| AppError::Internal(e.to_string()))?
         .clone();
+    let relay_send_hotkey = settings
+        .relay_send_hotkey
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .clone();
+    let relay_fetch_hotkey = settings
+        .relay_fetch_hotkey
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .clone();
 
     let mut configured = vec![main_hotkey];
     if settings.sequential_mode.load(Ordering::Relaxed) {
         configured.push(sequential_hotkey);
     }
-    configured.extend([rich_hotkey, plain_hotkey, search_hotkey]);
+    configured.extend([
+        rich_hotkey,
+        plain_hotkey,
+        search_hotkey,
+        relay_send_hotkey,
+        relay_fetch_hotkey,
+    ]);
     for hotkey in configured {
         if let Err(error) = register_shortcut(app_handle, &hotkey) {
             errors.push(error.to_string());
@@ -150,7 +179,7 @@ pub fn test_hotkey_available(app_handle: AppHandle, hotkey: String) -> AppResult
         return Ok(true);
     }
 
-    let normalized = hotkey.replace("Win", "Super");
+    let normalized = normalize_hotkey_aliases(&hotkey);
     let shortcut = normalized
         .parse::<Shortcut>()
         .map_err(|_| AppError::Validation("快捷键格式无效".to_string()))?;

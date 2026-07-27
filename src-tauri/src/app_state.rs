@@ -24,6 +24,8 @@ pub struct SettingsState {
     pub rich_paste_hotkey: Mutex<String>,
     pub plain_paste_hotkey: Mutex<String>,
     pub search_hotkey: Mutex<String>,
+    pub relay_send_hotkey: Mutex<String>,
+    pub relay_fetch_hotkey: Mutex<String>,
     pub quick_paste_modifier: Mutex<String>,
     pub sound_enabled: AtomicBool,
     pub hide_tray_icon: AtomicBool,

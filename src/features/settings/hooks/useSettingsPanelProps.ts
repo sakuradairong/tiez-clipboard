@@ -2,6 +2,7 @@ import type { ComponentProps } from "react";
 import type SettingsPanel from "../components/SettingsPanel";
 import type { AppState } from "../../app/types";
 import type { Locale } from "../../../shared/types";
+import type { HotkeyMode } from "../../../shared/hooks/useHotkeyConfig";
 
 type SettingsPanelProps = ComponentProps<typeof SettingsPanel>;
 
@@ -12,16 +13,18 @@ interface UseSettingsPanelPropsOptions {
   language: Locale;
   colorMode: string;
   hotkeyParts: string[];
-  checkHotkeyConflict: (newHotkey: string, mode: "main" | "sequential" | "rich" | "plain" | "search") => boolean;
-  updateHotkey: (key: string) => void;
+  checkHotkeyConflict: (newHotkey: string, mode: HotkeyMode) => boolean;
+  updateHotkey: (key: string) => Promise<boolean>;
   updateSequentialHotkey: (key: string) => void;
   updateRichPasteHotkey: (key: string) => void;
   updatePlainPasteHotkey: (key: string) => void;
   updateSearchHotkey: (key: string) => void;
+  updateRelaySendHotkey: (key: string) => void;
+  updateRelayFetchHotkey: (key: string) => void;
   saveAppSetting: (key: string, val: string) => void;
   saveSetting: (key: string, val: string) => void;
   saveMqtt: (key: string, val: string) => void;
-  saveCloudSync: (key: string, val: string) => void;
+    saveCloudSync: (key: string, val: string) => Promise<void>;
   fetchEffectiveTransferPath: () => void;
   handleResetSettings: () => void;
   toggleGroup: (group: string) => void;
@@ -42,6 +45,8 @@ export const useSettingsPanelProps = ({
   updateRichPasteHotkey,
   updatePlainPasteHotkey,
   updateSearchHotkey,
+  updateRelaySendHotkey,
+  updateRelayFetchHotkey,
   saveAppSetting,
   saveSetting,
   saveMqtt,
@@ -76,6 +81,10 @@ export const useSettingsPanelProps = ({
     isRecordingPlain,
     searchHotkey,
     isRecordingSearch,
+    relaySendHotkey,
+    isRecordingRelaySend,
+    relayFetchHotkey,
+    isRecordingRelayFetch,
     quickPasteModifier,
     setQuickPasteModifier,
     privacyProtection,
@@ -95,6 +104,8 @@ export const useSettingsPanelProps = ({
     setAppCleanupPolicies,
     hotkey,
     showHotkeyHint,
+    registryWinVEnabled,
+    setRegistryWinVEnabled,
     showSearchBox,
     setShowSearchBox,
     scrollTopButtonEnabled,
@@ -172,6 +183,8 @@ export const useSettingsPanelProps = ({
     setIsRecordingRich,
     setIsRecordingPlain,
     setIsRecordingSearch,
+    setIsRecordingRelaySend,
+    setIsRecordingRelayFetch,
     setPrivacyProtection,
     setShowHotkeyHint,
     setIsRecording,
@@ -264,6 +277,10 @@ export const useSettingsPanelProps = ({
     isRecordingPlain,
     searchHotkey,
     isRecordingSearch,
+    relaySendHotkey,
+    isRecordingRelaySend,
+    relayFetchHotkey,
+    isRecordingRelayFetch,
     quickPasteModifier,
     setQuickPasteModifier,
     privacyProtection,
@@ -283,6 +300,8 @@ export const useSettingsPanelProps = ({
     setAppCleanupPolicies,
     hotkey,
     showHotkeyHint,
+    registryWinVEnabled,
+    setRegistryWinVEnabled,
     showSearchBox,
     setShowSearchBox,
     scrollTopButtonEnabled,
@@ -367,6 +386,10 @@ export const useSettingsPanelProps = ({
     updatePlainPasteHotkey,
     setIsRecordingSearch,
     updateSearchHotkey,
+    setIsRecordingRelaySend,
+    updateRelaySendHotkey,
+    setIsRecordingRelayFetch,
+    updateRelayFetchHotkey,
     setPrivacyProtection,
     setShowHotkeyHint,
     setIsRecording,

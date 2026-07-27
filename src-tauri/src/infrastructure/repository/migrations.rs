@@ -393,6 +393,22 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.execute("COMMIT", [])?;
     }
 
+    // Migration 15: Durable at-most-once delivery ledger for clipboard relay.
+    if current_version < 15 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS clipboard_relay_receipts (
+                message_id TEXT PRIMARY KEY,
+                expires_at INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                ack_json TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_clipboard_relay_receipts_expires_at
+                ON clipboard_relay_receipts (expires_at);",
+        )?;
+        conn.execute("INSERT INTO schema_migrations (version) VALUES (15)", [])?;
+    }
+
     Ok(())
 }
 
@@ -735,6 +751,46 @@ mod tests {
     }
 
     #[test]
+    fn migration_15_creates_clipboard_relay_receipt_ledger() {
+        let conn = Connection::open_in_memory().expect("open database");
+        run_migrations(&conn).expect("run migrations");
+
+        let columns: Vec<String> = {
+            let mut statement = conn
+                .prepare("PRAGMA table_info(clipboard_relay_receipts)")
+                .expect("prepare receipt table info");
+            statement
+                .query_map([], |row| row.get(1))
+                .expect("query receipt columns")
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .expect("collect receipt columns")
+        };
+        assert_eq!(
+            columns,
+            [
+                "message_id",
+                "expires_at",
+                "state",
+                "ack_json",
+                "updated_at"
+            ]
+        );
+
+        let index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index'
+                      AND name = 'idx_clipboard_relay_receipts_expires_at'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("check receipt expiry index");
+        assert!(index_exists);
+    }
+
+    #[test]
     fn legacy_local_migration_12_is_reconciled_with_upstream_migrations() {
         let conn = Connection::open_in_memory().expect("open migration test db");
         conn.execute_batch(
@@ -794,6 +850,6 @@ mod tests {
 
         assert!(analysis_table_exists);
         assert_eq!(tombstone, (42, 2, 99));
-        assert_eq!(latest_version, 14);
+        assert_eq!(latest_version, 15);
     }
 }

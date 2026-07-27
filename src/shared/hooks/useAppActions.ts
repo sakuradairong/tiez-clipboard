@@ -112,9 +112,11 @@ export const useAppActions = ({
         }
       } catch (err) {
         console.error("Cloud sync setting save failed", err);
+        pushToast(`保存失败: ${err?.toString() || ""}`, 5000);
+        throw err;
       }
     },
-    [cloudSyncEnabled]
+    [cloudSyncEnabled, pushToast, t]
   );
 
   return { saveMqtt, saveCloudSync, clearHistory, handleResetSettings };

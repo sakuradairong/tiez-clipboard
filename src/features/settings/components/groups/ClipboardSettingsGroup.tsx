@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { getHotkeyDisplayTokens } from "../../../../shared/lib/hotkeyDisplay";
-import { isMacPlatform } from "../../../../shared/lib/platform";
+import { isMacPlatform, isWindowsPlatform } from "../../../../shared/lib/platform";
 import type { QuickPasteModifier } from "../../../app/types";
+import type { HotkeyMode } from "../../../../shared/hooks/useHotkeyConfig";
 
 interface LabelWithHintProps {
     label: string;
@@ -17,6 +19,7 @@ interface ClipboardSettingsGroupProps {
     collapsed: boolean;
     onToggle: () => void;
     LabelWithHint: ComponentType<LabelWithHintProps>;
+    relayAvailable: boolean;
     persistent: boolean;
     setPersistent: (val: boolean) => void;
     persistentLimitEnabled: boolean;
@@ -45,6 +48,14 @@ interface ClipboardSettingsGroupProps {
     isRecordingSearch: boolean;
     setIsRecordingSearch: (val: boolean) => void;
     updateSearchHotkey: (key: string) => void;
+    relaySendHotkey: string;
+    isRecordingRelaySend: boolean;
+    setIsRecordingRelaySend: (val: boolean) => void;
+    updateRelaySendHotkey: (key: string) => void;
+    relayFetchHotkey: string;
+    isRecordingRelayFetch: boolean;
+    setIsRecordingRelayFetch: (val: boolean) => void;
+    updateRelayFetchHotkey: (key: string) => void;
     quickPasteModifier: QuickPasteModifier;
     setQuickPasteModifier: (val: QuickPasteModifier) => void;
     deleteAfterPaste: boolean;
@@ -57,7 +68,7 @@ interface ClipboardSettingsGroupProps {
     isRecordingSequential: boolean;
     setIsRecordingSequential: (val: boolean) => void;
     updateSequentialHotkey: (key: string) => void;
-    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'plain' | 'search') => boolean;
+    checkHotkeyConflict: (newHotkey: string, mode: HotkeyMode) => boolean;
     privacyProtection: boolean;
     setPrivacyProtection: (val: boolean) => void;
     privacyProtectionKinds: string[];
@@ -77,14 +88,39 @@ interface ClipboardSettingsGroupProps {
     isRecording: boolean;
     setIsRecording: (val: boolean) => void;
     hotkeyParts: string[];
-    updateHotkey: (key: string) => void;
+    updateHotkey: (key: string) => Promise<boolean>;
     hotkey: string;
+    registryWinVEnabled: boolean;
+    setRegistryWinVEnabled: (val: boolean) => void;
     appSettings: Record<string, string>;
     theme: string;
     colorMode: string;
 }
 
 const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
+    const isWindows = isWindowsPlatform();
+    const stopAllRecording = () => {
+        props.setIsRecording(false);
+        props.setIsRecordingSequential(false);
+        props.setIsRecordingRich(false);
+        props.setIsRecordingPlain(false);
+        props.setIsRecordingSearch(false);
+        props.setIsRecordingRelaySend(false);
+        props.setIsRecordingRelayFetch(false);
+    };
+    const beginRecording = (mode: HotkeyMode) => {
+        stopAllRecording();
+        if (mode === "main") props.setIsRecording(true);
+        if (mode === "sequential") props.setIsRecordingSequential(true);
+        if (mode === "rich") props.setIsRecordingRich(true);
+        if (mode === "plain") props.setIsRecordingPlain(true);
+        if (mode === "search") props.setIsRecordingSearch(true);
+        if (mode === "relaySend") props.setIsRecordingRelaySend(true);
+        if (mode === "relayFetch") props.setIsRecordingRelayFetch(true);
+    };
+    const beginRelayRecording = (mode: "send" | "fetch") => {
+        beginRecording(mode === "send" ? "relaySend" : "relayFetch");
+    };
     const quickPasteOptions: Array<{ value: QuickPasteModifier; label: string }> = isMacPlatform()
         ? [
             { value: "disabled", label: props.t("quick_paste_modifier_disabled") },
@@ -104,10 +140,127 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
         props.persistentLimit.toString()
     );
     const [maskSettingsOpen, setMaskSettingsOpen] = useState(false);
+    const [winVUpdating, setWinVUpdating] = useState(false);
+    const winVUpdatingRef = useRef(false);
+    const preWinVHotkeyRef = useRef(props.appSettings['app.pre_win_v_hotkey'] || 'Alt+C');
 
     useEffect(() => {
         setPersistentLimitDraft(props.persistentLimit.toString());
     }, [props.persistentLimit, props.persistentLimitEnabled]);
+
+    useEffect(() => {
+        const savedHotkey = props.appSettings['app.pre_win_v_hotkey'];
+        if (savedHotkey && savedHotkey !== 'Win+V') {
+            preWinVHotkeyRef.current = savedHotkey;
+        }
+    }, [props.appSettings]);
+
+    const restartExplorerIfConfirmed = async (changed: boolean): Promise<boolean> => {
+        if (!changed) return false;
+
+        const confirmed = await ask(
+            props.t('restart_explorer_confirm'),
+            { title: props.t('restart_explorer_title'), kind: 'warning' }
+        );
+        if (!confirmed) return false;
+
+        await invoke('restart_explorer');
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        return true;
+    };
+
+    const updateWinVShortcut = async (enabled: boolean) => {
+        if (winVUpdatingRef.current || enabled === props.registryWinVEnabled) return;
+
+        winVUpdatingRef.current = true;
+        setWinVUpdating(true);
+        const previousHotkey = props.hotkey;
+        let registryChanged = false;
+        let explorerRestarted = false;
+        let hotkeyChanged = false;
+
+        try {
+            if (enabled) {
+                if (previousHotkey && previousHotkey !== 'Win+V') {
+                    await invoke('save_setting', {
+                        key: 'app.pre_win_v_hotkey',
+                        value: previousHotkey
+                    });
+                    preWinVHotkeyRef.current = previousHotkey;
+                }
+
+                registryChanged = await invoke<boolean>('trigger_registry_win_v_optimization', {
+                    enable: true
+                });
+                explorerRestarted = await restartExplorerIfConfirmed(registryChanged);
+                if (registryChanged && !explorerRestarted) {
+                    throw new Error(props.t('win_v_restart_cancelled'));
+                }
+                if (previousHotkey !== 'Win+V' && !(await props.updateHotkey('Win+V'))) {
+                    throw new Error(props.t('hotkey_register_failed'));
+                }
+                hotkeyChanged = previousHotkey !== 'Win+V';
+            } else {
+                const fallbackHotkey = preWinVHotkeyRef.current !== 'Win+V'
+                    ? preWinVHotkeyRef.current
+                    : 'Alt+C';
+                if (!(await props.updateHotkey(fallbackHotkey))) {
+                    throw new Error(props.t('hotkey_register_failed'));
+                }
+                hotkeyChanged = fallbackHotkey !== previousHotkey;
+
+                registryChanged = await invoke<boolean>('trigger_registry_win_v_optimization', {
+                    enable: false
+                });
+                explorerRestarted = await restartExplorerIfConfirmed(registryChanged);
+                if (registryChanged && !explorerRestarted) {
+                    throw new Error(props.t('win_v_restart_cancelled'));
+                }
+            }
+
+            await invoke('save_setting', {
+                key: 'app.use_win_v_shortcut',
+                value: String(enabled)
+            });
+            props.setRegistryWinVEnabled(enabled);
+            props.pushToast(props.t(enabled ? 'win_v_enabled_msg' : 'win_v_disabled_msg'), 3000);
+        } catch (error) {
+            console.error('Failed to update Win+V shortcut:', error);
+
+            let rollbackError: unknown;
+            try {
+                const rollbackChanged = await invoke<boolean>('trigger_registry_win_v_optimization', {
+                    enable: !enabled
+                });
+                if (explorerRestarted && rollbackChanged) {
+                    await invoke('restart_explorer');
+                }
+            } catch (registryRollbackError) {
+                rollbackError = registryRollbackError;
+                console.error('Failed to roll back the Win+V registry state:', registryRollbackError);
+            }
+
+            if (hotkeyChanged) {
+                try {
+                    if (!(await props.updateHotkey(previousHotkey))) {
+                        throw new Error(props.t('hotkey_register_failed'));
+                    }
+                } catch (hotkeyRollbackError) {
+                    rollbackError ??= hotkeyRollbackError;
+                    console.error('Failed to roll back the Win+V hotkey:', hotkeyRollbackError);
+                }
+            }
+
+            if (!rollbackError) {
+                props.setRegistryWinVEnabled(!enabled);
+            }
+            const details = rollbackError ? `${String(error)}; ${String(rollbackError)}` : String(error);
+            props.pushToast(`${props.t('win_v_update_failed')}${details}`, 5000);
+        } finally {
+            winVUpdatingRef.current = false;
+            setWinVUpdating(false);
+        }
+    };
 
     const commitPersistentLimit = (rawValue?: string) => {
         const source = rawValue ?? persistentLimitDraft;
@@ -302,7 +455,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                         </div>
                         <div
                             className={`key-group ${props.isRecordingRich ? 'recording' : ''}`}
-                            onClick={(e) => { props.setIsRecordingRich(true); e.currentTarget.focus(); }}
+                            onClick={(e) => { beginRecording("rich"); e.currentTarget.focus(); }}
                             tabIndex={0}
                             onKeyDown={(e) => {
                                 if (!props.isRecordingRich) return;
@@ -347,7 +500,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                         </div>
                         <div
                             className={`key-group ${props.isRecordingPlain ? 'recording' : ''}`}
-                            onClick={(e) => { props.setIsRecordingPlain(true); e.currentTarget.focus(); }}
+                            onClick={(e) => { beginRecording("plain"); e.currentTarget.focus(); }}
                             tabIndex={0}
                             onKeyDown={(e) => {
                                 if (!props.isRecordingPlain) return;
@@ -392,7 +545,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                         </div>
                         <div
                             className={`key-group ${props.isRecordingSearch ? 'recording' : ''}`}
-                            onClick={(e) => { props.setIsRecordingSearch(true); e.currentTarget.focus(); }}
+                            onClick={(e) => { beginRecording("search"); e.currentTarget.focus(); }}
                             tabIndex={0}
                             onKeyDown={(e) => {
                                 if (!props.isRecordingSearch) return;
@@ -430,6 +583,78 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                             )}
                         </div>
                     </div>
+                    {props.relayAvailable && <div className="setting-item">
+                        <div className="item-label-group">
+                            <span className="item-label">{props.t('relay_send_hotkey_label')}</span>
+                            <span className="hint">{props.isRecordingRelaySend ? props.t('hotkey_recording_esc') : props.t('relay_send_hotkey_hint')}</span>
+                        </div>
+                        <div
+                            className={`key-group ${props.isRecordingRelaySend ? 'recording' : ''}`}
+                            onClick={(e) => { beginRelayRecording("send"); e.currentTarget.focus(); }}
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                                if (!props.isRecordingRelaySend) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (e.key === 'Escape') {
+                                    props.setIsRecordingRelaySend(false);
+                                    return;
+                                }
+                                if (e.key === 'Backspace' || e.key === 'Delete') {
+                                    props.updateRelaySendHotkey('');
+                                    return;
+                                }
+                                const modifiers = [];
+                                if (e.ctrlKey) modifiers.push('Ctrl');
+                                if (e.shiftKey) modifiers.push('Shift');
+                                if (e.altKey) modifiers.push('Alt');
+                                if (e.metaKey) modifiers.push('Command');
+                                const key = e.key.toUpperCase();
+                                if (['CONTROL', 'SHIFT', 'ALT', 'META'].includes(key)) return;
+                                props.updateRelaySendHotkey([...modifiers, key].join('+'));
+                            }}
+                        >
+                            {props.isRecordingRelaySend ? (
+                                <div className="key-cap" style={{ width: '8em' }}>{props.t('waiting_for_input')}</div>
+                            ) : renderHotkeyCaps(props.relaySendHotkey)}
+                        </div>
+                    </div>}
+                    {props.relayAvailable && <div className="setting-item">
+                        <div className="item-label-group">
+                            <span className="item-label">{props.t('relay_fetch_hotkey_label')}</span>
+                            <span className="hint">{props.isRecordingRelayFetch ? props.t('hotkey_recording_esc') : props.t('relay_fetch_hotkey_hint')}</span>
+                        </div>
+                        <div
+                            className={`key-group ${props.isRecordingRelayFetch ? 'recording' : ''}`}
+                            onClick={(e) => { beginRelayRecording("fetch"); e.currentTarget.focus(); }}
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                                if (!props.isRecordingRelayFetch) return;
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (e.key === 'Escape') {
+                                    props.setIsRecordingRelayFetch(false);
+                                    return;
+                                }
+                                if (e.key === 'Backspace' || e.key === 'Delete') {
+                                    props.updateRelayFetchHotkey('');
+                                    return;
+                                }
+                                const modifiers = [];
+                                if (e.ctrlKey) modifiers.push('Ctrl');
+                                if (e.shiftKey) modifiers.push('Shift');
+                                if (e.altKey) modifiers.push('Alt');
+                                if (e.metaKey) modifiers.push('Command');
+                                const key = e.key.toUpperCase();
+                                if (['CONTROL', 'SHIFT', 'ALT', 'META'].includes(key)) return;
+                                props.updateRelayFetchHotkey([...modifiers, key].join('+'));
+                            }}
+                        >
+                            {props.isRecordingRelayFetch ? (
+                                <div className="key-cap" style={{ width: '8em' }}>{props.t('waiting_for_input')}</div>
+                            ) : renderHotkeyCaps(props.relayFetchHotkey)}
+                        </div>
+                    </div>}
                     <div className="setting-item">
                         <props.LabelWithHint
                             label={props.t('quick_paste_modifier')}
@@ -538,7 +763,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                             </div>
                             <div
                                 className={`key-group ${props.isRecordingSequential ? 'recording' : ''}`}
-                                onClick={(e) => { props.setIsRecordingSequential(true); e.currentTarget.focus(); }}
+                                onClick={(e) => { beginRecording("sequential"); e.currentTarget.focus(); }}
                                 tabIndex={0}
                                 onKeyDown={(e) => {
                                     if (!props.isRecordingSequential) return;
@@ -747,7 +972,8 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                         )}
                     </div>
 
-                    <div className="setting-item no-border">
+                    {(!isWindows || !props.registryWinVEnabled) && (
+                        <div className="setting-item no-border">
                         <div className="item-label-group">
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                 <span className="item-label">{props.t('global_hotkey')}</span>
@@ -757,7 +983,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
 
                         <div
                             className={`key-group ${props.isRecording ? 'recording' : ''}`}
-                            onClick={(e) => { props.setIsRecording(true); e.currentTarget.focus(); }}
+                            onClick={(e) => { beginRecording("main"); e.currentTarget.focus(); }}
                             tabIndex={0}
                             onKeyDown={(e) => {
                                 if (!props.isRecording) return;
@@ -794,9 +1020,28 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                                 renderHotkeyCaps(props.hotkey)
                             )}
                         </div>
-                    </div>
+                        </div>
+                    )}
 
-                    {/* macOS cleanup: Removed Win+V Shortcut switch */}
+                    {isWindows && (
+                        <div className="setting-item">
+                            <props.LabelWithHint
+                                label={props.t('use_win_v_shortcut')}
+                                hint={props.t('use_win_v_shortcut_hint')}
+                                hintKey="use_win_v_shortcut"
+                            />
+                            <label className="switch">
+                                <input
+                                    className="cb"
+                                    type="checkbox"
+                                    checked={props.registryWinVEnabled}
+                                    disabled={winVUpdating}
+                                    onChange={(event) => void updateWinVShortcut(event.target.checked)}
+                                />
+                                <div className="toggle"><div className="left" /><div className="right" /></div>
+                            </label>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

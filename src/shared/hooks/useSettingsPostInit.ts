@@ -98,6 +98,8 @@ interface UseSettingsPostInitOptions {
   setRichPasteHotkey: (val: string) => void;
   setPlainPasteHotkey: (val: string) => void;
   setSearchHotkey: (val: string) => void;
+  setRelaySendHotkey: (val: string) => void;
+  setRelayFetchHotkey: (val: string) => void;
   setQuickPasteModifier: (val: QuickPasteModifier) => void;
   setSequentialModeState: (val: boolean) => void;
   setSoundEnabled: (val: boolean) => void;
@@ -185,6 +187,8 @@ export const useSettingsPostInit = ({
   setRichPasteHotkey,
   setPlainPasteHotkey,
   setSearchHotkey,
+  setRelaySendHotkey,
+  setRelayFetchHotkey,
   setQuickPasteModifier,
   setSequentialModeState,
   setSoundEnabled,
@@ -320,7 +324,7 @@ export const useSettingsPostInit = ({
     setSilentStart(settings["app.silent_start"] !== "false");
     setFollowMouse(settings["app.follow_mouse"] === "true");
     setShowAppBorder(settings["app.show_app_border"] === "true");
-    setRegistryWinVEnabled(settings["app.registry_win_v_enabled"] === "true");
+    setRegistryWinVEnabled(settings["app.use_win_v_shortcut"] === "true");
     setPasteMethod(settings["app.paste_method"] || "simulate");
     setShowSourceAppIcon(settings["app.show_source_app_icon"] !== "false");
 
@@ -387,6 +391,12 @@ export const useSettingsPostInit = ({
       setPlainPasteHotkey(settings["app.plain_paste_hotkey"]);
     }
     if (settings["app.search_hotkey"] !== undefined) setSearchHotkey(settings["app.search_hotkey"]);
+    if (settings["app.relay_send_hotkey"] !== undefined) {
+      setRelaySendHotkey(settings["app.relay_send_hotkey"]);
+    }
+    if (settings["app.relay_fetch_hotkey"] !== undefined) {
+      setRelayFetchHotkey(settings["app.relay_fetch_hotkey"]);
+    }
     setQuickPasteModifier(normalizeQuickPasteModifier(settings["app.quick_paste_modifier"]));
     if (settings["app.sequential_mode"] === "true") setSequentialModeState(true);
     if (settings["app.sound_enabled"] === "true") setSoundEnabled(true);

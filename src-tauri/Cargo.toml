@@ -1,6 +1,6 @@
 [package]
 name = "tiez-app"
-version = "0.3.7"
+version = "0.3.8"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -64,6 +64,9 @@ tauri-plugin-http = "2"
 tauri-plugin-autostart = "2"
 machine-uid = "0.5"
 sha2 = "0.10"
+chacha20poly1305 = "0.10"
+keyring = { version = "=4.1.5", default-features = false, features = ["v1"] }
+hex = "0.4"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
 windows-version = "0.1.1"

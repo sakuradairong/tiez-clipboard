@@ -571,3 +571,25 @@ pub fn is_win_v_hotkey(hotkey: &str) -> bool {
 
     has_win && has_v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_win_v_hotkey;
+
+    #[test]
+    fn win_v_detection_accepts_supported_platform_aliases() {
+        for hotkey in ["Win+V", "Super+V", "Command+V", "Meta+V", " v + win "] {
+            assert!(is_win_v_hotkey(hotkey), "expected {hotkey} to match Win+V");
+        }
+    }
+
+    #[test]
+    fn win_v_detection_rejects_extra_modifiers_and_other_keys() {
+        for hotkey in ["Ctrl+Win+V", "Win+Shift+V", "Win+C", "V", ""] {
+            assert!(
+                !is_win_v_hotkey(hotkey),
+                "expected {hotkey} not to match Win+V"
+            );
+        }
+    }
+}

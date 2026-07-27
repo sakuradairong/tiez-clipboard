@@ -75,6 +75,34 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let conn_arc = std::sync::Arc::new(std::sync::Mutex::new(conn));
     let settings_repo = SqliteSettingsRepository::new(conn_arc.clone());
 
+    if let Some(legacy_key) = settings_repo
+        .get("clipboard_relay_shared_key")
+        .map_err(|error| format!("读取旧接力密钥失败: {error}"))?
+    {
+        if legacy_key.trim().is_empty() {
+            conn_arc
+                .lock()
+                .map_err(|_| "database lock poisoned")?
+                .execute(
+                    "DELETE FROM settings WHERE key = 'clipboard_relay_shared_key'",
+                    [],
+                )?;
+        } else {
+            crate::services::relay_key::ensure_runtime_allowed(Some(&app_dir))
+                .and_then(|_| crate::services::relay_key::migrate_legacy(&legacy_key))
+                .map_err(|_| {
+                    "无法将旧剪贴板接力密钥迁移到系统安全密钥库；旧密钥已保留，请确认系统密钥库可用后重试"
+                })?;
+            conn_arc
+                .lock()
+                .map_err(|_| "database lock poisoned")?
+                .execute(
+                    "DELETE FROM settings WHERE key = 'clipboard_relay_shared_key'",
+                    [],
+                )?;
+        }
+    }
+
     // 4. Initial Settings & Reset Safety
     apply_startup_resets(&settings_repo);
 
@@ -194,6 +222,8 @@ pub struct StartupSettings {
     pub rich_paste_hotkey: String,
     pub plain_paste_hotkey: String,
     pub search_hotkey: String,
+    pub relay_send_hotkey: String,
+    pub relay_fetch_hotkey: String,
     pub quick_paste_modifier: String,
     pub sound_enabled: bool,
     pub hide_tray_icon: bool,
@@ -290,6 +320,14 @@ fn load_settings(repo: &impl SettingsRepository) -> StartupSettings {
             .get("app.search_hotkey")
             .unwrap_or(Some("Alt+F".to_string()))
             .unwrap_or("Alt+F".to_string()),
+        relay_send_hotkey: repo
+            .get("app.relay_send_hotkey")
+            .unwrap_or(Some(String::new()))
+            .unwrap_or_default(),
+        relay_fetch_hotkey: repo
+            .get("app.relay_fetch_hotkey")
+            .unwrap_or(Some(String::new()))
+            .unwrap_or_default(),
         quick_paste_modifier: repo
             .get("app.quick_paste_modifier")
             .unwrap_or(Some("disabled".to_string()))
@@ -392,6 +430,8 @@ fn setup_state(
         rich_paste_hotkey: std::sync::Mutex::new(s.rich_paste_hotkey.clone()),
         plain_paste_hotkey: std::sync::Mutex::new(s.plain_paste_hotkey.clone()),
         search_hotkey: std::sync::Mutex::new(s.search_hotkey.clone()),
+        relay_send_hotkey: std::sync::Mutex::new(s.relay_send_hotkey.clone()),
+        relay_fetch_hotkey: std::sync::Mutex::new(s.relay_fetch_hotkey.clone()),
         quick_paste_modifier: std::sync::Mutex::new(s.quick_paste_modifier.clone()),
         sound_enabled: AtomicBool::new(s.sound_enabled),
         hide_tray_icon: AtomicBool::new(s.hide_tray_icon),
@@ -650,24 +690,99 @@ fn start_services(app: &App, s: &StartupSettings, app_handle: AppHandle) {
     // Daily app announcement ping
     init_announcement_ping(app, &db_state.settings_repo);
 
-    // Register active hotkeys based on current settings. A malformed persisted
-    // shortcut must not hide failures or prevent unrelated shortcuts being restored.
-    if let Err(error) =
-        crate::app::commands::register_hotkey(app_handle.clone(), s.main_hotkey.clone())
+    #[cfg(not(target_os = "windows"))]
+    let startup_hotkey = s.main_hotkey.clone();
+    #[cfg(target_os = "windows")]
+    let mut startup_hotkey = s.main_hotkey.clone();
+
+    #[cfg(target_os = "windows")]
     {
-        eprintln!("Failed to restore one or more startup hotkeys: {error}");
+        // Restore both the system takeover and the matching app hotkey from the last
+        // fully persisted intent. This also repairs an interrupted settings update.
+        let use_win_v_shortcut = db_state
+            .settings_repo
+            .get("app.use_win_v_shortcut")
+            .unwrap_or(Some("false".to_string()))
+            == Some("true".to_string());
+        let registry_win_v_optimized =
+            crate::app::commands::system_cmd::get_registry_win_v_optimized_status();
+        if use_win_v_shortcut != registry_win_v_optimized {
+            if let Err(error) =
+                crate::app::commands::trigger_registry_win_v_optimization(use_win_v_shortcut)
+            {
+                eprintln!("Failed to align the Win+V system takeover: {error}");
+            }
+        }
+
+        if use_win_v_shortcut {
+            startup_hotkey = startup_hotkey_for_win_v(true, &startup_hotkey, None);
+        } else {
+            let previous_hotkey = db_state
+                .settings_repo
+                .get("app.pre_win_v_hotkey")
+                .unwrap_or(Some("Alt+C".to_string()))
+                .unwrap_or_else(|| "Alt+C".to_string());
+            startup_hotkey =
+                startup_hotkey_for_win_v(false, &startup_hotkey, Some(&previous_hotkey));
+        }
     }
 
-    // Win+V Optimization
-    if db_state
-        .settings_repo
-        .get("app.use_win_v_shortcut")
-        .unwrap_or(Some("false".to_string()))
-        == Some("true".to_string())
-    {
-        if !crate::app::commands::system_cmd::get_registry_win_v_optimized_status() {
-            let _ = crate::app::commands::trigger_registry_win_v_optimization(true);
-        }
+    // Register active hotkeys based on current settings. A malformed persisted
+    // shortcut must not hide failures or prevent unrelated shortcuts being restored.
+    if let Err(error) = crate::app::commands::register_hotkey(app_handle.clone(), startup_hotkey) {
+        eprintln!("Failed to restore one or more startup hotkeys: {error}");
+    }
+}
+
+fn startup_hotkey_for_win_v(
+    use_win_v_shortcut: bool,
+    current_hotkey: &str,
+    previous_hotkey: Option<&str>,
+) -> String {
+    if use_win_v_shortcut {
+        return "Win+V".to_string();
+    }
+    if !crate::app::hooks::is_win_v_hotkey(current_hotkey) {
+        return current_hotkey.to_string();
+    }
+
+    previous_hotkey
+        .filter(|hotkey| !crate::app::hooks::is_win_v_hotkey(hotkey))
+        .unwrap_or("Alt+C")
+        .to_string()
+}
+
+#[cfg(test)]
+mod win_v_startup_tests {
+    use super::startup_hotkey_for_win_v;
+
+    #[test]
+    fn enabled_intent_always_restores_win_v() {
+        assert_eq!(startup_hotkey_for_win_v(true, "Alt+C", None), "Win+V");
+    }
+
+    #[test]
+    fn disabled_intent_restores_the_previous_hotkey() {
+        assert_eq!(
+            startup_hotkey_for_win_v(false, "Super+V", Some("Ctrl+Shift+C")),
+            "Ctrl+Shift+C"
+        );
+    }
+
+    #[test]
+    fn disabled_intent_rejects_win_v_as_the_previous_hotkey() {
+        assert_eq!(
+            startup_hotkey_for_win_v(false, "Win+V", Some("Meta+V")),
+            "Alt+C"
+        );
+    }
+
+    #[test]
+    fn disabled_intent_preserves_an_existing_non_win_v_hotkey() {
+        assert_eq!(
+            startup_hotkey_for_win_v(false, "Alt+Space", Some("Alt+C")),
+            "Alt+Space"
+        );
     }
 }
 
@@ -1201,6 +1316,38 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_sh
         }
     }
 
+    if let Ok(relay_send_hotkey) = settings.relay_send_hotkey.lock().map(|value| value.clone()) {
+        if !relay_send_hotkey.trim().is_empty() {
+            if let Ok(relay_send) =
+                crate::app::commands::hotkey_cmd::normalize_hotkey_aliases(&relay_send_hotkey)
+                    .parse::<Shortcut>()
+            {
+                if shortcut == &relay_send {
+                    spawn_relay_shortcut_action(app, RelayShortcutAction::Send);
+                    return;
+                }
+            }
+        }
+    }
+
+    if let Ok(relay_fetch_hotkey) = settings
+        .relay_fetch_hotkey
+        .lock()
+        .map(|value| value.clone())
+    {
+        if !relay_fetch_hotkey.trim().is_empty() {
+            if let Ok(relay_fetch) =
+                crate::app::commands::hotkey_cmd::normalize_hotkey_aliases(&relay_fetch_hotkey)
+                    .parse::<Shortcut>()
+            {
+                if shortcut == &relay_fetch {
+                    spawn_relay_shortcut_action(app, RelayShortcutAction::Fetch);
+                    return;
+                }
+            }
+        }
+    }
+
     if let Ok(search_s) = {
         let val = settings.search_hotkey.lock().unwrap().clone();
         val.replace("Win", "Super").parse::<Shortcut>()
@@ -1210,6 +1357,50 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_sh
             let _ = app.emit("focus-search-input", ());
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum RelayShortcutAction {
+    Send,
+    Fetch,
+}
+
+fn spawn_relay_shortcut_action(app: &AppHandle, action: RelayShortcutAction) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let message = match action {
+            RelayShortcutAction::Send => {
+                match crate::services::clipboard_relay::send_current_clipboard(&app).await {
+                    Ok(result) => format!("已发送剪贴板接力（{} 字节）", result.byte_len),
+                    Err(error) => format!("发送剪贴板接力失败：{}", error),
+                }
+            }
+            RelayShortcutAction::Fetch => {
+                match crate::services::clipboard_relay::fetch_latest_to_clipboard(&app).await {
+                    Ok(result) if result.outcome == "empty" => "没有待获取的剪贴板接力".to_string(),
+                    Ok(result) if result.acked => "已获取剪贴板接力".to_string(),
+                    Ok(result) if result.outcome == "pending_ack_retry_failed" => {
+                        "接力内容此前已复制，但云端确认仍失败；不会重复覆盖剪贴板".to_string()
+                    }
+                    Ok(_) => "已复制接力内容，但云端确认失败；稍后只会重试确认".to_string(),
+                    Err(error) => format!("获取剪贴板接力失败：{}", error),
+                }
+            }
+        };
+        let _ = app.emit("toast", message.clone());
+        if app
+            .get_webview_window("main")
+            .is_none_or(|window| !window.is_visible().unwrap_or(false))
+        {
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app
+                .notification()
+                .builder()
+                .title("TieZ 剪贴板接力")
+                .body(message)
+                .show();
+        }
+    });
 }
 
 pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {

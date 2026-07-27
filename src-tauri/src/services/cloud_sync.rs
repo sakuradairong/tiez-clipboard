@@ -536,6 +536,7 @@ fn is_setting_sync_eligible(key: &str) -> bool {
     !matches!(
         key,
         "app.anon_id"
+            | "clipboard_relay_shared_key"
             | "app.emoji_favorites"
             | "app.last_ping_date"
             | "app.window_width"
@@ -3976,6 +3977,7 @@ pub fn request_cloud_sync(app: AppHandle) {
     CLOUD_SYNC_REQUESTED.store(true, Ordering::Relaxed);
 }
 
+#[tauri::command]
 pub fn stop_cloud_sync_client(app: AppHandle) {
     CLOUD_SYNC_CANCEL_REQUESTED.store(true, Ordering::Relaxed);
     emit_status(Some(&app), disabled_status());

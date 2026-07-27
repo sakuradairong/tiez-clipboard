@@ -188,6 +188,10 @@ const App = () => {
     setPlainPasteHotkey,
     searchHotkey,
     setSearchHotkey,
+      relaySendHotkey,
+      setRelaySendHotkey,
+      relayFetchHotkey,
+      setRelayFetchHotkey,
     quickPasteModifier,
     setQuickPasteModifier,
     sequentialMode,
@@ -202,6 +206,10 @@ const App = () => {
     setIsRecordingPlain,
     isRecordingSearch,
     setIsRecordingSearch,
+      isRecordingRelaySend,
+      setIsRecordingRelaySend,
+      isRecordingRelayFetch,
+      setIsRecordingRelayFetch,
     deleteAfterPaste,
     setDeleteAfterPaste,
     moveToTopAfterPaste,
@@ -523,7 +531,7 @@ const App = () => {
 
   useEffect(() => {
     const handleKeydown = (event: KeyboardEvent) => {
-      if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch) return;
+      if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch || isRecordingRelaySend || isRecordingRelayFetch) return;
       if (!hotkey || hotkey === t('not_set')) return;
 
       const activeEl = document.activeElement as HTMLElement | null;
@@ -547,7 +555,7 @@ const App = () => {
 
     window.addEventListener('keydown', handleKeydown, true);
     return () => window.removeEventListener('keydown', handleKeydown, true);
-  }, [hotkey, isRecording, isRecordingSequential, isRecordingRich, isRecordingPlain, isRecordingSearch, t]);
+  }, [hotkey, isRecording, isRecordingSequential, isRecordingRich, isRecordingPlain, isRecordingSearch, isRecordingRelaySend, isRecordingRelayFetch, t]);
 
 
   const { toasts, pushToast, confirmDialog, openConfirm, closeConfirm } = useOverlays();
@@ -644,6 +652,8 @@ const App = () => {
     setRichPasteHotkey,
     setPlainPasteHotkey,
     setSearchHotkey,
+    setRelaySendHotkey,
+    setRelayFetchHotkey,
     setQuickPasteModifier,
     setSequentialModeState,
     setSoundEnabled,
@@ -927,7 +937,9 @@ const App = () => {
     updateSequentialHotkey,
     updateRichPasteHotkey,
     updatePlainPasteHotkey,
-    updateSearchHotkey
+    updateSearchHotkey,
+    updateRelaySendHotkey,
+    updateRelayFetchHotkey
   } =
     useHotkeyConfig({
       hotkey,
@@ -940,6 +952,10 @@ const App = () => {
       setPlainPasteHotkey,
       searchHotkey,
       setSearchHotkey,
+      relaySendHotkey,
+      setRelaySendHotkey,
+      relayFetchHotkey,
+      setRelayFetchHotkey,
       sequentialMode,
       isRecording,
       setIsRecording,
@@ -951,6 +967,10 @@ const App = () => {
       setIsRecordingPlain,
       isRecordingSearch,
       setIsRecordingSearch,
+      isRecordingRelaySend,
+      setIsRecordingRelaySend,
+      isRecordingRelayFetch,
+      setIsRecordingRelayFetch,
       saveAppSetting,
       t,
       pushToast
@@ -1092,6 +1112,8 @@ const App = () => {
     updateRichPasteHotkey,
     updatePlainPasteHotkey,
     updateSearchHotkey,
+    updateRelaySendHotkey,
+    updateRelayFetchHotkey,
     saveAppSetting,
     saveSetting,
     saveMqtt,

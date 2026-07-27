@@ -347,10 +347,11 @@ pub fn restart_explorer() -> AppResult<()> {
     {
         use std::os::windows::process::CommandExt;
         use std::process::Command;
-        let _ = Command::new("cmd")
+        Command::new("cmd")
             .args(["/C", "taskkill /F /IM explorer.exe & start explorer.exe"])
             .creation_flags(0x08000000)
-            .spawn();
+            .spawn()
+            .map_err(|error| AppError::Internal(format!("failed to restart Explorer: {error}")))?;
     }
     Ok(())
 }

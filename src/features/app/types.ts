@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { ClipboardEntry, Locale } from "../../shared/types";
 import type { AiProfile, AppCleanupPolicy } from "../settings/types";
 
-export type StateSetter<T> = Dispatch<SetStateAction<T>>;
+type StateSetter<T> = Dispatch<SetStateAction<T>>;
 
 export type InstalledAppOption = { label: string; value: string };
 export type DefaultAppsMap = Record<string, string>;
@@ -88,6 +88,10 @@ export interface AppState {
   setPlainPasteHotkey: StateSetter<string>;
   searchHotkey: string;
   setSearchHotkey: StateSetter<string>;
+  relaySendHotkey: string;
+  setRelaySendHotkey: StateSetter<string>;
+  relayFetchHotkey: string;
+  setRelayFetchHotkey: StateSetter<string>;
   quickPasteModifier: QuickPasteModifier;
   setQuickPasteModifier: StateSetter<QuickPasteModifier>;
   sequentialMode: boolean;
@@ -102,6 +106,10 @@ export interface AppState {
   setIsRecordingPlain: StateSetter<boolean>;
   isRecordingSearch: boolean;
   setIsRecordingSearch: StateSetter<boolean>;
+  isRecordingRelaySend: boolean;
+  setIsRecordingRelaySend: StateSetter<boolean>;
+  isRecordingRelayFetch: boolean;
+  setIsRecordingRelayFetch: StateSetter<boolean>;
   deleteAfterPaste: boolean;
   setDeleteAfterPaste: StateSetter<boolean>;
   moveToTopAfterPaste: boolean;

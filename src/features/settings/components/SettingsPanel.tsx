@@ -24,6 +24,7 @@ import AiSettingsGroup from "./groups/AiSettingsGroup";
 import SettingsFooter from "./SettingsFooter";
 import ThemeStorePanel from "../../theme-store/components/ThemeStorePanel";
 import { CLOUD_SYNC_ENABLED } from "../../../shared/config/edition";
+import type { HotkeyMode } from "../../../shared/hooks/useHotkeyConfig";
 
 interface SettingsPanelProps {
     t: (key: string) => string;
@@ -61,6 +62,10 @@ interface SettingsPanelProps {
     isRecordingPlain: boolean;
     searchHotkey: string;
     isRecordingSearch: boolean;
+    relaySendHotkey: string;
+    isRecordingRelaySend: boolean;
+    relayFetchHotkey: string;
+    isRecordingRelayFetch: boolean;
     quickPasteModifier: "disabled" | "ctrl" | "alt" | "shift" | "win";
     setQuickPasteModifier: (val: "disabled" | "ctrl" | "alt" | "shift" | "win") => void;
     privacyProtection: boolean;
@@ -80,6 +85,8 @@ interface SettingsPanelProps {
     setAppCleanupPolicies: (val: AppCleanupPolicy[]) => void;
     hotkey: string;
     showHotkeyHint: boolean;
+    registryWinVEnabled: boolean;
+    setRegistryWinVEnabled: (val: boolean) => void;
     showSearchBox: boolean;
     setShowSearchBox: (val: boolean) => void;
     scrollTopButtonEnabled: boolean;
@@ -177,12 +184,16 @@ interface SettingsPanelProps {
     updatePlainPasteHotkey: (key: string) => void;
     setIsRecordingSearch: (val: boolean) => void;
     updateSearchHotkey: (key: string) => void;
+    setIsRecordingRelaySend: (val: boolean) => void;
+    updateRelaySendHotkey: (key: string) => void;
+    setIsRecordingRelayFetch: (val: boolean) => void;
+    updateRelayFetchHotkey: (key: string) => void;
     setPrivacyProtection: (val: boolean) => void;
     setShowHotkeyHint: (val: boolean) => void;
     setIsRecording: (val: boolean) => void;
     isRecording: boolean;
     hotkeyParts: string[];
-    updateHotkey: (key: string) => void;
+    updateHotkey: (key: string) => Promise<boolean>;
 
     setTheme: (val: string) => void;
     setColorMode: (val: string) => void;
@@ -191,7 +202,7 @@ interface SettingsPanelProps {
 
     compactMode: boolean;
     setCompactMode: (val: boolean) => void;
-    checkHotkeyConflict: (newHotkey: string, mode: 'main' | 'sequential' | 'rich' | 'plain' | 'search') => boolean;
+    checkHotkeyConflict: (newHotkey: string, mode: HotkeyMode) => boolean;
 
 
     setMqttEnabled: (val: boolean) => void;
@@ -215,7 +226,7 @@ interface SettingsPanelProps {
     setCloudSyncWebdavUsername: (val: string) => void;
     setCloudSyncWebdavPassword: (val: string) => void;
     setCloudSyncWebdavBasePath: (val: string) => void;
-    saveCloudSync: (key: string, val: string) => void;
+    saveCloudSync: (key: string, val: string) => Promise<void>;
 
     setFileServerEnabled: (val: boolean) => void;
     setFileServerPort: (val: string) => void;
@@ -252,8 +263,8 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         t, pushToast, theme, language, colorMode, showSourceAppIcon, setShowSourceAppIcon,
         collapsedGroups, settingsSubpage, autoStart, silentStart, persistent, persistentLimitEnabled, persistentLimit, deduplicate, captureFiles, captureRichText, richTextSnapshotPreview, deleteAfterPaste, moveToTopAfterPaste,
         sequentialMode, sequentialHotkey, isRecordingSequential,
-        richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, quickPasteModifier, setQuickPasteModifier,
-        privacyProtection, privacyProtectionKinds, setPrivacyProtectionKinds, privacyProtectionCustomRules, setPrivacyProtectionCustomRules, sensitiveMaskPrefixVisible, setSensitiveMaskPrefixVisible, sensitiveMaskSuffixVisible, setSensitiveMaskSuffixVisible, sensitiveMaskEmailDomain, setSensitiveMaskEmailDomain, cleanupRules, setCleanupRules, appCleanupPolicies, setAppCleanupPolicies, showSearchBox, setShowSearchBox, scrollTopButtonEnabled, setScrollTopButtonEnabled, arrowKeySelection, setArrowKeySelection,
+        richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, relaySendHotkey, isRecordingRelaySend, relayFetchHotkey, isRecordingRelayFetch, quickPasteModifier, setQuickPasteModifier,
+        privacyProtection, privacyProtectionKinds, setPrivacyProtectionKinds, privacyProtectionCustomRules, setPrivacyProtectionCustomRules, sensitiveMaskPrefixVisible, setSensitiveMaskPrefixVisible, sensitiveMaskSuffixVisible, setSensitiveMaskSuffixVisible, sensitiveMaskEmailDomain, setSensitiveMaskEmailDomain, cleanupRules, setCleanupRules, appCleanupPolicies, setAppCleanupPolicies, registryWinVEnabled, setRegistryWinVEnabled, showSearchBox, setShowSearchBox, scrollTopButtonEnabled, setScrollTopButtonEnabled, arrowKeySelection, setArrowKeySelection,
         soundEnabled, setSoundEnabled, pasteSoundEnabled, setPasteSoundEnabled,
         soundVolume, setSoundVolume,
         hideTrayIcon, setHideTrayIcon,
@@ -263,7 +274,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         customBackgroundOpacity, setCustomBackgroundOpacity,
         surfaceOpacity, setSurfaceOpacity,
         mqttEnabled, mqttServer, mqttPort, mqttUser, mqttPass, mqttTopic, mqttProtocol, mqttWsPath, mqttNotificationEnabled,
-        cloudSyncEnabled, cloudSyncAuto, cloudSyncIntervalSec, cloudSyncSnapshotIntervalMin, cloudSyncWebdavUrl, cloudSyncWebdavUsername, cloudSyncWebdavPassword, cloudSyncWebdavBasePath, cloudSyncContentPrefs,
+  cloudSyncEnabled, cloudSyncAuto, cloudSyncIntervalSec, cloudSyncSnapshotIntervalMin, cloudSyncWebdavUrl, cloudSyncWebdavUsername, cloudSyncWebdavPassword, cloudSyncWebdavBasePath, cloudSyncContentPrefs,
         fileServerEnabled, fileServerPort, localIp, availableIps, setLocalIp, actualPort, fileTransferAutoOpen, showAutoCloseHint, fileServerAutoClose, fileTransferAutoCopy, fileTransferPath,
         installedApps, appSettings, defaultApps, showAppSelector, dataPath,
 
@@ -272,13 +283,15 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         setIsRecordingRich, updateRichPasteHotkey,
         setIsRecordingPlain, updatePlainPasteHotkey,
         setIsRecordingSearch, updateSearchHotkey,
+        setIsRecordingRelaySend, updateRelaySendHotkey,
+        setIsRecordingRelayFetch, updateRelayFetchHotkey,
         setPrivacyProtection,
         setIsRecording, isRecording, hotkey, hotkeyParts, updateHotkey,
         setTheme, setColorMode, setLanguage, compactMode, setCompactMode, checkHotkeyConflict,
         clipboardItemFontSize, setClipboardItemFontSize, clipboardTagFontSize, setClipboardTagFontSize,
         emojiPanelEnabled, setEmojiPanelEnabled, tagManagerEnabled, setTagManagerEnabled,
         setMqttEnabled, saveMqtt, setMqttServer, setMqttPort, setMqttUser, setMqttPass, setMqttTopic, setMqttProtocol, setMqttWsPath, setMqttNotificationEnabled,
-        setCloudSyncEnabled, setCloudSyncAuto, setCloudSyncIntervalSec, setCloudSyncSnapshotIntervalMin, setCloudSyncWebdavUrl, setCloudSyncWebdavUsername, setCloudSyncWebdavPassword, setCloudSyncWebdavBasePath, setCloudSyncContentPrefs, saveCloudSync,
+  setCloudSyncEnabled, setCloudSyncAuto, setCloudSyncIntervalSec, setCloudSyncSnapshotIntervalMin, setCloudSyncWebdavUrl, setCloudSyncWebdavUsername, setCloudSyncWebdavPassword, setCloudSyncWebdavBasePath, setCloudSyncContentPrefs, saveCloudSync,
         setFileServerEnabled, setFileServerPort, setFileTransferAutoOpen, setShowAutoCloseHint, setFileServerAutoClose, setFileTransferAutoCopy, fetchEffectiveTransferPath,
         setShowAppSelector, handleResetSettings,
         aiEnabled, setAiEnabled, aiTargetLang, setAiTargetLang, aiThinkingBudget, setAiThinkingBudget, saveSetting,
@@ -550,6 +563,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 collapsed={collapsedGroups['clipboard']}
                 onToggle={() => toggleGroup('clipboard')}
                 LabelWithHint={LabelWithHint}
+                relayAvailable={CLOUD_SYNC_ENABLED}
                 persistent={persistent}
                 setPersistent={setPersistent}
                 persistentLimitEnabled={persistentLimitEnabled}
@@ -578,6 +592,14 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 isRecordingSearch={isRecordingSearch}
                 setIsRecordingSearch={setIsRecordingSearch}
                 updateSearchHotkey={updateSearchHotkey}
+                relaySendHotkey={relaySendHotkey}
+                isRecordingRelaySend={isRecordingRelaySend}
+                setIsRecordingRelaySend={setIsRecordingRelaySend}
+                updateRelaySendHotkey={updateRelaySendHotkey}
+                relayFetchHotkey={relayFetchHotkey}
+                isRecordingRelayFetch={isRecordingRelayFetch}
+                setIsRecordingRelayFetch={setIsRecordingRelayFetch}
+                updateRelayFetchHotkey={updateRelayFetchHotkey}
                 quickPasteModifier={quickPasteModifier}
                 setQuickPasteModifier={setQuickPasteModifier}
                 deleteAfterPaste={deleteAfterPaste}
@@ -613,6 +635,8 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 hotkeyParts={hotkeyParts}
                 updateHotkey={updateHotkey}
                 hotkey={hotkey}
+                registryWinVEnabled={registryWinVEnabled}
+                setRegistryWinVEnabled={setRegistryWinVEnabled}
                 appSettings={appSettings}
                 theme={theme}
                 colorMode={colorMode}

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import type { CloudSyncContentPrefs } from "../../../app/types";
 
@@ -41,7 +42,7 @@ interface CloudSyncSettingsGroupProps {
     setCloudSyncWebdavBasePath: (val: string) => void;
     cloudSyncContentPrefs: CloudSyncContentPrefs;
     setCloudSyncContentPrefs: (val: CloudSyncContentPrefs) => void;
-    saveCloudSync: (key: string, val: string) => void;
+    saveCloudSync: (key: string, val: string) => Promise<void>;
     status: CloudSyncStatusPayload;
     syncingNow: boolean;
     onSyncNow: () => void;
@@ -104,6 +105,70 @@ const CloudSyncSettingsGroup = ({
         const next = { ...cloudSyncContentPrefs, [key]: nextVal };
         setCloudSyncContentPrefs(next);
         saveCloudSync("cloud_sync_content_prefs", JSON.stringify(next));
+    };
+
+    const [relayKeyConfigured, setRelayKeyConfigured] = useState(false);
+    const [relayKeyInput, setRelayKeyInput] = useState("");
+    const [generatedRelayKey, setGeneratedRelayKey] = useState("");
+    const [relayKeyBusy, setRelayKeyBusy] = useState(false);
+    const [relayKeyError, setRelayKeyError] = useState("");
+
+    const refreshRelayKeyStatus = () => {
+        invoke<{ configured: boolean }>("relay_shared_key_status")
+            .then((result) => {
+                setRelayKeyConfigured(result.configured);
+                setRelayKeyError("");
+            })
+            .catch((error) => setRelayKeyError(String(error)));
+    };
+
+    useEffect(refreshRelayKeyStatus, []);
+
+    const importRelayKey = async () => {
+        setRelayKeyBusy(true);
+        setRelayKeyError("");
+        try {
+            const result = await invoke<{ configured: boolean }>("relay_set_shared_key", {
+                sharedKey: relayKeyInput.trim()
+            });
+            setRelayKeyConfigured(result.configured);
+            setRelayKeyInput("");
+            setGeneratedRelayKey("");
+        } catch (error) {
+            setRelayKeyError(String(error));
+        } finally {
+            setRelayKeyBusy(false);
+        }
+    };
+
+    const generateRelayKey = async () => {
+        setRelayKeyBusy(true);
+        setRelayKeyError("");
+        try {
+            const key = await invoke<string>("relay_generate_shared_key");
+            setRelayKeyConfigured(true);
+            setRelayKeyInput("");
+            setGeneratedRelayKey(key);
+        } catch (error) {
+            setRelayKeyError(String(error));
+        } finally {
+            setRelayKeyBusy(false);
+        }
+    };
+
+    const clearRelayKey = async () => {
+        setRelayKeyBusy(true);
+        setRelayKeyError("");
+        try {
+            await invoke("relay_clear_shared_key");
+            setRelayKeyConfigured(false);
+            setRelayKeyInput("");
+            setGeneratedRelayKey("");
+        } catch (error) {
+            setRelayKeyError(String(error));
+        } finally {
+            setRelayKeyBusy(false);
+        }
     };
 
     return (
@@ -378,6 +443,50 @@ const CloudSyncSettingsGroup = ({
                             placeholder={t("cloud_sync_api_key_placeholder")}
                         />
                     </div>
+
+                    <div className="setting-item">
+                        <LabelWithHint
+                            label={t("clipboard_relay_shared_key")}
+                            hint={t("clipboard_relay_shared_key_hint")}
+                            hintKey="clipboard_relay_shared_key"
+                        />
+                        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                            <input
+                                className="search-input"
+                                type="password"
+                                style={{ borderRadius: "4px", padding: "4px 8px", width: "140px" }}
+                                value={relayKeyInput}
+                                onFocus={() => invoke("focus_clipboard_window").catch(console.error)}
+                                onChange={(e) => setRelayKeyInput(e.target.value)}
+                                placeholder={t("clipboard_relay_shared_key_placeholder")}
+                            />
+                            <button type="button" className="action-button" onClick={importRelayKey} disabled={relayKeyBusy || !relayKeyInput.trim()}>
+                                {t("clipboard_relay_save_key")}
+                            </button>
+                            <button type="button" className="action-button" onClick={generateRelayKey} disabled={relayKeyBusy}>
+                                {t("clipboard_relay_generate_key")}
+                            </button>
+                            {relayKeyConfigured && (
+                                <button type="button" className="action-button" onClick={clearRelayKey} disabled={relayKeyBusy}>
+                                    {t("clipboard_relay_clear_key")}
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                    <div style={{ marginTop: "-8px", marginBottom: "10px", fontSize: "11px", color: relayKeyError ? "#F44336" : "var(--text-secondary)" }}>
+                        {relayKeyError || (relayKeyConfigured ? t("clipboard_relay_key_configured") : t("clipboard_relay_key_not_configured"))}
+                    </div>
+                    {generatedRelayKey && (
+                        <div style={{ marginBottom: "10px", padding: "8px", border: "1px solid var(--border-dark)", borderRadius: "4px" }}>
+                            <div style={{ fontSize: "11px", marginBottom: "6px", color: "var(--text-secondary)" }}>
+                                {t("clipboard_relay_generated_key_once")}
+                            </div>
+                            <code style={{ fontSize: "11px", overflowWrap: "anywhere" }}>{generatedRelayKey}</code>
+                            <button type="button" className="action-button" style={{ marginLeft: "8px" }} onClick={() => setGeneratedRelayKey("")}>
+                                {t("clipboard_relay_hide_key")}
+                            </button>
+                        </div>
+                    )}
 
                     <div className="setting-item">
                         <LabelWithHint

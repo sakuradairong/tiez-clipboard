@@ -2,7 +2,25 @@ import { useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type HotkeyMode = "main" | "sequential" | "rich" | "plain" | "search";
+export type HotkeyMode = "main" | "sequential" | "rich" | "plain" | "search" | "relaySend" | "relayFetch";
+
+const canonicalHotkey = (value: string) => {
+  const aliases: Record<string, string> = {
+    command: "super",
+    cmd: "super",
+    win: "super",
+    meta: "super",
+    option: "alt",
+    control: "ctrl"
+  };
+  const rank: Record<string, number> = { ctrl: 0, shift: 1, alt: 2, super: 3 };
+  return value
+    .split("+")
+    .map((part) => aliases[part.trim().toLowerCase()] || part.trim().toLowerCase())
+    .filter(Boolean)
+    .sort((left, right) => (rank[left] ?? 10) - (rank[right] ?? 10) || left.localeCompare(right))
+    .join("+");
+};
 
 interface UseHotkeyConfigOptions {
   hotkey: string;
@@ -15,6 +33,10 @@ interface UseHotkeyConfigOptions {
   setPlainPasteHotkey: (val: string) => void;
   searchHotkey: string;
   setSearchHotkey: (val: string) => void;
+  relaySendHotkey: string;
+  setRelaySendHotkey: (val: string) => void;
+  relayFetchHotkey: string;
+  setRelayFetchHotkey: (val: string) => void;
   sequentialMode: boolean;
   isRecording: boolean;
   setIsRecording: (val: boolean) => void;
@@ -26,6 +48,10 @@ interface UseHotkeyConfigOptions {
   setIsRecordingPlain: (val: boolean) => void;
   isRecordingSearch: boolean;
   setIsRecordingSearch: (val: boolean) => void;
+  isRecordingRelaySend: boolean;
+  setIsRecordingRelaySend: (val: boolean) => void;
+  isRecordingRelayFetch: boolean;
+  setIsRecordingRelayFetch: (val: boolean) => void;
   saveAppSetting: (type: string, value: string) => void;
   t: (key: string) => string;
   pushToast: (msg: string, duration?: number) => number;
@@ -42,6 +68,10 @@ export const useHotkeyConfig = ({
   setPlainPasteHotkey,
   searchHotkey,
   setSearchHotkey,
+  relaySendHotkey,
+  setRelaySendHotkey,
+  relayFetchHotkey,
+  setRelayFetchHotkey,
   sequentialMode,
   isRecording,
   setIsRecording,
@@ -53,6 +83,10 @@ export const useHotkeyConfig = ({
   setIsRecordingPlain,
   isRecordingSearch,
   setIsRecordingSearch,
+  isRecordingRelaySend,
+  setIsRecordingRelaySend,
+  isRecordingRelayFetch,
+  setIsRecordingRelayFetch,
   t,
   pushToast
 }: UseHotkeyConfigOptions) => {
@@ -60,19 +94,26 @@ export const useHotkeyConfig = ({
     (newHotkey: string, mode: HotkeyMode): boolean => {
       if (!newHotkey) return false;
 
+      const candidate = canonicalHotkey(newHotkey);
       const conflicts = [];
-      if (mode !== "main" && newHotkey === hotkey) conflicts.push(t("global_hotkey"));
-      if (mode !== "sequential" && sequentialMode && newHotkey === sequentialHotkey) {
+      if (mode !== "main" && candidate === canonicalHotkey(hotkey)) conflicts.push(t("global_hotkey"));
+      if (mode !== "sequential" && sequentialMode && candidate === canonicalHotkey(sequentialHotkey)) {
         conflicts.push(t("sequential_paste_hotkey_label"));
       }
-      if (mode !== "rich" && newHotkey === richPasteHotkey) {
+      if (mode !== "rich" && candidate === canonicalHotkey(richPasteHotkey)) {
         conflicts.push(t("rich_paste_hotkey_label"));
       }
-      if (mode !== "plain" && newHotkey === plainPasteHotkey) {
+      if (mode !== "plain" && candidate === canonicalHotkey(plainPasteHotkey)) {
         conflicts.push(t("plain_paste_hotkey_label"));
       }
-      if (mode !== "search" && newHotkey === searchHotkey) {
+      if (mode !== "search" && candidate === canonicalHotkey(searchHotkey)) {
         conflicts.push(t("search_hotkey_label"));
+      }
+      if (mode !== "relaySend" && candidate === canonicalHotkey(relaySendHotkey)) {
+        conflicts.push(t("relay_send_hotkey_label"));
+      }
+      if (mode !== "relayFetch" && candidate === canonicalHotkey(relayFetchHotkey)) {
+        conflicts.push(t("relay_fetch_hotkey_label"));
       }
 
       if (conflicts.length > 0) {
@@ -82,7 +123,7 @@ export const useHotkeyConfig = ({
       }
       return false;
     },
-    [hotkey, sequentialMode, sequentialHotkey, richPasteHotkey, plainPasteHotkey, searchHotkey, t, pushToast]
+    [hotkey, sequentialMode, sequentialHotkey, richPasteHotkey, plainPasteHotkey, searchHotkey, relaySendHotkey, relayFetchHotkey, t, pushToast]
   );
 
   const updateHotkey = useCallback(
@@ -90,26 +131,29 @@ export const useHotkeyConfig = ({
       const hasConflict = checkHotkeyConflict(newHotkey, "main");
       if (hasConflict) {
         setIsRecording(false);
-        return;
+        return false;
       }
 
       if (newHotkey) {
         try {
-          await invoke<boolean>("test_hotkey_available", { hotkey: newHotkey });
+          const available = await invoke<boolean>("test_hotkey_available", { hotkey: newHotkey });
+          if (!available) throw new Error("快捷键不可用");
         } catch (err) {
           const errorMsg = `❌ ${newHotkey}: ${err || "快捷键被占用"}`;
           pushToast(errorMsg, 5000);
           setIsRecording(false);
-          return;
+          return false;
         }
       }
 
       try {
         await invoke("register_hotkey", { hotkey: newHotkey });
         setHotkey(newHotkey);
+        return true;
       } catch (err) {
         const errorMsg = t("hotkey_register_failed") + (err?.toString() || "");
         pushToast(errorMsg, 5000);
+        return false;
       } finally {
         setIsRecording(false);
       }
@@ -260,19 +304,76 @@ export const useHotkeyConfig = ({
     ]
   );
 
+  const updateRelayHotkey = useCallback(
+    async (
+      newHotkey: string,
+      mode: "relaySend" | "relayFetch",
+      command: "set_relay_send_hotkey" | "set_relay_fetch_hotkey",
+      setHotkeyValue: (value: string) => void,
+      setRecording: (value: boolean) => void
+    ) => {
+      if (checkHotkeyConflict(newHotkey, mode)) {
+        setRecording(false);
+        return;
+      }
+      if (newHotkey) {
+        try {
+          await invoke<boolean>("test_hotkey_available", { hotkey: newHotkey });
+        } catch (err) {
+          pushToast(`❌ ${newHotkey}: ${err || "快捷键被占用"}`, 5000);
+          setRecording(false);
+          return;
+        }
+      }
+      try {
+        await invoke(command, { hotkey: newHotkey });
+        setHotkeyValue(newHotkey);
+      } catch (err) {
+        pushToast(`${t("hotkey_register_failed")}${err?.toString() || ""}`, 5000);
+      } finally {
+        setRecording(false);
+      }
+    },
+    [checkHotkeyConflict, pushToast, t]
+  );
+
+  const updateRelaySendHotkey = useCallback(
+    (newHotkey: string) => updateRelayHotkey(
+      newHotkey,
+      "relaySend",
+      "set_relay_send_hotkey",
+      setRelaySendHotkey,
+      setIsRecordingRelaySend
+    ),
+    [setIsRecordingRelaySend, setRelaySendHotkey, updateRelayHotkey]
+  );
+
+  const updateRelayFetchHotkey = useCallback(
+    (newHotkey: string) => updateRelayHotkey(
+      newHotkey,
+      "relayFetch",
+      "set_relay_fetch_hotkey",
+      setRelayFetchHotkey,
+      setIsRecordingRelayFetch
+    ),
+    [setIsRecordingRelayFetch, setRelayFetchHotkey, updateRelayHotkey]
+  );
+
   useEffect(() => {
     invoke("set_recording_mode", {
       enabled: isRecording || isRecordingSequential || isRecordingRich
-        || isRecordingPlain || isRecordingSearch
+        || isRecordingPlain || isRecordingSearch || isRecordingRelaySend || isRecordingRelayFetch
     }).catch(console.error);
 
-    if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch) {
+    if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch || isRecordingRelaySend || isRecordingRelayFetch) {
       const unlisten = listen<string>("hotkey-recorded", (event) => {
         if (isRecording) updateHotkey(event.payload);
         if (isRecordingSequential) updateSequentialHotkey(event.payload);
         if (isRecordingRich) updateRichPasteHotkey(event.payload);
         if (isRecordingPlain) updatePlainPasteHotkey(event.payload);
         if (isRecordingSearch) updateSearchHotkey(event.payload);
+        if (isRecordingRelaySend) updateRelaySendHotkey(event.payload);
+        if (isRecordingRelayFetch) updateRelayFetchHotkey(event.payload);
       });
 
       const unlistenCancel = listen("recording-cancelled", () => {
@@ -281,6 +382,8 @@ export const useHotkeyConfig = ({
         setIsRecordingRich(false);
         setIsRecordingPlain(false);
         setIsRecordingSearch(false);
+        setIsRecordingRelaySend(false);
+        setIsRecordingRelayFetch(false);
       });
 
       return () => {
@@ -294,16 +397,22 @@ export const useHotkeyConfig = ({
     isRecordingRich,
     isRecordingPlain,
     isRecordingSearch,
+    isRecordingRelaySend,
+    isRecordingRelayFetch,
     setIsRecording,
     setIsRecordingSequential,
     setIsRecordingRich,
     setIsRecordingPlain,
     setIsRecordingSearch,
+    setIsRecordingRelaySend,
+    setIsRecordingRelayFetch,
     updateHotkey,
     updateSequentialHotkey,
     updateRichPasteHotkey,
     updatePlainPasteHotkey,
-    updateSearchHotkey
+    updateSearchHotkey,
+    updateRelaySendHotkey,
+    updateRelayFetchHotkey
   ]);
 
   return {
@@ -312,6 +421,8 @@ export const useHotkeyConfig = ({
     updateSequentialHotkey,
     updateRichPasteHotkey,
     updatePlainPasteHotkey,
-    updateSearchHotkey
+    updateSearchHotkey,
+    updateRelaySendHotkey,
+    updateRelayFetchHotkey
   };
 };

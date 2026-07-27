@@ -40,10 +40,9 @@ export const useSettingsInit = ({
           if (disposed) return;
 
           console.log(
-            `[THEME DEBUG] get_settings response (run #${settingsEffectCount.current}):`,
-            result
+            `[THEME DEBUG] get_settings keys (run #${settingsEffectCount.current}):`,
+            Object.keys(result)
           );
-          console.log("[THEME DEBUG] app.color_mode from DB:", result["app.color_mode"]);
 
           setAppSettings(result);
           if (result["app.hotkey"]) setHotkey(result["app.hotkey"]);

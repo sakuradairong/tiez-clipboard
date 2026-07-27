@@ -272,6 +272,14 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         [],
     );
     let _ = conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.relay_send_hotkey', '')",
+        [],
+    );
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.relay_fetch_hotkey', '')",
+        [],
+    );
+    let _ = conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.quick_paste_modifier', 'disabled')",
         [],
     );
