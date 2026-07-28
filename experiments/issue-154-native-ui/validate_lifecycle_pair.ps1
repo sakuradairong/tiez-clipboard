@@ -128,6 +128,7 @@ foreach ($field in $manualFields) {
     if ([string]::IsNullOrWhiteSpace([string]$hiddenValue)) { $manualComplete = $false }
     Assert-Issue154PairSemantic (Test-Issue154PairEqual $pair.comparability.manual_context.$field $hiddenValue) "paired manual_context.$field differs from source"
 }
+Assert-Issue154PairSemantic ([string]$hidden.document.manual_context.note -ceq [string]$destroyed.document.manual_context.note) "manual_context.note differs"
 Assert-Issue154PairSemantic ([string]$pair.comparability.manual_context.note -ceq [string]$hidden.document.manual_context.note) "paired manual_context.note differs from hidden source"
 Assert-Issue154PairSemantic ([bool]$pair.comparability.manual_context_complete -eq $manualComplete) "manual_context_complete is incorrect"
 Assert-Issue154PairSemantic (-not [bool]$pair.comparability.manual_comparability_confirmed) "manual comparability must remain unconfirmed"

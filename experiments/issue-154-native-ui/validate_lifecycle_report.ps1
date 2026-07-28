@@ -67,6 +67,8 @@ function Assert-Issue154ProcessSample {
     param(
         [object]$Sample,
         [string[]]$ExpectedReferenceIdentities,
+        [string]$ExpectedRootIdentity,
+        [string[]]$ExpectedWebView2UserDataFolders,
         [string]$Name
     )
 
@@ -75,6 +77,8 @@ function Assert-Issue154ProcessSample {
     $identityKeys = @($processes | ForEach-Object { Get-Issue154ProcessIdentityKey -Process $_ } | Sort-Object -Unique)
     Assert-Issue154Semantic (Test-Issue154StringSetEqual $identityKeys @($Sample.process_identity_keys)) "$Name.process_identity_keys do not match processes"
     Assert-Issue154Semantic (Test-Issue154StringSetEqual @($Sample.reference_process_identity_keys) $ExpectedReferenceIdentities) "$Name.reference_process_identity_keys do not match baseline"
+    Assert-Issue154Semantic ($identityKeys -ccontains $ExpectedRootIdentity) "$Name does not contain the measured root process identity"
+    Assert-Issue154Semantic (Test-Issue154StringSetEqual @($Sample.webview2_user_data_folders) $ExpectedWebView2UserDataFolders) "$Name WebView2 user-data-dir scope differs from baseline"
 
     $added = @($identityKeys | Where-Object { $ExpectedReferenceIdentities -cnotcontains $_ })
     $missing = @($ExpectedReferenceIdentities | Where-Object { $identityKeys -cnotcontains $_ })
@@ -107,6 +111,8 @@ function Assert-Issue154ReadySnapshot {
     Assert-Issue154Semantic ([string]$Snapshot.phase -ceq "ready") "$Name.phase must be ready"
     Assert-Issue154Semantic ([uint64]$Snapshot.generation -eq $Generation) "$Name.generation is incorrect"
     Assert-Issue154Semantic ([uint64]$Snapshot.completed_request_id -eq $RequestId) "$Name.completed_request_id is incorrect"
+    Assert-Issue154Semantic ([uint64]$Snapshot.active_request_id -eq $RequestId) "$Name.active_request_id is incorrect"
+    Assert-Issue154Semantic ([string]$Snapshot.active_intent -ceq "test") "$Name.active_intent must be test"
     Assert-Issue154Semantic ($null -eq $Snapshot.failed_request_id) "$Name.failed_request_id must be null"
     Assert-Issue154Semantic ([bool]$Snapshot.main_window_present -and [bool]$Snapshot.main_window_visible -and [bool]$Snapshot.main_window_focused) "$Name native window is not present, visible, and focused"
     Assert-Issue154Semantic ([bool]$Snapshot.hydrated -and [bool]$Snapshot.search_ready -and [bool]$Snapshot.focused) "$Name readiness barriers are incomplete"
@@ -124,6 +130,7 @@ function Assert-Issue154DownSnapshot {
     Assert-Issue154Semantic ([string]$Snapshot.phase -ceq $Mode) "$Name.phase is incorrect"
     Assert-Issue154Semantic ([uint64]$Snapshot.generation -eq $Generation) "$Name.generation is incorrect"
     Assert-Issue154Semantic ([uint64]$Snapshot.completed_request_id -eq $RequestId) "$Name.completed_request_id is incorrect"
+    Assert-Issue154Semantic ([string]$Snapshot.active_intent -ceq "test") "$Name.active_intent must be test"
     Assert-Issue154Semantic ($null -eq $Snapshot.failed_request_id) "$Name.failed_request_id must be null"
     Assert-Issue154Semantic (-not [bool]$Snapshot.main_window_visible -and -not [bool]$Snapshot.main_window_focused) "$Name must not be visible or focused"
     if ($Mode -ceq "hidden") {
@@ -141,6 +148,9 @@ Assert-Issue154Semantic ($mode -ceq "hidden" -or $mode -ceq "destroyed") "mode m
 
 $hash = [string]$document.executable_sha256
 $hashObservations = $document.executable_hash_observations
+Assert-Issue154Semantic (Test-Path -LiteralPath ([string]$document.executable) -PathType Leaf) "measured executable is unavailable for hash verification"
+$actualExecutableHash = (Get-FileHash -LiteralPath ([string]$document.executable) -Algorithm SHA256).Hash.ToLowerInvariant()
+Assert-Issue154Semantic ($actualExecutableHash -ceq $hash) "measured executable file SHA-256 differs from report"
 Assert-Issue154Semantic ([string]$hashObservations.before_start -ceq $hash) "before_start executable hash differs"
 Assert-Issue154Semantic ([string]$hashObservations.after_start -ceq $hash) "after_start executable hash differs"
 Assert-Issue154Semantic ([string]$hashObservations.after_run -ceq $hash) "after_run executable hash differs"
@@ -151,7 +161,16 @@ Assert-Issue154Semantic ([int]$document.protocol.memory_runs -ge 5) "at least fi
 Assert-Issue154Semantic (Test-Issue154Equal @($document.protocol.memory_samples_seconds) @(5, 30)) "memory sample horizons must be exactly 5 and 30 seconds"
 
 $baselineReferenceIdentities = @($document.baseline_memory_sample.process_identity_keys)
-Assert-Issue154ProcessSample -Sample $document.baseline_memory_sample -ExpectedReferenceIdentities $baselineReferenceIdentities -Name "baseline_memory_sample"
+$baselineRootIdentities = @(
+    $document.baseline_memory_sample.processes |
+        Where-Object { $_.role -ceq "application" -and $_.attribution -ceq "descendant" } |
+        ForEach-Object { Get-Issue154ProcessIdentityKey -Process $_ }
+)
+Assert-Issue154Semantic ($baselineRootIdentities.Count -eq 1) "baseline must contain exactly one measured root process identity"
+$baselineRootIdentity = [string]$baselineRootIdentities[0]
+$baselineWebView2UserDataFolders = @($document.baseline_memory_sample.webview2_user_data_folders)
+Assert-Issue154Semantic ($baselineWebView2UserDataFolders.Count -gt 0) "baseline must contain at least one WebView2 user-data-dir"
+Assert-Issue154ProcessSample -Sample $document.baseline_memory_sample -ExpectedReferenceIdentities $baselineReferenceIdentities -ExpectedRootIdentity $baselineRootIdentity -ExpectedWebView2UserDataFolders $baselineWebView2UserDataFolders -Name "baseline_memory_sample"
 Assert-Issue154Semantic (Test-Issue154StringSetEqual @($document.baseline_memory_sample.reference_process_identity_keys) $baselineReferenceIdentities) "baseline reference identities must be self-referential"
 
 $latencies = @()
@@ -170,6 +189,13 @@ for ($index = 0; $index -lt @($document.cycles).Count; $index++) {
     Assert-Issue154Semantic ([string]$cycle.clipboard_token -ceq [string]$cycle.clipboard_probe.payload.token) "$name clipboard token differs from probe payload"
     Assert-Issue154Semantic ([uint64]$cycle.clipboard_probe.payload.clipboard_event_count_before -eq [uint64]$cycle.down_snapshot.clipboard_event_count) "$name clipboard baseline count is incorrect"
     Assert-Issue154Semantic ([uint64]$cycle.clipboard_probe.payload.clipboard_event_delta -eq ([uint64]$cycle.clipboard_probe.payload.clipboard_event_count - [uint64]$cycle.clipboard_probe.payload.clipboard_event_count_before)) "$name clipboard delta is incorrect"
+    Assert-Issue154Semantic ([bool]$cycle.clipboard_probe.verification.listener_event_increased -eq [bool]$cycle.clipboard_probe.payload.listener_event_count_increased) "$name clipboard listener verification differs from payload"
+    Assert-Issue154Semantic ([int]$cycle.clipboard_probe.verification.exact_history_match_count -eq [int]$cycle.clipboard_probe.payload.exact_history_match_count) "$name clipboard match-count verification differs from payload"
+    $persistentMatch = $null -ne $cycle.clipboard_probe.payload.persisted_entry_id
+    $sessionMatch = $null -ne $cycle.clipboard_probe.payload.session_entry_id
+    Assert-Issue154Semantic ([bool]$cycle.clipboard_probe.verification.persistent_history_exact_match -eq $persistentMatch) "$name persistent match verification is incorrect"
+    Assert-Issue154Semantic ([bool]$cycle.clipboard_probe.verification.session_history_exact_match -eq $sessionMatch) "$name session match verification is incorrect"
+    Assert-Issue154Semantic (($persistentMatch -xor $sessionMatch) -and [int]$cycle.clipboard_probe.payload.exact_history_match_count -eq 1) "$name token must exist in exactly one history backend"
     Assert-Issue154Semantic ([bool]$cycle.clipboard_activity_history_consistent -and [bool]$cycle.clipboard_probe.verification.ok) "$name clipboard proof did not pass"
     Assert-Issue154Semantic ([int]$cycle.clipboard_probe.payload.exact_history_match_count -eq 1 -and [bool]$cycle.clipboard_probe.payload.exact_history_match) "$name clipboard history match is not unique"
     $latency = [double]$cycle.ready_snapshot.requested_visible_focused_hydrated_search_ready_ms
@@ -186,8 +212,8 @@ for ($index = 0; $index -lt @($document.memory_runs).Count; $index++) {
     Assert-Issue154Semantic ([string]$run.requested_mode -ceq $mode -and [string]$run.down_phase -ceq $mode) "$name mode/phase differs from report mode"
     Assert-Issue154DownSnapshot -Snapshot $run.down_snapshot -RequestId ([uint64]$run.hide_response.request_id) -Generation ([uint64]$run.hide_response.generation_before) -Mode $mode -Name "$name.down_snapshot"
     Assert-Issue154ReadySnapshot -Snapshot $run.ready_snapshot -RequestId ([uint64]$run.show_response.request_id) -Generation ([uint64]$run.show_response.expected_generation) -Mode $mode -Name "$name.ready_snapshot"
-    Assert-Issue154ProcessSample -Sample $run.sample_after_5s -ExpectedReferenceIdentities $baselineReferenceIdentities -Name "$name.sample_after_5s"
-    Assert-Issue154ProcessSample -Sample $run.sample_after_30s -ExpectedReferenceIdentities $baselineReferenceIdentities -Name "$name.sample_after_30s"
+    Assert-Issue154ProcessSample -Sample $run.sample_after_5s -ExpectedReferenceIdentities $baselineReferenceIdentities -ExpectedRootIdentity $baselineRootIdentity -ExpectedWebView2UserDataFolders $baselineWebView2UserDataFolders -Name "$name.sample_after_5s"
+    Assert-Issue154ProcessSample -Sample $run.sample_after_30s -ExpectedReferenceIdentities $baselineReferenceIdentities -ExpectedRootIdentity $baselineRootIdentity -ExpectedWebView2UserDataFolders $baselineWebView2UserDataFolders -Name "$name.sample_after_30s"
     $allObservedIdentities += @($run.sample_after_5s.process_identity_keys)
     $allObservedIdentities += @($run.sample_after_30s.process_identity_keys)
 }
@@ -224,6 +250,9 @@ Assert-Issue154Semantic ($medianLatency -le [double]$document.protocol.median_la
 Assert-Issue154Semantic ([bool]$document.summary.latency_gate_pass -and [bool]$document.summary.lifecycle_gate_pass -and [bool]$document.summary.clipboard_gate_pass -and [bool]$document.summary.single_mode_functional_pass) "single-mode functional gates must pass"
 Assert-Issue154NumberEqual ([double]$document.memory_medians.after_5s.private_working_set_bytes) ([double]$document.summary.memory_median_after_5s_private_working_set_bytes) "summary 5-second private median" 0
 Assert-Issue154NumberEqual ([double]$document.memory_medians.after_30s.private_working_set_bytes) ([double]$document.summary.memory_median_after_30s_private_working_set_bytes) "summary 30-second private median" 0
+Assert-Issue154NumberEqual ([double]$document.memory_medians.after_5s.private_working_set_mib) ([double]$document.summary.memory_median_after_5s_private_working_set_mib) "summary 5-second private MiB median"
+Assert-Issue154NumberEqual ([double]$document.memory_medians.after_30s.private_working_set_mib) ([double]$document.summary.memory_median_after_30s_private_working_set_mib) "summary 30-second private MiB median"
+Assert-Issue154Semantic ([string]$document.summary.paired_hidden_vs_destroyed_comparison -ceq "pending" -and $null -eq $document.summary.paired_memory_gate_pass -and $null -eq $document.summary.overall_pass) "single report must not claim paired or overall pass"
 
 $result = [ordered]@{
     valid = $true
@@ -231,6 +260,7 @@ $result = [ordered]@{
     sha256 = (Get-FileHash -LiteralPath $resolvedReport -Algorithm SHA256).Hash.ToLowerInvariant()
     mode = $mode
     executable_sha256 = $hash
+    executable_file_sha256_at_validation = $actualExecutableHash
     cycles = @($document.cycles).Count
     memory_runs = @($document.memory_runs).Count
     median_after_5s_private_working_set_bytes = [int64]$document.memory_medians.after_5s.private_working_set_bytes

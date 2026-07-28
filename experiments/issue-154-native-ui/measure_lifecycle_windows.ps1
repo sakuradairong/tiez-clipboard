@@ -773,7 +773,7 @@ try {
     $baselineSample = Get-Issue154ProcessTreeSample `
         -RootProcessId $rootProcess.Id `
         -ExpectedRootExecutablePath $resolvedExecutable `
-        -ExpectedRootStartedAtUtc $rootProcessStartUtc.ToString("o")
+        -ExpectedRootStartedAtUtc ($rootProcessStartUtc.ToString("o"))
     $expectedWebView2UserDataFolders = @($baselineSample.webview2_user_data_folders)
     $referenceProcessIdentityKeys = @($baselineSample.process_identity_keys)
     if ($expectedWebView2UserDataFolders.Count -eq 0) {
@@ -850,7 +850,7 @@ try {
             -RootProcessId $rootProcess.Id `
             -ExpectedWebView2UserDataFolders $expectedWebView2UserDataFolders `
             -ExpectedRootExecutablePath $resolvedExecutable `
-            -ExpectedRootStartedAtUtc $rootProcessStartUtc.ToString("o") `
+            -ExpectedRootStartedAtUtc ($rootProcessStartUtc.ToString("o")) `
             -ReferenceProcessIdentityKeys $referenceProcessIdentityKeys
         $remainingSeconds = $MemorySettleSeconds - $FastMemorySettleSeconds
         if ($remainingSeconds -gt 0) {
@@ -860,7 +860,7 @@ try {
             -RootProcessId $rootProcess.Id `
             -ExpectedWebView2UserDataFolders $expectedWebView2UserDataFolders `
             -ExpectedRootExecutablePath $resolvedExecutable `
-            -ExpectedRootStartedAtUtc $rootProcessStartUtc.ToString("o") `
+            -ExpectedRootStartedAtUtc ($rootProcessStartUtc.ToString("o")) `
             -ReferenceProcessIdentityKeys $referenceProcessIdentityKeys
         $showTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $showResponse = Invoke-Issue154LifecycleCommand -CommandName "lifecycle_test_show" -Payload @{
