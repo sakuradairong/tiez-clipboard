@@ -1,5 +1,5 @@
 use std::{
-    cell::UnsafeCell,
+    cell::{RefCell, UnsafeCell},
     ffi::{c_void, OsString},
     os::windows::ffi::OsStringExt,
     path::PathBuf,
@@ -70,7 +70,17 @@ struct FileDescriptorW {
 
 #[derive(Default)]
 pub struct DragDropController {
-    drop_targets: Vec<IDropTarget>,
+    drop_targets: Vec<(HWND, IDropTarget)>,
+    registration_errors: Vec<String>,
+}
+
+thread_local! {
+    // OLE drag/drop registration is apartment and thread-affine. The destroyed-mode
+    // prototype therefore keeps the replaceable controller on the UI thread instead
+    // of placing COM interfaces or HWNDs in Tauri's Send + Sync managed state.
+    static REPLACEABLE_DRAG_DROP: RefCell<Option<DragDropController>> = const {
+        RefCell::new(None)
+    };
 }
 
 impl DragDropController {
@@ -95,12 +105,43 @@ impl DragDropController {
 
     fn inject_in_hwnd(&mut self, hwnd: HWND, app_handle: Rc<AppHandle>) -> bool {
         let drop_target: IDropTarget = EmojiDropTarget::new(app_handle).into();
-        if unsafe { RevokeDragDrop(hwnd) } != Err(DRAGDROP_E_INVALIDHWND.into())
-            && unsafe { RegisterDragDrop(hwnd, &drop_target) }.is_ok()
-        {
-            self.drop_targets.push(drop_target);
+        if unsafe { RevokeDragDrop(hwnd) } == Err(DRAGDROP_E_INVALIDHWND.into()) {
+            self.registration_errors
+                .push(format!("invalid child HWND {hwnd:?}"));
+            return true;
+        }
+        match unsafe { RegisterDragDrop(hwnd, &drop_target) } {
+            Ok(()) => self.drop_targets.push((hwnd, drop_target)),
+            Err(error) => self
+                .registration_errors
+                .push(format!("RegisterDragDrop failed for {hwnd:?}: {error}")),
         }
         true
+    }
+
+    fn has_registered_targets(&self) -> bool {
+        !self.drop_targets.is_empty()
+    }
+
+    fn installation_error(&self) -> String {
+        if self.registration_errors.is_empty() {
+            "no eligible WebView child HWNDs were registered".to_string()
+        } else {
+            format!(
+                "no WebView child HWNDs were registered: {}",
+                self.registration_errors.join("; ")
+            )
+        }
+    }
+}
+
+impl Drop for DragDropController {
+    fn drop(&mut self) {
+        for (hwnd, _) in self.drop_targets.drain(..) {
+            // Releasing the COM targets without revoking the HWND registration
+            // leaves OLE holding stale callbacks across main-window generations.
+            let _ = unsafe { RevokeDragDrop(hwnd) };
+        }
     }
 }
 
@@ -581,11 +622,47 @@ impl IDropTarget_Impl for EmojiDropTarget_Impl {
     }
 }
 
-pub fn register_emoji_drag_drop(app_handle: AppHandle) {
+pub fn create_emoji_drag_drop(app_handle: AppHandle) -> Option<DragDropController> {
     if let Some(window) = app_handle.get_webview_window("main") {
         if let Ok(hwnd) = window.hwnd() {
-            let controller = DragDropController::new(hwnd, app_handle);
-            std::mem::forget(controller);
+            return Some(DragDropController::new(hwnd, app_handle));
         }
     }
+    None
+}
+
+fn create_emoji_drag_drop_result(app_handle: AppHandle) -> Result<DragDropController, String> {
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "main WebView window is unavailable".to_string())?;
+    let hwnd = window
+        .hwnd()
+        .map_err(|error| format!("failed to obtain the main window HWND: {error}"))?;
+    Ok(DragDropController::new(hwnd, app_handle))
+}
+
+pub fn register_emoji_drag_drop(app_handle: AppHandle) {
+    // Preserve the default product mode's original process-lifetime registration.
+    if let Some(controller) = create_emoji_drag_drop(app_handle) {
+        std::mem::forget(controller);
+    }
+}
+
+pub fn replace_emoji_drag_drop_on_current_thread(app_handle: AppHandle) -> Result<(), String> {
+    let controller = create_emoji_drag_drop_result(app_handle)?;
+    if !controller.has_registered_targets() {
+        return Err(controller.installation_error());
+    }
+    REPLACEABLE_DRAG_DROP.with(|slot| {
+        let previous = slot.replace(Some(controller));
+        drop(previous);
+    });
+    Ok(())
+}
+
+pub fn revoke_emoji_drag_drop_on_current_thread() {
+    REPLACEABLE_DRAG_DROP.with(|slot| {
+        let controller = slot.replace(None);
+        drop(controller);
+    });
 }

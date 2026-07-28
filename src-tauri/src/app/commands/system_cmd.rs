@@ -358,6 +358,7 @@ pub fn restart_explorer() -> AppResult<()> {
 
 #[tauri::command]
 pub fn quit(app: AppHandle) {
+    crate::app::main_ui_lifecycle::mark_explicit_exit(&app);
     app.exit(0);
 }
 
@@ -367,6 +368,7 @@ pub fn relaunch(app: AppHandle) {
     if let Ok(exe) = std::env::current_exe() {
         let _ = Command::new(exe).spawn();
     }
+    crate::app::main_ui_lifecycle::mark_explicit_exit(&app);
     app.exit(0);
 }
 
@@ -416,6 +418,7 @@ pub fn restart_as_admin(app_handle: AppHandle) -> AppResult<()> {
         }
 
         // Close current instance
+        crate::app::main_ui_lifecycle::mark_explicit_exit(&app_handle);
         app_handle.exit(0);
 
         Ok(())

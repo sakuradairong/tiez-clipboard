@@ -831,6 +831,33 @@ impl SqliteClipboardRepository {
         }
     }
 
+    pub fn find_exact_text_entry_ids(&self, content: &str) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let hash = calc_text_hash(content) as i64;
+        let mut statement = conn
+            .prepare(
+                "SELECT id, content FROM clipboard_history
+                 WHERE content_type = 'text' AND (content_hash = ?1 OR content = ?2)",
+            )
+            .map_err(|error| error.to_string())?;
+        let candidates = statement
+            .query_map(params![hash, content], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| error.to_string())?;
+
+        Ok(candidates
+            .into_iter()
+            .filter_map(|(id, raw)| {
+                self.try_decrypt_text(&raw)
+                    .filter(|plain| plain == content)
+                    .map(|_| id)
+            })
+            .collect())
+    }
+
     pub fn enforce_limit_with_conn(
         &self,
         conn: &Connection,
@@ -1739,6 +1766,53 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open clipboard repository test db");
         run_migrations(&conn).expect("migrate clipboard repository test db");
         Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn exact_text_entry_ids_decrypt_candidates_and_reject_hash_collisions() {
+        let conn = setup_repository_db();
+        let token = "tiez_issue154_exact_token";
+        let hash = crate::database::calc_text_hash(token) as i64;
+        let encrypted = crate::infrastructure::encryption::encrypt_value(token)
+            .unwrap_or_else(|| token.to_string());
+        {
+            let guard = conn.lock().expect("lock exact-match repository db");
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                        (id, content_type, content, source_app, timestamp, preview, content_hash)
+                     VALUES (1, 'text', ?1, 'test', 100, ?1, ?2)",
+                    params![token, hash],
+                )
+                .expect("insert plaintext match");
+            if encrypted != token {
+                guard
+                    .execute(
+                        "INSERT INTO clipboard_history
+                            (id, content_type, content, source_app, timestamp, preview, content_hash)
+                         VALUES (2, 'text', ?1, 'test', 101, ?1, ?2)",
+                        params![encrypted, hash],
+                    )
+                    .expect("insert encrypted match");
+            }
+            guard
+                .execute(
+                    "INSERT INTO clipboard_history
+                        (id, content_type, content, source_app, timestamp, preview, content_hash)
+                     VALUES (3, 'text', 'different content', 'test', 102, 'different', ?1)",
+                    [hash],
+                )
+                .expect("insert hash collision candidate");
+        }
+
+        let ids = SqliteClipboardRepository::new(conn)
+            .find_exact_text_entry_ids(token)
+            .expect("query exact text ids");
+        if encrypted == token {
+            assert_eq!(ids, vec![1]);
+        } else {
+            assert_eq!(ids, vec![1, 2]);
+        }
     }
 
     fn test_entry(tags: &[&str]) -> ClipboardEntry {

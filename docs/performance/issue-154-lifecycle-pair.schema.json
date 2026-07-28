@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/sakuradairong/tiez-clipboard/docs/performance/issue-154-lifecycle-pair.schema.json",
+  "title": "Issue 154 Stage B hidden versus destroyed paired memory report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "captured_at_utc",
+    "executable_sha256",
+    "hidden_report",
+    "destroyed_report",
+    "comparability",
+    "thresholds",
+    "after_5s",
+    "after_30s",
+    "paired_memory_gate_pass",
+    "overall_pass",
+    "overall_pass_note"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "captured_at_utc": { "type": "string", "format": "date-time" },
+    "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hidden_report": { "$ref": "#/definitions/input_report" },
+    "destroyed_report": { "$ref": "#/definitions/input_report" },
+    "comparability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exact_executable_hash",
+        "executable_arguments",
+        "main_window_title",
+        "host_os_version",
+        "host_os_build",
+        "host_architecture",
+        "host_processors",
+        "host_physical_memory_bytes",
+        "cycles",
+        "memory_runs",
+        "memory_samples_seconds",
+        "memory_scope",
+        "requires_manual_same_data_features_services_power_state_confirmation",
+        "manual_comparability_confirmed",
+        "manual_context_complete",
+        "manual_context",
+        "process_explorer_etw_cross_check_required",
+        "process_explorer_etw_cross_check_confirmed"
+      ],
+      "properties": {
+        "exact_executable_hash": { "const": true },
+        "executable_arguments": { "type": "array", "items": { "type": "string" } },
+        "main_window_title": { "type": "string", "minLength": 1 },
+        "host_os_version": { "type": "string", "minLength": 1 },
+        "host_os_build": { "type": "string", "minLength": 1 },
+        "host_architecture": { "type": "string", "minLength": 1 },
+        "host_processors": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "host_physical_memory_bytes": { "type": "integer", "minimum": 1 },
+        "cycles": { "type": "integer", "minimum": 100 },
+        "memory_runs": { "type": "integer", "minimum": 5 },
+        "memory_samples_seconds": {
+          "type": "array",
+          "allOf": [
+            { "contains": { "const": 5 } },
+            { "contains": { "const": 30 } }
+          ]
+        },
+        "memory_scope": { "type": "string", "minLength": 1 },
+        "requires_manual_same_data_features_services_power_state_confirmation": { "const": true },
+        "manual_comparability_confirmed": { "const": false },
+        "manual_context_complete": { "type": "boolean" },
+        "manual_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["data_snapshot", "feature_flags", "service_configuration", "power_plan", "webview2_runtime_version", "foreground_application", "note"],
+          "properties": {
+            "data_snapshot": { "type": ["string", "null"] },
+            "feature_flags": { "type": ["string", "null"] },
+            "service_configuration": { "type": ["string", "null"] },
+            "power_plan": { "type": ["string", "null"] },
+            "webview2_runtime_version": { "type": ["string", "null"] },
+            "foreground_application": { "type": ["string", "null"] },
+            "note": { "type": "string", "minLength": 1 }
+          }
+        },
+        "process_explorer_etw_cross_check_required": { "const": true },
+        "process_explorer_etw_cross_check_confirmed": { "const": false }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reduction_percent", "reduction_mib", "horizons_seconds"],
+      "properties": {
+        "reduction_percent": { "type": "number", "minimum": 40 },
+        "reduction_mib": { "type": "number", "minimum": 50 },
+        "horizons_seconds": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "integer" },
+          "allOf": [
+            { "contains": { "const": 5 } },
+            { "contains": { "const": 30 } }
+          ]
+        }
+      }
+    },
+    "after_5s": { "$ref": "#/definitions/reduction" },
+    "after_30s": { "$ref": "#/definitions/reduction" },
+    "paired_memory_gate_pass": { "type": "boolean" },
+    "overall_pass": { "type": "null" },
+    "overall_pass_note": { "type": "string", "minLength": 1 }
+  },
+  "definitions": {
+    "input_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "captured_at_utc"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "captured_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "reduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hidden_private_working_set_bytes",
+        "destroyed_private_working_set_bytes",
+        "reduction_bytes",
+        "reduction_mib",
+        "reduction_percent",
+        "percent_threshold",
+        "mib_threshold",
+        "pass"
+      ],
+      "properties": {
+        "hidden_private_working_set_bytes": { "type": "integer", "minimum": 1 },
+        "destroyed_private_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "reduction_bytes": { "type": "integer" },
+        "reduction_mib": { "type": "number" },
+        "reduction_percent": { "type": "number" },
+        "percent_threshold": { "type": "number", "minimum": 40 },
+        "mib_threshold": { "type": "number", "minimum": 50 },
+        "pass": { "type": "boolean" }
+      }
+    }
+  }
+}

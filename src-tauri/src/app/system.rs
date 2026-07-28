@@ -4,7 +4,9 @@ use tauri::Manager;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::Shell::DefSubclassProc;
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::WM_NCDESTROY;
 
 /// 获取硬件机器码（基于硬件唯一标识）
 /// 返回格式: 8字符的十六进制字符串 (例如: "ef785433")
@@ -76,6 +78,9 @@ pub unsafe extern "system" fn tray_subclass_proc(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if msg == WM_NCDESTROY {
+        let _ = RemoveWindowSubclass(hwnd, Some(tray_subclass_proc), 1337);
+    }
     let taskbar_msg = TASKBAR_CREATED_MSG.load(Ordering::Relaxed);
     if msg != 0 && msg == taskbar_msg {
         if let Some(app_handle) = crate::GLOBAL_APP_HANDLE.get() {

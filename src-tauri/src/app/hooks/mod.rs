@@ -1,5 +1,7 @@
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
+#[cfg(target_os = "windows")]
+use tauri::{Emitter, Manager};
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 #[cfg(target_os = "windows")]
@@ -13,7 +15,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_MBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-use crate::app::window_manager::{hide_window_cmd, toggle_window};
+#[cfg(target_os = "windows")]
+use crate::app::window_manager::hide_window_cmd;
+#[cfg(target_os = "windows")]
 use crate::app_state::SettingsState;
 use crate::global_state::*;
 #[cfg(target_os = "windows")]
@@ -374,7 +378,10 @@ pub unsafe extern "system" fn keyboard_proc(
                                 let handle_clone = handle.clone();
                                 tauri::async_runtime::spawn(async move {
                                     let _ = handle_clone.emit("navigation-action", "escape");
-                                    toggle_window(&handle_clone);
+                                    crate::app::main_ui_lifecycle::request_toggle(
+                                        &handle_clone,
+                                        crate::app::main_ui_lifecycle::WakeIntent::Main,
+                                    );
                                 });
                             } else {
                                 let _ = handle.emit("navigation-action", action);
@@ -468,7 +475,10 @@ pub unsafe extern "system" fn mouse_proc(n_code: i32, w_param: WPARAM, l_param: 
                 let current = HOTKEY_STRING.lock().unwrap().to_lowercase();
                 if current == "mousemiddle" || current == "mbutton" {
                     if let Some(handle) = GLOBAL_APP_HANDLE.get() {
-                        toggle_window(&handle);
+                        crate::app::main_ui_lifecycle::request_toggle(
+                            handle,
+                            crate::app::main_ui_lifecycle::WakeIntent::Main,
+                        );
                     }
                     return LRESULT(1);
                 }

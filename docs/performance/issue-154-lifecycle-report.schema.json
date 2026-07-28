@@ -1,0 +1,547 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/sakuradairong/tiez-clipboard/docs/performance/issue-154-lifecycle-report.schema.json",
+  "title": "Issue 154 Stage B single-mode WebView2 lifecycle report",
+  "description": "Validates one hidden or destroyed run. The paired hidden-vs-destroyed memory gate is intentionally evaluated separately against two reports with the same executable hash.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "label",
+    "captured_at_utc",
+    "executable_sha256",
+    "executable_hash_observations",
+    "executable",
+    "executable_arguments",
+    "main_window_title",
+    "mode",
+    "protocol",
+    "host",
+    "manual_context",
+    "cycles",
+    "memory_runs",
+    "memory_medians",
+    "baseline_ready_snapshot",
+    "baseline_memory_sample",
+    "memory_after_5s",
+    "memory_after_30s",
+    "observed_process_identities",
+    "final_snapshot",
+    "final_traces",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "label": { "type": "string", "minLength": 1 },
+    "captured_at_utc": { "type": "string", "format": "date-time" },
+    "executable": { "type": "string", "minLength": 1 },
+    "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "executable_hash_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before_start", "after_start", "after_run"],
+      "properties": {
+        "before_start": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "after_start": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "after_run": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "executable_arguments": { "type": "array", "items": { "type": "string" } },
+    "mode": { "enum": ["hidden", "destroyed"] },
+    "main_window_title": { "type": "string", "minLength": 1 },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cycles",
+        "memory_runs",
+        "ipc_commands",
+        "transport",
+        "harness_directory_runtime",
+        "lifecycle_mode_env",
+        "harness_dir_env",
+        "exact_executable_hash_required_across_modes",
+        "max_visible_main_windows",
+        "latency_metric",
+        "median_latency_threshold_ms",
+        "worst_five_latency_threshold_ms",
+        "memory_samples_seconds",
+        "memory_sampling_state",
+        "memory_scope",
+        "descendant_tree_requires_process_explorer_etw_cross_check",
+        "paired_memory_gate",
+        "clipboard_check",
+        "windows_11_required",
+        "linux_screening_only"
+      ],
+      "properties": {
+        "cycles": { "type": "integer", "minimum": 100 },
+        "memory_runs": { "type": "integer", "minimum": 5 },
+        "ipc_commands": {
+          "type": "array",
+          "items": { "type": "string" },
+          "allOf": [
+            { "contains": { "const": "lifecycle_test_hide" } },
+            { "contains": { "const": "lifecycle_test_show" } },
+            { "contains": { "const": "get_main_ui_lifecycle_clipboard_probe" } },
+            { "contains": { "const": "get_main_ui_lifecycle_snapshot" } },
+            { "contains": { "const": "get_main_ui_lifecycle_traces" } }
+          ]
+        },
+        "transport": { "type": "string", "minLength": 1 },
+        "harness_directory_runtime": { "type": "string", "minLength": 1 },
+        "lifecycle_mode_env": { "const": "TIEZ_EXPERIMENT_MAIN_UI_LIFECYCLE" },
+        "harness_dir_env": { "const": "TIEZ_INTERNAL_LIFECYCLE_HARNESS_DIR" },
+        "exact_executable_hash_required_across_modes": { "const": true },
+        "max_visible_main_windows": { "const": 1 },
+        "latency_metric": { "const": "requested-visible-focused-hydrated-search_ready" },
+        "median_latency_threshold_ms": { "type": "number", "maximum": 750 },
+        "worst_five_latency_threshold_ms": { "type": "number", "maximum": 1500 },
+        "memory_samples_seconds": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "allOf": [
+            { "contains": { "const": 5 } },
+            { "contains": { "const": 30 } }
+          ]
+        },
+        "memory_sampling_state": { "type": "string", "minLength": 1 },
+        "memory_scope": { "type": "string", "minLength": 1 },
+        "descendant_tree_requires_process_explorer_etw_cross_check": { "const": true },
+        "paired_memory_gate": { "type": "string", "pattern": "^pending;" },
+        "clipboard_check": { "type": "string", "minLength": 1 },
+        "windows_11_required": { "const": true },
+        "linux_screening_only": { "const": true }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os_caption", "os_version", "os_build", "architecture", "powershell"],
+      "properties": {
+        "os_caption": { "type": "string", "pattern": "Windows 11" },
+        "os_version": { "type": "string", "minLength": 1 },
+        "os_build": { "type": "string", "pattern": "^(2[2-9][0-9]{3}|[3-9][0-9]{4}|[1-9][0-9]{5,})$" },
+        "architecture": { "type": "string", "minLength": 1 },
+        "powershell": { "type": "string", "minLength": 1 },
+        "processors": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "physical_memory_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "manual_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data_snapshot", "feature_flags", "service_configuration", "power_plan", "webview2_runtime_version", "foreground_application", "note"],
+      "properties": {
+        "data_snapshot": { "type": ["string", "null"] },
+        "feature_flags": { "type": ["string", "null"] },
+        "service_configuration": { "type": ["string", "null"] },
+        "power_plan": { "type": ["string", "null"] },
+        "webview2_runtime_version": { "type": ["string", "null"] },
+        "foreground_application": { "type": ["string", "null"] },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "baseline_ready_snapshot": {
+      "allOf": [
+        { "$ref": "#/definitions/lifecycle_snapshot" },
+        { "properties": { "phase": { "const": "ready" }, "main_window_present": { "const": true }, "main_window_visible": { "const": true } } }
+      ]
+    },
+    "baseline_memory_sample": { "$ref": "#/definitions/process_sample" },
+    "cycles": {
+      "type": "array",
+      "minItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cycle",
+          "requested_mode",
+          "hide_response",
+          "down_phase",
+          "ready_phase",
+          "main_window_count",
+          "requested_visible_focused_hydrated_search_ready_ms",
+          "clipboard_activity_history_consistent",
+          "clipboard_probe",
+          "down_snapshot",
+          "ready_snapshot",
+          "generation",
+          "show_response"
+        ],
+        "properties": {
+          "cycle": { "type": "integer", "minimum": 1 },
+          "requested_mode": { "enum": ["hidden", "destroyed"] },
+          "hide_response": { "$ref": "#/definitions/hide_response" },
+          "down_phase": { "enum": ["hidden", "destroyed"] },
+          "ready_phase": { "const": "ready" },
+          "main_window_count": { "const": 1 },
+          "generation": { "type": "integer", "minimum": 1 },
+          "show_response": { "$ref": "#/definitions/show_response" },
+          "down_snapshot": { "$ref": "#/definitions/lifecycle_snapshot" },
+          "ready_snapshot": {
+            "allOf": [
+              { "$ref": "#/definitions/lifecycle_snapshot" },
+              {
+                "properties": {
+                  "phase": { "const": "ready" },
+                  "main_window_present": { "const": true },
+                  "main_window_visible": { "const": true },
+                  "main_window_focused": { "const": true }
+                }
+              }
+            ]
+          },
+          "requested_visible_focused_hydrated_search_ready_ms": { "type": "number", "maximum": 1500 },
+          "clipboard_token": { "type": "string", "minLength": 1 },
+          "show_to_ready_ms": { "type": "number", "minimum": 0 },
+          "total_cycle_ms": { "type": "number", "minimum": 0 },
+          "clipboard_activity_history_consistent": { "const": true },
+          "clipboard_probe": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attempts", "elapsed_ms", "verification", "payload"],
+            "properties": {
+              "attempts": { "type": "integer", "minimum": 1 },
+              "elapsed_ms": { "type": "number", "minimum": 0 },
+              "verification": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["ok", "listener_event_increased", "persistent_history_exact_match", "session_history_exact_match", "exact_history_match_count"],
+                "properties": {
+                  "ok": { "const": true },
+                  "listener_event_increased": { "const": true },
+                  "persistent_history_exact_match": { "type": "boolean" },
+                  "session_history_exact_match": { "type": "boolean" },
+                  "exact_history_match_count": { "const": 1 }
+                }
+              },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "token",
+                  "clipboard_event_count",
+                  "clipboard_event_count_before",
+                  "clipboard_event_delta",
+                  "listener_event_count_increased",
+                  "exact_history_match",
+                  "exact_history_match_count"
+                ],
+                "properties": {
+                  "token": { "type": "string", "minLength": 1 },
+                  "clipboard_event_count": { "type": "integer", "minimum": 1 },
+                  "clipboard_event_count_before": { "type": "integer", "minimum": 0 },
+                  "clipboard_event_delta": { "type": "integer", "minimum": 1 },
+                  "listener_event_count_increased": { "const": true },
+                  "exact_history_match": { "const": true },
+                  "exact_history_match_count": { "const": 1 },
+                  "persisted_entry_id": { "type": ["integer", "null"] },
+                  "session_entry_id": { "type": ["integer", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "requested_mode": { "const": "hidden" } } },
+            "then": {
+              "properties": {
+                "down_phase": { "const": "hidden" },
+                "down_snapshot": {
+                  "allOf": [
+                    { "$ref": "#/definitions/lifecycle_snapshot" },
+                    {
+                      "properties": {
+                        "phase": { "const": "hidden" },
+                        "main_window_present": { "const": true },
+                        "main_window_visible": { "const": false },
+                        "main_window_focused": { "const": false }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "requested_mode": { "const": "destroyed" } } },
+            "then": {
+              "properties": {
+                "down_phase": { "const": "destroyed" },
+                "down_snapshot": {
+                  "allOf": [
+                    { "$ref": "#/definitions/lifecycle_snapshot" },
+                    {
+                      "properties": {
+                        "phase": { "const": "destroyed" },
+                        "main_window_present": { "const": false },
+                        "main_window_visible": { "const": false },
+                        "main_window_focused": { "const": false }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "memory_runs": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "requested_mode", "hide_response", "down_phase", "down_snapshot", "sample_after_5s", "sample_after_30s", "show_response", "ready_phase", "ready_snapshot", "show_to_ready_ms"],
+        "properties": {
+          "run": { "type": "integer", "minimum": 1 },
+          "requested_mode": { "enum": ["hidden", "destroyed"] },
+          "hide_response": { "$ref": "#/definitions/hide_response" },
+          "down_phase": { "enum": ["hidden", "destroyed"] },
+          "down_snapshot": { "$ref": "#/definitions/lifecycle_snapshot" },
+          "sample_after_5s": { "$ref": "#/definitions/process_sample" },
+          "sample_after_30s": { "$ref": "#/definitions/process_sample" },
+          "show_response": { "$ref": "#/definitions/show_response" },
+          "ready_phase": { "const": "ready" },
+          "ready_snapshot": {
+            "allOf": [
+              { "$ref": "#/definitions/lifecycle_snapshot" },
+              {
+                "properties": {
+                  "phase": { "const": "ready" },
+                  "main_window_present": { "const": true },
+                  "main_window_visible": { "const": true },
+                  "main_window_focused": { "const": true }
+                }
+              }
+            ]
+          },
+          "show_to_ready_ms": { "type": "number", "minimum": 0 }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "requested_mode": { "const": "hidden" } } },
+            "then": {
+              "properties": {
+                "down_phase": { "const": "hidden" },
+                "down_snapshot": {
+                  "allOf": [
+                    { "$ref": "#/definitions/lifecycle_snapshot" },
+                    { "properties": { "phase": { "const": "hidden" }, "main_window_present": { "const": true }, "main_window_visible": { "const": false }, "main_window_focused": { "const": false } } }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "requested_mode": { "const": "destroyed" } } },
+            "then": {
+              "properties": {
+                "down_phase": { "const": "destroyed" },
+                "down_snapshot": {
+                  "allOf": [
+                    { "$ref": "#/definitions/lifecycle_snapshot" },
+                    { "properties": { "phase": { "const": "destroyed" }, "main_window_present": { "const": false }, "main_window_visible": { "const": false }, "main_window_focused": { "const": false } } }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "memory_after_5s": { "$ref": "#/definitions/process_sample" },
+    "memory_after_30s": { "$ref": "#/definitions/process_sample" },
+    "memory_medians": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["after_5s", "after_30s"],
+      "properties": {
+        "after_5s": { "$ref": "#/definitions/memory_median" },
+        "after_30s": { "$ref": "#/definitions/memory_median" }
+      }
+    },
+    "observed_process_identities": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "final_snapshot": { "$ref": "#/definitions/lifecycle_snapshot" },
+    "final_traces": { "type": "array", "items": { "$ref": "#/definitions/lifecycle_trace" } },
+    "summary": {
+      "type": "object",
+      "required": [
+        "median_requested_visible_focused_hydrated_search_ready_ms",
+        "worst_five_requested_visible_focused_hydrated_search_ready_ms",
+        "max_requested_visible_focused_hydrated_search_ready_ms",
+        "memory_median_after_5s_private_working_set_bytes",
+        "memory_median_after_5s_private_working_set_mib",
+        "memory_median_after_30s_private_working_set_bytes",
+        "memory_median_after_30s_private_working_set_mib",
+        "paired_hidden_vs_destroyed_comparison",
+        "paired_memory_gate_pass",
+        "paired_memory_gate_note",
+        "latency_gate_pass",
+        "lifecycle_gate_pass",
+        "clipboard_gate_pass",
+        "single_mode_functional_pass",
+        "overall_pass",
+        "windows_11_real_machine_run"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "median_requested_visible_focused_hydrated_search_ready_ms": { "type": "number", "maximum": 750 },
+        "worst_five_requested_visible_focused_hydrated_search_ready_ms": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "type": "number", "maximum": 1500 }
+        },
+        "max_requested_visible_focused_hydrated_search_ready_ms": { "type": "number", "maximum": 1500 },
+        "memory_median_after_5s_private_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "memory_median_after_5s_private_working_set_mib": { "type": "number", "minimum": 0 },
+        "memory_median_after_30s_private_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "memory_median_after_30s_private_working_set_mib": { "type": "number", "minimum": 0 },
+        "paired_hidden_vs_destroyed_comparison": { "const": "pending" },
+        "paired_memory_gate_pass": { "type": "null" },
+        "paired_memory_gate_note": { "type": "string", "minLength": 1 },
+        "latency_gate_pass": { "const": true },
+        "lifecycle_gate_pass": { "const": true },
+        "clipboard_gate_pass": { "const": true },
+        "single_mode_functional_pass": { "const": true },
+        "overall_pass": { "type": "null" },
+        "windows_11_real_machine_run": { "const": true }
+      }
+    }
+  },
+  "definitions": {
+    "lifecycle_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "mode", "phase", "generation", "active_request_id", "completed_request_id", "failed_request_id", "active_intent", "react_mounted", "hydrated", "search_ready", "search_results_settled", "focused", "requested_visible_focused_hydrated_search_ready_ms", "main_window_count", "main_window_present", "main_window_visible", "main_window_focused", "clipboard_event_count", "persisted_history_count", "session_history_count", "history_probe_available", "explicit_exit_requested", "worker_running", "in_flight_target", "pending_target", "trace_count"],
+      "properties": {
+        "enabled": { "const": true },
+        "mode": { "enum": ["hidden", "destroyed"] },
+        "phase": { "enum": ["hidden", "destroyed", "ready"] },
+        "generation": { "type": "integer", "minimum": 1 },
+        "main_window_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "main_window_present": { "type": "boolean" },
+        "main_window_visible": { "type": "boolean" },
+        "active_request_id": { "type": ["integer", "null"], "minimum": 1 },
+        "completed_request_id": { "type": ["integer", "null"], "minimum": 1 },
+        "failed_request_id": { "type": "null" },
+        "active_intent": { "type": ["string", "null"], "enum": ["main", "search", "tray", "test", null] },
+        "react_mounted": { "type": "boolean" },
+        "hydrated": { "type": "boolean" },
+        "search_ready": { "type": "boolean" },
+        "search_results_settled": { "type": "boolean" },
+        "focused": { "type": "boolean" },
+        "requested_visible_focused_hydrated_search_ready_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "main_window_focused": { "type": "boolean" },
+        "clipboard_event_count": { "type": "integer", "minimum": 0 },
+        "persisted_history_count": { "type": ["integer", "null"], "minimum": 0 },
+        "session_history_count": { "type": ["integer", "null"], "minimum": 0 },
+        "history_probe_available": { "type": "boolean" },
+        "explicit_exit_requested": { "type": "boolean" },
+        "worker_running": { "type": "boolean" },
+        "in_flight_target": { "type": ["string", "null"], "enum": ["hidden", "visible", null] },
+        "pending_target": { "type": ["string", "null"], "enum": ["hidden", "visible", null] },
+        "trace_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "lifecycle_trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "generation", "mode", "intent", "phase", "timestamp_unix_ms", "elapsed_ms", "main_window_count", "clipboard_event_count", "persisted_history_count", "session_history_count", "detail"],
+      "properties": {
+        "request_id": { "type": "integer", "minimum": 1 },
+        "generation": { "type": "integer", "minimum": 1 },
+        "mode": { "enum": ["hidden", "destroyed"] },
+        "intent": { "enum": ["main", "search", "tray", "test"] },
+        "phase": { "type": "string", "minLength": 1 },
+        "timestamp_unix_ms": { "type": "integer", "minimum": 1 },
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "main_window_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "clipboard_event_count": { "type": "integer", "minimum": 0 },
+        "persisted_history_count": { "type": ["integer", "null"], "minimum": 0 },
+        "session_history_count": { "type": ["integer", "null"], "minimum": 0 },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "process_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["captured_at_utc", "process_count", "descendant_process_count", "attributed_webview2_process_count", "webview2_user_data_folders", "process_identity_keys", "reference_process_identity_keys", "identities_added_from_reference", "identities_missing_from_reference", "working_set_bytes", "private_working_set_bytes", "commit_bytes", "processes"],
+      "properties": {
+        "captured_at_utc": { "type": "string", "format": "date-time" },
+        "process_count": { "type": "integer", "minimum": 1 },
+        "descendant_process_count": { "type": "integer", "minimum": 1 },
+        "attributed_webview2_process_count": { "type": "integer", "minimum": 0 },
+        "webview2_user_data_folders": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "process_identity_keys": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "reference_process_identity_keys": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "identities_added_from_reference": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "identities_missing_from_reference": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "working_set_bytes": { "type": "integer", "minimum": 0 },
+        "private_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "commit_bytes": { "type": "integer", "minimum": 0 },
+        "processes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["pid", "parent_pid", "name", "role", "attribution", "started_at_utc", "executable_path", "working_set_bytes", "private_working_set_bytes", "commit_bytes"],
+            "properties": {
+              "pid": { "type": "integer", "minimum": 1 },
+              "parent_pid": { "type": "integer", "minimum": 0 },
+              "name": { "type": "string", "minLength": 1 },
+              "role": { "type": "string", "minLength": 1 },
+              "attribution": { "enum": ["descendant", "webview2_user_data_dir"] },
+              "started_at_utc": { "type": "string", "format": "date-time" },
+              "executable_path": { "type": "string", "minLength": 1 },
+              "working_set_bytes": { "type": "integer", "minimum": 0 },
+              "private_working_set_bytes": { "type": "integer", "minimum": 0 },
+              "commit_bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "memory_median": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["private_working_set_bytes", "private_working_set_mib", "commit_bytes", "commit_mib", "working_set_bytes", "working_set_mib", "process_count"],
+      "properties": {
+        "private_working_set_bytes": { "type": "integer", "minimum": 0 },
+        "private_working_set_mib": { "type": "number", "minimum": 0 },
+        "commit_bytes": { "type": "integer", "minimum": 0 },
+        "commit_mib": { "type": "number", "minimum": 0 },
+        "working_set_bytes": { "type": "integer", "minimum": 0 },
+        "working_set_mib": { "type": "number", "minimum": 0 },
+        "process_count": { "type": "number", "minimum": 1 }
+      }
+    },
+    "hide_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted", "request_id", "generation_before"],
+      "properties": {
+        "accepted": { "const": true },
+        "request_id": { "type": "integer", "minimum": 1 },
+        "generation_before": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "show_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accepted", "request_id", "generation_before", "expected_generation"],
+      "properties": {
+        "accepted": { "const": true },
+        "request_id": { "type": "integer", "minimum": 1 },
+        "generation_before": { "type": "integer", "minimum": 1 },
+        "expected_generation": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -6,12 +6,19 @@ interface UseClipboardEventsOptions {
   onUpdated: (entry: ClipboardEntry) => void;
   onRemoved: (id: number) => void;
   onChanged?: () => void;
+  onRegistered?: () => void;
 }
 
-export const useClipboardEvents = ({ onUpdated, onRemoved, onChanged }: UseClipboardEventsOptions) => {
+export const useClipboardEvents = ({
+  onUpdated,
+  onRemoved,
+  onChanged,
+  onRegistered
+}: UseClipboardEventsOptions) => {
   const onUpdatedRef = useRef(onUpdated);
   const onRemovedRef = useRef(onRemoved);
   const onChangedRef = useRef(onChanged);
+  const onRegisteredRef = useRef(onRegistered);
 
   useEffect(() => {
     onUpdatedRef.current = onUpdated;
@@ -26,6 +33,10 @@ export const useClipboardEvents = ({ onUpdated, onRemoved, onChanged }: UseClipb
   }, [onChanged]);
 
   useEffect(() => {
+    onRegisteredRef.current = onRegistered;
+  }, [onRegistered]);
+
+  useEffect(() => {
     const unlistenUpdate = listen<ClipboardEntry>("clipboard-updated", (event) => {
       onUpdatedRef.current(event.payload);
     });
@@ -36,6 +47,12 @@ export const useClipboardEvents = ({ onUpdated, onRemoved, onChanged }: UseClipb
       onChangedRef.current?.();
     });
 
+    Promise.all([unlistenUpdate, unlistenRemove, unlistenChanged])
+      .then(() => {
+        onRegisteredRef.current?.();
+      })
+      .catch(console.error);
+
     return () => {
       unlistenUpdate.then((f) => f());
       unlistenRemove.then((f) => f());
@@ -43,5 +60,3 @@ export const useClipboardEvents = ({ onUpdated, onRemoved, onChanged }: UseClipb
     };
   }, []);
 };
-
-

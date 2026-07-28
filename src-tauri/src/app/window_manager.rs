@@ -423,21 +423,19 @@ pub fn activate_window_focus(app_handle: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn hide_window_cmd(app_handle: AppHandle) -> Result<(), String> {
-    if let Some(window) = app_handle.get_webview_window("main") {
-        #[cfg(target_os = "windows")]
-        WindowExt::release_win_keys();
-        let _ = window.set_focusable(false);
-        let _ = window.hide();
-        NAVIGATION_ENABLED.store(false, Ordering::SeqCst);
-        NAVIGATION_MODE_ACTIVE.store(false, Ordering::SeqCst);
-        let _ = restore_last_focus(app_handle.clone());
-    }
+    crate::app::main_ui_lifecycle::request_hide(
+        &app_handle,
+        crate::app::main_ui_lifecycle::HideReason::FrontendCommand,
+    );
     Ok(())
 }
 
 #[tauri::command]
 pub fn toggle_window_cmd(app_handle: AppHandle) -> Result<(), String> {
-    toggle_window(&app_handle);
+    crate::app::main_ui_lifecycle::request_toggle(
+        &app_handle,
+        crate::app::main_ui_lifecycle::WakeIntent::Main,
+    );
     Ok(())
 }
 

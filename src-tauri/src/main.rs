@@ -52,6 +52,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app::window_manager::toggle_window_cmd,
             app::window_manager::hide_window_cmd,
+            app::main_ui_lifecycle::get_main_ui_lifecycle_bootstrap,
+            app::main_ui_lifecycle::report_main_ui_ready,
             app::window_manager::activate_window_focus,
             app::window_manager::focus_clipboard_window,
             app::window_manager::set_navigation_enabled,
@@ -189,7 +191,9 @@ fn main() {
     match app {
         Ok(app) => {
             info!(">>> [STARTUP] Tauri app built successfully.");
-            app.run(|_app_handle, _event| {});
+            app.run(|app_handle, event| {
+                app::main_ui_lifecycle::handle_run_event(app_handle, &event);
+            });
         }
         Err(e) => {
             error!(">>> [STARTUP] Failed to build tauri app: {}", e);

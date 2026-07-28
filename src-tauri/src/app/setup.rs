@@ -2,7 +2,6 @@
 use crate::app::hooks::{keyboard_proc, mouse_proc};
 #[cfg(target_os = "windows")]
 use crate::app::system::tray_subclass_proc;
-use crate::app::window_manager::{release_win_keys, restore_last_focus, toggle_window};
 use crate::app_state::{
     AppDataDir, EncryptionQueueState, PasteQueue, SessionHistory, SettingsState,
 };
@@ -48,6 +47,8 @@ struct WindowRect {
 
 pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
+
+    crate::app::main_ui_lifecycle::initialize(app);
 
     // Initialize GLOBAL_APP_HANDLE for Win32 hooks
     let _ = GLOBAL_APP_HANDLE.set(app_handle.clone());
@@ -120,7 +121,13 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 6.1 External Drag-Drop (Web Images)
     #[cfg(windows)]
-    crate::infrastructure::windows_api::drag_drop::register_emoji_drag_drop(app_handle.clone());
+    if app
+        .state::<crate::app::main_ui_lifecycle::MainUiLifecycle>()
+        .mode()
+        != crate::app::main_ui_lifecycle::LifecycleMode::Destroyed
+    {
+        crate::infrastructure::windows_api::drag_drop::register_emoji_drag_drop(app_handle.clone());
+    }
 
     // 7. Background Services & Monitors
     start_services(app, &settings, app_handle.clone());
@@ -138,6 +145,9 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // 11. TaskbarCreated & Subclass
     #[cfg(target_os = "windows")]
     setup_taskbar_listener(app);
+
+    crate::app::main_ui_lifecycle::initialize_after_setup(app);
+    crate::app::main_ui_lifecycle_harness::start(app);
 
     Ok(())
 }
@@ -1140,11 +1150,9 @@ fn setup_tray(app: &App, hide_tray: bool) {
         .menu(&menu)
         .on_menu_event(|app, event| {
             if event.id.as_ref() == "show" {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = app.emit("main-window-opened", ());
-                }
+                crate::app::main_ui_lifecycle::request_tray_menu_show(app);
             } else if event.id.as_ref() == "quit" {
+                crate::app::main_ui_lifecycle::mark_explicit_exit(app);
                 app.exit(0);
             }
         })
@@ -1154,16 +1162,7 @@ fn setup_tray(app: &App, hide_tray: bool) {
                 ..
             } = event
             {
-                if let Some(window) = tray.app_handle().get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    let _ = tray.app_handle().emit("main-window-opened", ());
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as u64;
-                    LAST_SHOW_TIMESTAMP.store(now, Ordering::Relaxed);
-                }
+                crate::app::main_ui_lifecycle::request_tray_click_show(tray.app_handle());
             }
         })
         .build(app)
@@ -1195,6 +1194,44 @@ fn apply_initial_theme(app: &App) {
             None,
         );
     }
+}
+
+pub(crate) fn prepare_recreated_main_window_on_ui_thread(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let settings = app.state::<SettingsState>();
+    let pinned = WINDOW_PINNED.load(Ordering::Relaxed);
+    window
+        .set_always_on_top(pinned)
+        .map_err(|error| format!("failed to restore always-on-top state: {error}"))?;
+    window
+        .set_focusable(!pinned)
+        .map_err(|error| format!("failed to restore focusable state: {error}"))?;
+
+    #[cfg(target_os = "windows")]
+    install_taskbar_subclass(window)
+        .map_err(|error| format!("failed to install taskbar subclass: {error}"))?;
+
+    #[cfg(target_os = "windows")]
+    crate::infrastructure::windows_api::drag_drop::replace_emoji_drag_drop_on_current_thread(
+        app.clone(),
+    )
+    .map_err(|error| format!("failed to install replacement OLE drag/drop targets: {error}"))?;
+
+    let db_state = app.state::<DbState>();
+    let theme = settings
+        .theme
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_else(|error| error.into_inner().clone());
+    let mode = db_state
+        .settings_repo
+        .get("app.color_mode")
+        .unwrap_or(Some("system".to_string()));
+    crate::app::commands::set_theme(window.clone(), settings, db_state, theme, mode, None)
+        .map_err(|error| format!("failed to restore main-window theme: {error}"))?;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1250,12 +1287,17 @@ fn setup_taskbar_listener(app: &App) {
         if msg != 0 {
             TASKBAR_CREATED_MSG.store(msg, Ordering::Relaxed);
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(hwnd) = window.hwnd() {
-                    let _ = SetWindowSubclass(HWND(hwnd.0), Some(tray_subclass_proc), 1337, 0);
-                }
+                let _ = install_taskbar_subclass(&window);
             }
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn install_taskbar_subclass(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    unsafe { SetWindowSubclass(HWND(hwnd.0), Some(tray_subclass_proc), 1337, 0).ok() }
+        .map_err(|error| error.to_string())
 }
 
 pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_shortcut::Shortcut) {
@@ -1267,7 +1309,10 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_sh
         val.replace("Win", "Super").parse::<Shortcut>()
     } {
         if shortcut == &main_s {
-            toggle_window(app);
+            crate::app::main_ui_lifecycle::request_toggle(
+                app,
+                crate::app::main_ui_lifecycle::WakeIntent::Main,
+            );
             return;
         }
     }
@@ -1353,8 +1398,7 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &tauri_plugin_global_sh
         val.replace("Win", "Super").parse::<Shortcut>()
     } {
         if shortcut == &search_s {
-            toggle_window(app);
-            let _ = app.emit("focus-search-input", ());
+            crate::app::main_ui_lifecycle::request_search(app);
         }
     }
 }
@@ -1404,6 +1448,12 @@ fn spawn_relay_shortcut_action(app: &AppHandle, action: RelayShortcutAction) {
 }
 
 pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    crate::app::main_ui_lifecycle::note_native_window_event(
+        window.app_handle(),
+        window.label(),
+        event,
+    );
+
     match event {
         tauri::WindowEvent::Focused(focused) => {
             if window.label() != "main" {
@@ -1440,7 +1490,13 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
                 return;
             }
             api.prevent_close();
-            let _ = window.hide();
+            crate::app::main_ui_lifecycle::request_hide(
+                window.app_handle(),
+                crate::app::main_ui_lifecycle::HideReason::CloseRequested,
+            );
+        }
+        tauri::WindowEvent::Destroyed if window.label() == "main" => {
+            IS_MAIN_WINDOW_FOCUSED.store(false, Ordering::Relaxed);
             NAVIGATION_ENABLED.store(false, Ordering::SeqCst);
             NAVIGATION_MODE_ACTIVE.store(false, Ordering::SeqCst);
         }
@@ -1548,10 +1604,10 @@ fn handle_blur(window: &tauri::Window) {
         let down = IS_MOUSE_BUTTON_DOWN.load(Ordering::SeqCst) || mouse_button_down;
         if !down && matches!(w.is_focused(), Ok(false)) {
             if !IGNORE_BLUR.load(Ordering::Relaxed) && !WINDOW_PINNED.load(Ordering::Relaxed) {
-                let _ = w.hide();
-                NAVIGATION_ENABLED.store(false, Ordering::SeqCst);
-                release_win_keys();
-                let _ = restore_last_focus(w.app_handle().clone());
+                crate::app::main_ui_lifecycle::request_hide(
+                    w.app_handle(),
+                    crate::app::main_ui_lifecycle::HideReason::Blur,
+                );
             }
         }
     });

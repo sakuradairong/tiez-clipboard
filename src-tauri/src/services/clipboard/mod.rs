@@ -515,6 +515,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
     // Start the native Windows listener
     crate::services::clipboard_listener::listen_clipboard(Arc::new(move || {
         let app = app_clone.clone();
+        crate::app::main_ui_lifecycle::note_clipboard_event(&app);
         let mut monitor_state = state_lock.lock().unwrap();
 
         // 1. Check for pause
@@ -1084,6 +1085,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
     let state_lock = state.clone();
 
     crate::services::clipboard_listener::listen_clipboard(Arc::new(move || {
+        crate::app::main_ui_lifecycle::note_clipboard_event(&app_clone);
         if crate::CLIPBOARD_MONITOR_PAUSED.load(Ordering::Relaxed) {
             return;
         }

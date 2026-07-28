@@ -41,6 +41,7 @@ import { useListSelectionReset } from "./shared/hooks/useListSelectionReset";
 import { useSearchFetchTrigger } from "./shared/hooks/useSearchFetchTrigger";
 import { useScrollToSelection } from "./shared/hooks/useScrollToSelection";
 import { useClipboardItemRenderer } from "./shared/hooks/useClipboardItemRenderer";
+import { useMainUiReadiness } from "./shared/hooks/useMainUiReadiness";
 import { AnnouncementSystem } from "./shared/components/Announcement";
 import { useAnnouncements } from "./shared/hooks/useAnnouncements";
 import { useOverlays } from "./shared/hooks/useOverlays";
@@ -372,6 +373,16 @@ const App = () => {
 
   const debouncedSearch = useDebounce(search, 400);
   const searchInputRef = useInputFocus<HTMLInputElement>();
+  const {
+    readinessEnabled,
+    readinessRequestId,
+    shouldPrepareSearchIntent,
+    reportReadyPhase
+  } = useMainUiReadiness();
+  const clipboardListenersReadyRef = useRef(false);
+  const initialHistoryReadyRef = useRef(false);
+  const searchInputReadyRef = useRef(false);
+  const settingsReadyRef = useRef(false);
   const tagColors = useTagColors();
   const virtualListRef = useRef<VirtualClipboardListHandle | null>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
@@ -387,6 +398,41 @@ const App = () => {
     [history]
   );
   const PAGE_SIZE = 80;
+  const reportHydratedIfReady = useCallback(() => {
+    if (
+      clipboardListenersReadyRef.current &&
+      initialHistoryReadyRef.current &&
+      settingsReadyRef.current
+    ) {
+      reportReadyPhase(
+        "hydrated",
+        "settings_clipboard_listeners_and_initial_history_ready"
+      );
+    }
+  }, [reportReadyPhase]);
+  const handleHistoryFetchSettled = useCallback(
+    ({
+      reset,
+      hasSearch,
+      succeeded
+    }: {
+      reset: boolean;
+      hasSearch: boolean;
+      succeeded: boolean;
+    }) => {
+      if (!succeeded) return;
+      if (!hasSearch) {
+        initialHistoryReadyRef.current = true;
+        reportHydratedIfReady();
+        return;
+      }
+      reportReadyPhase(
+        "search_results_settled",
+        reset ? "search_history_reset_loaded" : "search_history_loaded"
+      );
+    },
+    [reportHydratedIfReady, reportReadyPhase]
+  );
   const { fetchHistory, loadMoreHistory } = useHistoryFetch({
     debouncedSearch,
     typeFilter,
@@ -400,8 +446,76 @@ const App = () => {
     setHasMore,
     isLoadingMore,
     hasMore,
-    setIsLoadingMore
+    setIsLoadingMore,
+    onFetchSettled: handleHistoryFetchSettled
   });
+
+  const prepareSearchInputForWake = useCallback(() => {
+    setShowSettings(false);
+    setShowTagManager(false);
+    setChatMode(false);
+    setShowEmojiPanel(false);
+    setShowSearchBox(true);
+    setSearchIsFocused(true);
+  }, [
+    setShowSettings,
+    setShowTagManager,
+    setChatMode,
+    setShowEmojiPanel,
+    setShowSearchBox,
+    setSearchIsFocused
+  ]);
+
+  const focusSearchInputForWake = useCallback(() => {
+    prepareSearchInputForWake();
+    invoke("activate_window_focus")
+      .catch(console.error)
+      .finally(() => {
+        requestAnimationFrame(() => {
+          searchInputRef.current?.focus();
+        });
+      });
+  }, [prepareSearchInputForWake, searchInputRef]);
+
+  useEffect(() => {
+    reportReadyPhase("react_mounted", "app_effect_mounted");
+  }, [reportReadyPhase]);
+
+  useEffect(() => {
+    searchInputReadyRef.current = false;
+    if (readinessRequestId == null) return;
+    settingsReadyRef.current = settingsLoaded;
+    if (shouldPrepareSearchIntent) {
+      prepareSearchInputForWake();
+    }
+    reportHydratedIfReady();
+  }, [
+    prepareSearchInputForWake,
+    readinessRequestId,
+    reportHydratedIfReady,
+    settingsLoaded,
+    shouldPrepareSearchIntent
+  ]);
+
+  useEffect(() => {
+    settingsReadyRef.current = settingsLoaded;
+    reportHydratedIfReady();
+  }, [reportHydratedIfReady, settingsLoaded]);
+
+  useEffect(() => {
+    if (searchInputReadyRef.current) return;
+    if (!readinessEnabled) return;
+    if (!showSearchBox || !searchInputRef.current) return;
+
+    searchInputReadyRef.current = true;
+    reportReadyPhase("search_ready", "search_input_ref_ready");
+  }, [
+    readinessEnabled,
+    reportReadyPhase,
+    searchInputRef,
+    shouldPrepareSearchIntent,
+    showSearchBox
+  ]);
 
   const t = useCallback((key: string) => {
     const k = key as keyof typeof translations['zh'];
@@ -721,32 +835,14 @@ const App = () => {
     if (!isTauriRuntime()) return;
 
     const unlisten = listen("focus-search-input", () => {
-      setShowSettings(false);
-      setShowTagManager(false);
-      setChatMode(false);
-      setShowEmojiPanel(false);
-      setShowSearchBox(true);
-      setSearchIsFocused(true);
-      invoke("activate_window_focus")
-        .catch(console.error)
-        .finally(() => {
-          requestAnimationFrame(() => {
-            searchInputRef.current?.focus();
-          });
-        });
+      focusSearchInputForWake();
     });
 
     return () => {
       unlisten.then((off) => off());
     };
   }, [
-    setShowSettings,
-    setShowTagManager,
-    setChatMode,
-    setShowEmojiPanel,
-    setShowSearchBox,
-    setSearchIsFocused,
-    searchInputRef
+    focusSearchInputForWake
   ]);
 
   useEffect(() => {
@@ -826,6 +922,10 @@ const App = () => {
     },
     onChanged: () => {
       fetchHistory(true);
+    },
+    onRegistered: () => {
+      clipboardListenersReadyRef.current = true;
+      reportHydratedIfReady();
     }
   });
 

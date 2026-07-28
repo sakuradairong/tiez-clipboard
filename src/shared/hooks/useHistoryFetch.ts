@@ -17,6 +17,7 @@ interface UseHistoryFetchOptions {
   isLoadingMore: boolean;
   hasMore: boolean;
   setIsLoadingMore: Dispatch<SetStateAction<boolean>>;
+  onFetchSettled?: (context: { reset: boolean; hasSearch: boolean; succeeded: boolean }) => void;
 }
 
 export const useHistoryFetch = ({
@@ -32,13 +33,15 @@ export const useHistoryFetch = ({
   setHasMore,
   isLoadingMore,
   hasMore,
-  setIsLoadingMore
+  setIsLoadingMore,
+  onFetchSettled
 }: UseHistoryFetchOptions) => {
   const loadingRef = useRef(false);
   const fetchSeqRef = useRef(0);
   const lastRequestedOffsetRef = useRef<number | null>(null);
   const currentOffsetRef = useRef(currentOffset);
   const historyLengthRef = useRef(historyLength);
+  const onFetchSettledRef = useRef(onFetchSettled);
 
   useEffect(() => {
     currentOffsetRef.current = currentOffset;
@@ -47,6 +50,11 @@ export const useHistoryFetch = ({
   useEffect(() => {
     historyLengthRef.current = historyLength;
   }, [historyLength]);
+
+  useEffect(() => {
+    onFetchSettledRef.current = onFetchSettled;
+  }, [onFetchSettled]);
+
   const fetchHistory = useCallback(
     async (reset = false) => {
       const seq = ++fetchSeqRef.current;
@@ -61,11 +69,12 @@ export const useHistoryFetch = ({
 
         let data: ClipboardEntry[] = [];
 
-        const hasSearch = debouncedSearch && debouncedSearch.trim().length > 0;
+        const hasSearch = Boolean(debouncedSearch && debouncedSearch.trim().length > 0);
 
         if (hasSearch) {
           let term = debouncedSearch;
           let tagOnly = false;
+          let succeeded = true;
           if (term.startsWith("tag:")) {
             term = term.slice(4);
             tagOnly = true;
@@ -77,9 +86,10 @@ export const useHistoryFetch = ({
               limit: 200,
               tagOnly
             });
-          } catch (e) {
-            console.error("Search failed, falling back", e);
+          } catch (error) {
+            console.error("Search failed, falling back", error);
             data = [];
+            succeeded = false;
           }
 
           if (seq !== fetchSeqRef.current) return;
@@ -87,6 +97,7 @@ export const useHistoryFetch = ({
           setHistory(data);
           setCurrentOffset(data.length);
           setHasMore(false);
+          onFetchSettledRef.current?.({ reset, hasSearch, succeeded });
         } else {
           const requestedLimit = pageSize + 1; // Use standard page size for DB limit
           const rawData = await invoke<ClipboardEntry[]>("get_clipboard_history", {
@@ -124,10 +135,13 @@ export const useHistoryFetch = ({
             // We should keep hasMore true so the user can try to load further.
             setHasMore(hasMoreNow);
           }
+          onFetchSettledRef.current?.({ reset, hasSearch, succeeded: true });
         }
       } catch (err) {
         console.error("无法获取历史记录", err);
         setHasMore(false);
+        const hasSearch = Boolean(debouncedSearch && debouncedSearch.trim().length > 0);
+        onFetchSettledRef.current?.({ reset, hasSearch, succeeded: false });
       }
     },
     [
@@ -162,4 +176,3 @@ export const useHistoryFetch = ({
 
   return { fetchHistory, loadMoreHistory };
 };
-
