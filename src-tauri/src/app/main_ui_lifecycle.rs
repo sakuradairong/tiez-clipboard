@@ -16,8 +16,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 const MAIN_LABEL: &str = "main";
 const LIFECYCLE_ENV: &str = "TIEZ_EXPERIMENT_MAIN_UI_LIFECYCLE";
 const TRACE_LIMIT: usize = 1024;
+const OPERATION_OUTCOME_LIMIT: usize = 128;
 const WAIT_STEP: Duration = Duration::from_millis(10);
 const DESTROY_TIMEOUT: Duration = Duration::from_secs(10);
+const OPERATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15);
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_DOWN_SETTLE: Duration = Duration::from_millis(250);
 
@@ -226,6 +228,7 @@ struct ActiveWake {
     search_ready: bool,
     search_results_settled: bool,
     focused: bool,
+    requires_focus: bool,
     search_focus_sent: bool,
     usable_ready_recorded: bool,
 }
@@ -236,7 +239,7 @@ impl ActiveWake {
     }
 
     fn usable_ready(&self) -> bool {
-        self.frontend_ready() && self.focused
+        self.frontend_ready() && (!self.requires_focus || self.focused)
     }
 }
 
@@ -248,6 +251,46 @@ struct LifecycleOperation {
     target: TargetVisibility,
     source: WakeSource,
     hide_reason: Option<HideReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OperationOutcome {
+    Succeeded,
+    Failed(String),
+    Superseded,
+}
+
+fn completion_outcome(
+    target: TargetVisibility,
+    result: &Result<(), String>,
+    pending_target: Option<TargetVisibility>,
+) -> OperationOutcome {
+    match result {
+        Err(error) => OperationOutcome::Failed(error.clone()),
+        Ok(()) if pending_target.is_some_and(|pending| pending != target) => {
+            OperationOutcome::Superseded
+        }
+        Ok(()) => OperationOutcome::Succeeded,
+    }
+}
+
+fn canonical_request_id(
+    new_request_id: u64,
+    target: TargetVisibility,
+    in_flight: Option<(u64, TargetVisibility)>,
+    pending: Option<(u64, TargetVisibility)>,
+) -> u64 {
+    if let Some((request_id, in_flight_target)) = in_flight {
+        if in_flight_target == target {
+            return request_id;
+        }
+    }
+    if let Some((request_id, pending_target)) = pending {
+        if pending_target == target {
+            return request_id;
+        }
+    }
+    new_request_id
 }
 
 #[derive(Clone, Debug)]
@@ -268,10 +311,12 @@ struct LifecycleInner {
     active_wake: Option<ActiveWake>,
     completed_request_id: Option<u64>,
     failed_request_id: Option<u64>,
+    operation_outcomes: VecDeque<(u64, OperationOutcome)>,
     traces: VecDeque<LifecycleTrace>,
     pending_traces: VecDeque<PendingTrace>,
     pending_operation: Option<LifecycleOperation>,
     in_flight_target: Option<TargetVisibility>,
+    in_flight_request_id: Option<u64>,
     worker_running: bool,
     last_usable_wake_ms: Option<u64>,
 }
@@ -298,10 +343,12 @@ impl MainUiLifecycle {
                 active_wake: None,
                 completed_request_id: None,
                 failed_request_id: None,
+                operation_outcomes: VecDeque::new(),
                 traces: VecDeque::new(),
                 pending_traces: VecDeque::new(),
                 pending_operation: None,
                 in_flight_target: None,
+                in_flight_request_id: None,
                 worker_running: false,
                 last_usable_wake_ms: None,
             }),
@@ -456,15 +503,52 @@ impl MainUiLifecycle {
         self.lock_inner().phase = phase;
     }
 
-    fn record_operation_completion(&self, request_id: u64, succeeded: bool) {
-        let mut inner = self.lock_inner();
-        if succeeded {
-            inner.completed_request_id = Some(request_id);
-            inner.failed_request_id = None;
-        } else {
-            inner.failed_request_id = Some(request_id);
+    fn push_operation_outcome(
+        inner: &mut LifecycleInner,
+        request_id: u64,
+        outcome: OperationOutcome,
+    ) {
+        inner.operation_outcomes.push_back((request_id, outcome));
+        while inner.operation_outcomes.len() > OPERATION_OUTCOME_LIMIT {
+            inner.operation_outcomes.pop_front();
         }
+    }
+
+    fn complete_operation_inner(
+        inner: &mut LifecycleInner,
+        operation: &LifecycleOperation,
+        result: &Result<(), String>,
+    ) {
+        let outcome = completion_outcome(
+            operation.target,
+            result,
+            inner
+                .pending_operation
+                .as_ref()
+                .map(|pending| pending.target),
+        );
+        match &outcome {
+            OperationOutcome::Succeeded => {
+                inner.completed_request_id = Some(operation.request_id);
+                inner.failed_request_id = None;
+            }
+            OperationOutcome::Failed(_) => {
+                inner.failed_request_id = Some(operation.request_id);
+            }
+            OperationOutcome::Superseded => {}
+        }
+        Self::push_operation_outcome(inner, operation.request_id, outcome);
         inner.in_flight_target = None;
+        inner.in_flight_request_id = None;
+    }
+
+    fn record_operation_completion(
+        &self,
+        operation: &LifecycleOperation,
+        result: &Result<(), String>,
+    ) {
+        let mut inner = self.lock_inner();
+        Self::complete_operation_inner(&mut inner, operation, result);
     }
 
     fn current_generation(&self) -> u64 {
@@ -482,6 +566,7 @@ impl MainUiLifecycle {
             search_ready: false,
             search_results_settled: false,
             focused: false,
+            requires_focus: source_requires_focus(operation.source),
             search_focus_sent: false,
             usable_ready_recorded: false,
         };
@@ -744,6 +829,85 @@ pub fn request_hide(app: &AppHandle, reason: HideReason) -> bool {
     had_window
 }
 
+pub async fn request_hide_and_wait(app: &AppHandle, reason: HideReason) -> Result<bool, String> {
+    let had_window = app.get_webview_window(MAIN_LABEL).is_some();
+    let Some(lifecycle) = app.try_state::<MainUiLifecycle>() else {
+        hide_default(app, reason);
+        return Ok(had_window);
+    };
+    if !lifecycle.enabled() {
+        hide_default(app, reason);
+        return Ok(had_window);
+    }
+
+    let request_id = enqueue_operation(
+        app,
+        &lifecycle,
+        Some(TargetVisibility::Hidden),
+        WakeSource::Explicit,
+        WakeIntent::Main,
+        Some(reason),
+    );
+    wait_for_hide_completion(app, &lifecycle, request_id, OPERATION_COMPLETION_TIMEOUT).await?;
+    Ok(had_window)
+}
+
+async fn wait_for_hide_completion(
+    app: &AppHandle,
+    lifecycle: &MainUiLifecycle,
+    request_id: u64,
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        let outcome = lifecycle
+            .lock_inner()
+            .operation_outcomes
+            .iter()
+            .rev()
+            .find_map(|(completed_request_id, outcome)| {
+                (*completed_request_id == request_id).then(|| outcome.clone())
+            });
+        match outcome {
+            Some(OperationOutcome::Succeeded) => {
+                let (phase, native_down) = match lifecycle.mode {
+                    LifecycleMode::Destroyed => (
+                        LifecyclePhase::Destroyed,
+                        app.get_webview_window(MAIN_LABEL).is_none(),
+                    ),
+                    LifecycleMode::Hidden => (
+                        LifecyclePhase::Hidden,
+                        app.get_webview_window(MAIN_LABEL)
+                            .is_some_and(|window| !window.is_visible().unwrap_or(true)),
+                    ),
+                    LifecycleMode::Default => (LifecyclePhase::Hidden, true),
+                };
+                if native_down && lifecycle.lock_inner().phase == phase {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "lifecycle hide request {request_id} completed without the requested native down state"
+                ));
+            }
+            Some(OperationOutcome::Failed(error)) => {
+                return Err(format!(
+                    "lifecycle hide request {request_id} failed: {error}"
+                ));
+            }
+            Some(OperationOutcome::Superseded) => {
+                return Err(format!(
+                    "lifecycle hide request {request_id} was superseded"
+                ));
+            }
+            None => {}
+        }
+        if started.elapsed() >= timeout {
+            return Err("timed out waiting for lifecycle hide completion".to_string());
+        }
+        tokio::time::sleep(WAIT_STEP).await;
+    }
+}
+
 fn enqueue_operation(
     app: &AppHandle,
     lifecycle: &MainUiLifecycle,
@@ -752,7 +916,8 @@ fn enqueue_operation(
     intent: WakeIntent,
     hide_reason: Option<HideReason>,
 ) -> u64 {
-    let request_id = lifecycle.next_request_id.fetch_add(1, Ordering::Relaxed);
+    let new_request_id = lifecycle.next_request_id.fetch_add(1, Ordering::Relaxed);
+    let mut selected_request_id = new_request_id;
     let requested_at = Instant::now();
     let requested_unix_ms = unix_ms();
     let visible = main_window_is_visible(app);
@@ -790,7 +955,7 @@ fn enqueue_operation(
             inner.generation
         };
         let operation = LifecycleOperation {
-            request_id,
+            request_id: new_request_id,
             intent,
             requested_at,
             target,
@@ -803,7 +968,7 @@ fn enqueue_operation(
         };
 
         inner.pending_traces.push_back(PendingTrace {
-            request_id,
+            request_id: new_request_id,
             generation,
             intent,
             requested_at,
@@ -813,27 +978,53 @@ fn enqueue_operation(
         });
 
         let mut coalesced = false;
-        if let Some(in_flight) = inner.in_flight_target {
-            if in_flight == target {
-                inner.pending_operation = None;
-                coalesced = true;
-                if target == TargetVisibility::Visible && intent.requires_search() {
-                    if let Some(wake) = inner.active_wake.as_mut() {
-                        wake.intent = WakeIntent::Search;
-                    }
+        let in_flight_request_id = inner.in_flight_request_id;
+        if inner.in_flight_target == Some(target) {
+            coalesced = true;
+            if target == TargetVisibility::Visible && intent.requires_search() {
+                if let Some(wake) = inner.active_wake.as_mut() {
+                    wake.intent = WakeIntent::Search;
                 }
-            } else {
-                inner.pending_operation = Some(operation);
+            }
+            selected_request_id = canonical_request_id(
+                new_request_id,
+                target,
+                in_flight_request_id.zip(inner.in_flight_target),
+                inner
+                    .pending_operation
+                    .as_ref()
+                    .map(|pending| (pending.request_id, pending.target)),
+            );
+            if let Some(replaced) = inner.pending_operation.take() {
+                MainUiLifecycle::push_operation_outcome(
+                    &mut inner,
+                    replaced.request_id,
+                    OperationOutcome::Superseded,
+                );
             }
         } else if let Some(pending) = inner.pending_operation.as_mut() {
             if pending.target == target {
                 coalesced = true;
+                selected_request_id = canonical_request_id(
+                    new_request_id,
+                    target,
+                    None,
+                    Some((pending.request_id, pending.target)),
+                );
                 if intent.requires_search() {
                     pending.intent = WakeIntent::Search;
                     pending.source = source;
                 }
             } else {
-                inner.pending_operation = Some(operation);
+                let replaced = inner
+                    .pending_operation
+                    .replace(operation)
+                    .expect("pending operation");
+                MainUiLifecycle::push_operation_outcome(
+                    &mut inner,
+                    replaced.request_id,
+                    OperationOutcome::Superseded,
+                );
             }
         } else {
             inner.pending_operation = Some(operation);
@@ -841,13 +1032,15 @@ fn enqueue_operation(
 
         if coalesced {
             inner.pending_traces.push_back(PendingTrace {
-                request_id,
+                request_id: new_request_id,
                 generation,
                 intent,
                 requested_at,
                 requested_unix_ms,
                 phase: "coalesced",
-                detail: Some(format!("target={target:?}")),
+                detail: Some(format!(
+                    "target={target:?};canonical_request_id={selected_request_id}"
+                )),
             });
         }
 
@@ -863,7 +1056,7 @@ fn enqueue_operation(
             run_worker(app).await;
         });
     }
-    request_id
+    selected_request_id
 }
 
 pub fn request_test_hide(app: &AppHandle) -> Result<(u64, u64), String> {
@@ -931,8 +1124,10 @@ async fn run_worker(app: AppHandle) {
             let operation = inner.pending_operation.take();
             if let Some(operation) = operation.as_ref() {
                 inner.in_flight_target = Some(operation.target);
+                inner.in_flight_request_id = Some(operation.request_id);
             } else if inner.pending_traces.is_empty() {
                 inner.in_flight_target = None;
+                inner.in_flight_request_id = None;
                 inner.worker_running = false;
                 return;
             }
@@ -948,8 +1143,7 @@ async fn run_worker(app: AppHandle) {
             TargetVisibility::Hidden => run_hide_operation(&app, &lifecycle, &operation).await,
         };
 
-        let succeeded = result.is_ok();
-        if let Err(error) = result {
+        if let Err(error) = &result {
             lifecycle.record_trace(
                 &app,
                 operation.request_id,
@@ -969,7 +1163,7 @@ async fn run_worker(app: AppHandle) {
             lifecycle.set_phase(phase_from_native_state(&app, lifecycle.mode));
         }
 
-        lifecycle.record_operation_completion(operation.request_id, succeeded);
+        lifecycle.record_operation_completion(&operation, &result);
     }
 }
 
@@ -1021,7 +1215,9 @@ async fn run_show_operation(
         .ok_or_else(|| "main window is unavailable after wake".to_string())?;
     show_using_legacy_path(app, &window, operation.source)?;
     lifecycle.record_wake_trace(app, &wake, "visible", None);
-    crate::app::window_manager::activate_window_focus(app.clone())?;
+    if source_requires_focus(operation.source) {
+        crate::app::window_manager::activate_window_focus(app.clone())?;
+    }
 
     let (usable_ready, should_focus_search) = {
         let mut inner = lifecycle.lock_inner();
@@ -1068,6 +1264,10 @@ async fn run_show_operation(
         lifecycle.record_wake_trace(app, &wake, "ready", None);
     }
     Ok(())
+}
+
+fn source_requires_focus(source: WakeSource) -> bool {
+    source != WakeSource::TrayMenu
 }
 
 impl MainUiLifecycle {
@@ -1473,7 +1673,9 @@ pub fn report_main_ui_ready(app: AppHandle, report: MainUiReadyReport) -> Result
         }
         let native_focused = main_window_is_focused(&app);
         wake.focused = native_focused;
-        let usable_ready = wake.usable_ready() && main_window_is_visible(&app) && native_focused;
+        let usable_ready = wake.usable_ready()
+            && main_window_is_visible(&app)
+            && (!wake.requires_focus || native_focused);
         let became_ready = usable_ready && !wake.usable_ready_recorded;
         if became_ready {
             wake.usable_ready_recorded = true;
@@ -1651,8 +1853,9 @@ fn unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        expected_show_generation, ActiveWake, LifecycleMode, LifecyclePhase, MainUiLifecycle,
-        WakeIntent,
+        expected_show_generation, ActiveWake, HideReason, LifecycleMode, LifecycleOperation,
+        LifecyclePhase, MainUiLifecycle, OperationOutcome, TargetVisibility, WakeIntent,
+        WakeSource,
     };
     use std::time::Instant;
 
@@ -1667,6 +1870,7 @@ mod tests {
             search_ready: false,
             search_results_settled: false,
             focused: false,
+            requires_focus: true,
             search_focus_sent: false,
             usable_ready_recorded: false,
         }
@@ -1748,6 +1952,27 @@ mod tests {
     }
 
     #[test]
+    fn tray_menu_show_preserves_no_focus_baseline() {
+        assert!(!super::source_requires_focus(WakeSource::TrayMenu));
+        assert!(super::source_requires_focus(WakeSource::TrayClick));
+        assert!(super::source_requires_focus(WakeSource::Toggle));
+        assert!(super::source_requires_focus(WakeSource::Explicit));
+        assert!(super::source_requires_focus(WakeSource::SearchShortcut));
+        assert!(super::source_requires_focus(WakeSource::Test));
+
+        let mut tray_wake = wake(WakeIntent::Tray);
+        tray_wake.requires_focus = false;
+        tray_wake.hydrated = true;
+        assert!(tray_wake.usable_ready());
+
+        let mut tray_click_wake = wake(WakeIntent::Tray);
+        tray_click_wake.hydrated = true;
+        assert!(!tray_click_wake.usable_ready());
+        tray_click_wake.focused = true;
+        assert!(tray_click_wake.usable_ready());
+    }
+
+    #[test]
     fn usable_ready_recorded_distinguishes_first_settlement() {
         let mut wake = wake(WakeIntent::Test);
         wake.hydrated = true;
@@ -1762,16 +1987,117 @@ mod tests {
     fn failed_operation_is_not_reported_as_completed() {
         let lifecycle = MainUiLifecycle::new(LifecycleMode::Destroyed);
 
-        lifecycle.record_operation_completion(7, false);
+        let failed = LifecycleOperation {
+            request_id: 7,
+            intent: WakeIntent::Main,
+            requested_at: Instant::now(),
+            target: TargetVisibility::Hidden,
+            source: WakeSource::Explicit,
+            hide_reason: Some(HideReason::AfterPaste),
+        };
+        lifecycle.record_operation_completion(&failed, &Err("failed".to_string()));
         {
             let inner = lifecycle.lock_inner();
             assert_eq!(inner.completed_request_id, None);
             assert_eq!(inner.failed_request_id, Some(7));
         }
 
-        lifecycle.record_operation_completion(8, true);
+        let succeeded = LifecycleOperation {
+            request_id: 8,
+            ..failed
+        };
+        lifecycle.record_operation_completion(&succeeded, &Ok(()));
         let inner = lifecycle.lock_inner();
         assert_eq!(inner.completed_request_id, Some(8));
         assert_eq!(inner.failed_request_id, None);
+    }
+
+    #[test]
+    fn operation_outcomes_cover_success_failure_and_supersession() {
+        let lifecycle = MainUiLifecycle::new(LifecycleMode::Destroyed);
+        let operation = LifecycleOperation {
+            request_id: 11,
+            intent: WakeIntent::Main,
+            requested_at: Instant::now(),
+            target: TargetVisibility::Hidden,
+            source: WakeSource::Explicit,
+            hide_reason: Some(HideReason::PasteFocusRestore),
+        };
+        {
+            let mut inner = lifecycle.lock_inner();
+            MainUiLifecycle::push_operation_outcome(
+                &mut inner,
+                operation.request_id,
+                OperationOutcome::Superseded,
+            );
+            assert_eq!(
+                inner.operation_outcomes.back(),
+                Some(&(11, OperationOutcome::Superseded))
+            );
+            MainUiLifecycle::complete_operation_inner(&mut inner, &operation, &Ok(()));
+            assert_eq!(
+                inner.operation_outcomes.back(),
+                Some(&(11, OperationOutcome::Succeeded))
+            );
+            MainUiLifecycle::complete_operation_inner(
+                &mut inner,
+                &LifecycleOperation {
+                    request_id: 12,
+                    ..operation
+                },
+                &Err("boom".to_string()),
+            );
+            assert_eq!(
+                inner.operation_outcomes.back(),
+                Some(&(12, OperationOutcome::Failed("boom".to_string())))
+            );
+        }
+    }
+
+    #[test]
+    fn opposite_pending_target_supersedes_completed_operation_for_waiters() {
+        assert_eq!(
+            super::completion_outcome(
+                TargetVisibility::Hidden,
+                &Ok(()),
+                Some(TargetVisibility::Visible),
+            ),
+            OperationOutcome::Superseded
+        );
+        assert_eq!(
+            super::completion_outcome(TargetVisibility::Hidden, &Ok(()), None),
+            OperationOutcome::Succeeded
+        );
+    }
+
+    #[test]
+    fn same_target_coalescing_returns_the_canonical_request_id() {
+        assert_eq!(
+            super::canonical_request_id(
+                23,
+                TargetVisibility::Hidden,
+                Some((21, TargetVisibility::Hidden)),
+                None,
+            ),
+            21
+        );
+        assert_eq!(
+            super::canonical_request_id(
+                23,
+                TargetVisibility::Hidden,
+                None,
+                Some((22, TargetVisibility::Hidden)),
+            ),
+            22
+        );
+        assert_eq!(
+            super::canonical_request_id(
+                23,
+                TargetVisibility::Hidden,
+                Some((21, TargetVisibility::Visible)),
+                Some((22, TargetVisibility::Visible)),
+            ),
+            23
+        );
     }
 }

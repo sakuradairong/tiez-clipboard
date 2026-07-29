@@ -25,12 +25,12 @@ function Read-Issue154Report {
     $resolved = (Resolve-Path -LiteralPath $Path).Path
     $validatorPath = Join-Path $PSScriptRoot "validate_lifecycle_report.ps1"
     $validation = & $validatorPath -Report $resolved -PassThru
-    if (-not [bool]$validation.valid) {
+    if ($validation.valid -isnot [bool] -or -not $validation.valid) {
         throw "Report '$resolved' failed semantic validation."
     }
-    $report = [IO.File]::ReadAllText($resolved, [Text.Encoding]::UTF8) | ConvertFrom-Json
-    if ([int]$report.schema_version -ne 2) {
-        throw "Report '$resolved' must use schema_version 2."
+    $report = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($resolved, [Text.Encoding]::UTF8))
+    if ([int]$report.schema_version -ne 3) {
+        throw "Report '$resolved' must use schema_version 3."
     }
     return [ordered]@{
         path = $resolved
@@ -47,8 +47,8 @@ function Assert-Issue154Equal {
         [object]$DestroyedValue
     )
 
-    $hiddenJson = $HiddenValue | ConvertTo-Json -Compress -Depth 20
-    $destroyedJson = $DestroyedValue | ConvertTo-Json -Compress -Depth 20
+    $hiddenJson = ConvertTo-Json -InputObject $HiddenValue -Compress -Depth 20
+    $destroyedJson = ConvertTo-Json -InputObject $DestroyedValue -Compress -Depth 20
     if ($hiddenJson -cne $destroyedJson) {
         throw "Reports are not comparable: '$Name' differs. hidden=$hiddenJson destroyed=$destroyedJson"
     }
@@ -56,27 +56,32 @@ function Assert-Issue154Equal {
 
 function Get-Issue154Reduction {
     param(
+        [ValidateSet("private_working_set", "commit")]
+        [string]$Metric,
         [double]$HiddenBytes,
         [double]$DestroyedBytes,
         [double]$PercentThreshold,
-        [double]$MiBThreshold
+        [double]$MiBThreshold,
+        [bool]$RequireMiBThreshold
     )
 
     if ($HiddenBytes -le 0) {
-        throw "Hidden private working set must be greater than zero."
+        throw "Hidden $Metric bytes must be greater than zero."
     }
     $reductionBytes = $HiddenBytes - $DestroyedBytes
     $reductionMiB = $reductionBytes / 1048576.0
     $reductionPercent = ($reductionBytes / $HiddenBytes) * 100.0
     return [ordered]@{
-        hidden_private_working_set_bytes = [int64]$HiddenBytes
-        destroyed_private_working_set_bytes = [int64]$DestroyedBytes
+        metric = $Metric
+        hidden_bytes = [int64]$HiddenBytes
+        destroyed_bytes = [int64]$DestroyedBytes
         reduction_bytes = [int64]$reductionBytes
         reduction_mib = [Math]::Round($reductionMiB, 1)
         reduction_percent = [Math]::Round($reductionPercent, 1)
         percent_threshold = $PercentThreshold
         mib_threshold = $MiBThreshold
-        pass = [bool]($reductionPercent -ge $PercentThreshold -and $reductionMiB -ge $MiBThreshold)
+        mib_threshold_required = $RequireMiBThreshold
+        pass = [bool]($reductionPercent -ge $PercentThreshold -and (-not $RequireMiBThreshold -or $reductionMiB -ge $MiBThreshold))
     }
 }
 
@@ -91,17 +96,18 @@ if ([string]$hiddenReportData.mode -cne "hidden") {
 if ([string]$destroyedReportData.mode -cne "destroyed") {
     throw "DestroyedReport must have mode 'destroyed'."
 }
-if (-not [bool]$hiddenReportData.summary.single_mode_functional_pass) {
+if ($hiddenReportData.summary.single_mode_functional_pass -isnot [bool] -or -not $hiddenReportData.summary.single_mode_functional_pass) {
     throw "Hidden report did not pass its single-mode functional gates."
 }
-if (-not [bool]$destroyedReportData.summary.single_mode_functional_pass) {
+if ($destroyedReportData.summary.single_mode_functional_pass -isnot [bool] -or -not $destroyedReportData.summary.single_mode_functional_pass) {
     throw "Destroyed report did not pass its single-mode functional gates."
 }
 if ([int]$hiddenReportData.protocol.cycles -lt 100 -or [int]$destroyedReportData.protocol.cycles -lt 100) {
     throw "Both reports must contain at least 100 lifecycle cycles."
 }
-if ([int]$hiddenReportData.protocol.memory_runs -lt 5 -or [int]$destroyedReportData.protocol.memory_runs -lt 5) {
-    throw "Both reports must contain at least five complete memory runs."
+if ([int]$hiddenReportData.protocol.memory_runs -lt 5 -or [int]$hiddenReportData.protocol.memory_runs -gt 99 -or ([int]$hiddenReportData.protocol.memory_runs % 2) -ne 1 -or
+    [int]$destroyedReportData.protocol.memory_runs -lt 5 -or [int]$destroyedReportData.protocol.memory_runs -gt 99 -or ([int]$destroyedReportData.protocol.memory_runs % 2) -ne 1) {
+    throw "Both reports must contain an odd number of complete memory runs from five through 99."
 }
 if (@($hiddenReportData.cycles).Count -ne [int]$hiddenReportData.protocol.cycles -or
     @($destroyedReportData.cycles).Count -ne [int]$destroyedReportData.protocol.cycles) {
@@ -114,6 +120,10 @@ if (@($hiddenReportData.memory_runs).Count -ne [int]$hiddenReportData.protocol.m
 
 Assert-Issue154Equal -Name "executable_sha256" -HiddenValue $hiddenReportData.executable_sha256 -DestroyedValue $destroyedReportData.executable_sha256
 Assert-Issue154Equal -Name "executable_arguments" -HiddenValue $hiddenReportData.executable_arguments -DestroyedValue $destroyedReportData.executable_arguments
+if ($hiddenReportData.root_command_line.verified -isnot [bool] -or -not $hiddenReportData.root_command_line.verified -or
+    $destroyedReportData.root_command_line.verified -isnot [bool] -or -not $destroyedReportData.root_command_line.verified) {
+    throw "Both reports must contain verified root command-line evidence."
+}
 Assert-Issue154Equal -Name "main_window_title" -HiddenValue $hiddenReportData.main_window_title -DestroyedValue $destroyedReportData.main_window_title
 Assert-Issue154Equal -Name "host.os_version" -HiddenValue $hiddenReportData.host.os_version -DestroyedValue $destroyedReportData.host.os_version
 Assert-Issue154Equal -Name "host.os_build" -HiddenValue $hiddenReportData.host.os_build -DestroyedValue $destroyedReportData.host.os_build
@@ -124,6 +134,11 @@ Assert-Issue154Equal -Name "protocol.cycles" -HiddenValue $hiddenReportData.prot
 Assert-Issue154Equal -Name "protocol.memory_runs" -HiddenValue $hiddenReportData.protocol.memory_runs -DestroyedValue $destroyedReportData.protocol.memory_runs
 Assert-Issue154Equal -Name "protocol.memory_samples_seconds" -HiddenValue $hiddenReportData.protocol.memory_samples_seconds -DestroyedValue $destroyedReportData.protocol.memory_samples_seconds
 Assert-Issue154Equal -Name "protocol.memory_scope" -HiddenValue $hiddenReportData.protocol.memory_scope -DestroyedValue $destroyedReportData.protocol.memory_scope
+Assert-Issue154Equal -Name "protocol.process_identity_key" -HiddenValue $hiddenReportData.protocol.process_identity_key -DestroyedValue $destroyedReportData.protocol.process_identity_key
+Assert-Issue154Equal -Name "protocol.process_attribution_rule" -HiddenValue $hiddenReportData.protocol.process_attribution_rule -DestroyedValue $destroyedReportData.protocol.process_attribution_rule
+$hiddenWebView2Folders = @($hidden.validation.webview2_user_data_folders | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+$destroyedWebView2Folders = @($destroyed.validation.webview2_user_data_folders | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+Assert-Issue154Equal -Name "baseline WebView2 user-data-dir scope" -HiddenValue $hiddenWebView2Folders -DestroyedValue $destroyedWebView2Folders
 
 $manualContextFieldNames = @(
     "data_snapshot",
@@ -143,20 +158,38 @@ foreach ($fieldName in $manualContextFieldNames) {
     }
 }
 
-$after5s = Get-Issue154Reduction `
+$privateAfter5s = Get-Issue154Reduction `
+    -Metric "private_working_set" `
     -HiddenBytes ([double]$hidden.validation.median_after_5s_private_working_set_bytes) `
     -DestroyedBytes ([double]$destroyed.validation.median_after_5s_private_working_set_bytes) `
     -PercentThreshold $MemoryReductionPercentThreshold `
-    -MiBThreshold $MemoryReductionMiBThreshold
-$after30s = Get-Issue154Reduction `
+    -MiBThreshold $MemoryReductionMiBThreshold `
+    -RequireMiBThreshold $true
+$privateAfter30s = Get-Issue154Reduction `
+    -Metric "private_working_set" `
     -HiddenBytes ([double]$hidden.validation.median_after_30s_private_working_set_bytes) `
     -DestroyedBytes ([double]$destroyed.validation.median_after_30s_private_working_set_bytes) `
     -PercentThreshold $MemoryReductionPercentThreshold `
-    -MiBThreshold $MemoryReductionMiBThreshold
-$pairedMemoryGatePass = [bool]($after5s.pass -and $after30s.pass)
+    -MiBThreshold $MemoryReductionMiBThreshold `
+    -RequireMiBThreshold $true
+$commitAfter5s = Get-Issue154Reduction `
+    -Metric "commit" `
+    -HiddenBytes ([double]$hidden.validation.median_after_5s_commit_bytes) `
+    -DestroyedBytes ([double]$destroyed.validation.median_after_5s_commit_bytes) `
+    -PercentThreshold $MemoryReductionPercentThreshold `
+    -MiBThreshold $MemoryReductionMiBThreshold `
+    -RequireMiBThreshold $false
+$commitAfter30s = Get-Issue154Reduction `
+    -Metric "commit" `
+    -HiddenBytes ([double]$hidden.validation.median_after_30s_commit_bytes) `
+    -DestroyedBytes ([double]$destroyed.validation.median_after_30s_commit_bytes) `
+    -PercentThreshold $MemoryReductionPercentThreshold `
+    -MiBThreshold $MemoryReductionMiBThreshold `
+    -RequireMiBThreshold $false
+$pairedMemoryGatePass = [bool]($privateAfter5s.pass -and $privateAfter30s.pass -and $commitAfter5s.pass -and $commitAfter30s.pass)
 
 $document = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     captured_at_utc = [DateTime]::UtcNow.ToString("o")
     executable_sha256 = [string]$hiddenReportData.executable_sha256
     hidden_report = [ordered]@{
@@ -171,6 +204,7 @@ $document = [ordered]@{
     }
     comparability = [ordered]@{
         exact_executable_hash = $true
+        root_command_lines_verified = $true
         executable_arguments = $hiddenReportData.executable_arguments
         main_window_title = $hiddenReportData.main_window_title
         host_os_version = $hiddenReportData.host.os_version
@@ -182,6 +216,10 @@ $document = [ordered]@{
         memory_runs = [int]$hiddenReportData.protocol.memory_runs
         memory_samples_seconds = $hiddenReportData.protocol.memory_samples_seconds
         memory_scope = $hiddenReportData.protocol.memory_scope
+        process_identity_key = $hiddenReportData.protocol.process_identity_key
+        process_attribution_rule = $hiddenReportData.protocol.process_attribution_rule
+        cross_run_process_identity_set_equality_required = $false
+        webview2_user_data_folders = $hidden.validation.webview2_user_data_folders
         requires_manual_same_data_features_services_power_state_confirmation = $true
         manual_comparability_confirmed = $false
         manual_context_complete = [bool]$manualContextComplete
@@ -194,8 +232,14 @@ $document = [ordered]@{
         reduction_mib = $MemoryReductionMiBThreshold
         horizons_seconds = @(5, 30)
     }
-    after_5s = $after5s
-    after_30s = $after30s
+    after_5s = [ordered]@{
+        private_working_set = $privateAfter5s
+        commit = $commitAfter5s
+    }
+    after_30s = [ordered]@{
+        private_working_set = $privateAfter30s
+        commit = $commitAfter30s
+    }
     paired_memory_gate_pass = $pairedMemoryGatePass
     overall_pass = $null
     overall_pass_note = "Set only in signed-off evidence after manual comparability, Process Explorer/ETW process-set cross-check, and all native accessibility/IME/focus/paste/background-service gates are independently confirmed."
@@ -208,7 +252,17 @@ if (-not [string]::IsNullOrEmpty($outputDirectory)) {
 }
 $json = $document | ConvertTo-Json -Depth 30
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-[IO.File]::WriteAllText($outputPath, $json, $utf8NoBom)
+$temporaryOutputPath = Join-Path $outputDirectory (".{0}.{1}.json" -f ([IO.Path]::GetFileName($outputPath)), [Guid]::NewGuid().ToString("N"))
+[IO.File]::WriteAllText($temporaryOutputPath, $json, $utf8NoBom)
 $pairValidatorPath = Join-Path $PSScriptRoot "validate_lifecycle_pair.ps1"
-& $pairValidatorPath -PairReport $outputPath | Out-Null
+$published = $false
+try {
+    & $pairValidatorPath -PairReport $temporaryOutputPath | Out-Null
+    Move-Item -LiteralPath $temporaryOutputPath -Destination $outputPath -Force
+    $published = $true
+} finally {
+    if (-not $published -and (Test-Path -LiteralPath $temporaryOutputPath)) {
+        Remove-Item -LiteralPath $temporaryOutputPath -Force -ErrorAction SilentlyContinue
+    }
+}
 $json

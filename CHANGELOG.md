@@ -9,6 +9,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Added
 
 - Added a default-off Issue #154 Stage B main-WebView lifecycle prototype, internal filesystem harness, Windows measurement and paired-comparison scripts, and JSON evidence schemas.
+- Added generated Stage B validator fixtures and stricter lifecycle, process-attribution, command-line, paired-comparability, private-working-set, and commit-release evidence checks.
 
 ## [0.3.8] - 2026-07-27
 

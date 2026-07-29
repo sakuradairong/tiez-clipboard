@@ -531,14 +531,14 @@ pub async fn paste_history_item_by_index(
 }
 
 async fn handle_window_focus_for_paste(app_handle: &tauri::AppHandle) -> AppResult<()> {
-    // 1. Only restore focus if our window actually took focus; avoids unnecessary focus flips
-    // that can force fullscreen apps into windowed mode.
-    if crate::IS_MAIN_WINDOW_FOCUSED.load(Ordering::Relaxed) {
-        let _ = restore_focus_before_paste(app_handle).await;
-    }
+    // Snapshot this before the experimental hide resets the global focus marker.
+    let should_restore_focus = crate::IS_MAIN_WINDOW_FOCUSED.load(Ordering::Relaxed);
 
-    // 2. Then handle the specific visibility logic based on pinned state
     if crate::WINDOW_PINNED.load(Ordering::Relaxed) {
+        // Preserve the pinned-mode baseline: restore focus before making the window non-focusable.
+        if should_restore_focus {
+            let _ = restore_focus_before_paste(app_handle).await;
+        }
         // In pinned mode, stay visible but ensure window does NOT have focus
         if let Some(window) = app_handle.get_webview_window("main") {
             // Make sure the window doesn't steal focus back
@@ -546,11 +546,28 @@ async fn handle_window_focus_for_paste(app_handle: &tauri::AppHandle) -> AppResu
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     } else {
-        // In auto-hide mode, hide the window now
-        crate::app::main_ui_lifecycle::request_hide(
-            app_handle,
-            crate::app::main_ui_lifecycle::HideReason::PasteFocusRestore,
-        );
+        if crate::app::main_ui_lifecycle::is_experimental(app_handle) {
+            crate::app::main_ui_lifecycle::request_hide_and_wait(
+                app_handle,
+                crate::app::main_ui_lifecycle::HideReason::PasteFocusRestore,
+            )
+            .await
+            .map_err(AppError::Internal)?;
+            // Restore the paste target only after the experimental WebView has reached its real
+            // hidden/destroyed state so teardown cannot race the foreground transition.
+            if should_restore_focus {
+                let _ = restore_focus_before_paste(app_handle).await;
+            }
+        } else {
+            // Preserve the default-mode ordering: restore focus first, then synchronously hide.
+            if should_restore_focus {
+                let _ = restore_focus_before_paste(app_handle).await;
+            }
+            crate::app::main_ui_lifecycle::request_hide(
+                app_handle,
+                crate::app::main_ui_lifecycle::HideReason::PasteFocusRestore,
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
     Ok(())
@@ -1109,10 +1126,15 @@ async fn hide_window_after_paste(app_handle: &tauri::AppHandle) {
         return;
     }
 
-    if crate::app::main_ui_lifecycle::request_hide(
+    if crate::app::main_ui_lifecycle::request_hide_and_wait(
         app_handle,
         crate::app::main_ui_lifecycle::HideReason::AfterPaste,
-    ) {
+    )
+    .await
+    .unwrap_or_else(|error| {
+        crate::error!(">>> [UI_LIFECYCLE] post-paste hide failed: {error}");
+        false
+    }) {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }

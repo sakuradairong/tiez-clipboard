@@ -63,20 +63,24 @@ Run hidden and destroyed against the **same executable SHA-256** and otherwise m
 - Each of the worst five latencies is `<= 1500 ms`.
 - At least five independent down-state memory runs.
 - Each memory run samples the recursively discovered app process tree plus `msedgewebview2.exe` processes sharing the baseline `--user-data-dir`, after 5 seconds and 30 seconds.
-- Every accepted memory sample must match the baseline related-process identity keys (`role|executable_path|started_at_utc`); a process-set change invalidates the sample instead of silently changing the denominator.
+- The measured root identity is fixed for the entire single-mode run. Its process-instance identity key is `pid|role|executable_path|started_at_utc`; PID is paired with start time to distinguish reuse.
+- Every sample dynamically enumerates the complete current root descendant tree and all `msedgewebview2.exe` processes in the baseline normalized `--user-data-dir` scope. WebView2 processes may legitimately exit or be recreated in destroyed mode, so each sample records exact identities added to and missing from the visible baseline rather than requiring an impossible frozen PID/start-time set.
+- Process count, role counts, identity differences, and memory totals are recomputed from each sample's `processes` array. A missing root identity or a changed normalized WebView2 user-data-dir attribution scope invalidates the sample.
 
-The single-mode schema is `docs/performance/issue-154-lifecycle-report.schema.json` (schema version 2). Its `overall_pass` and paired memory result remain `null` by design.
+The single-mode schema is `docs/performance/issue-154-lifecycle-report.schema.json` (schema version 3). Its `overall_pass` and paired memory result remain `null` by design. The paired schema is version 2.
 
 ### Paired hidden-vs-destroyed gate
 
-A single-mode report cannot establish the memory benefit. Pair reports only when executable hash and all non-mode configuration match. At **both 5 seconds and 30 seconds**, destroyed must reduce the median full-process-tree private working set relative to hidden by:
+A single-mode report cannot establish the memory benefit. Pair reports only when executable hash and all non-mode configuration match. At **both 5 seconds and 30 seconds**, destroyed must reduce the median full attributed related-process-set private working set relative to hidden by:
 
 - at least 40 percent, and
 - at least 50 MiB.
 
-Cross-check the captured process identities with Process Explorer and ETW/WPR before treating the attributed related-process set as complete. `experiments/issue-154-native-ui/compare_lifecycle_reports.ps1` computes this gate and rejects mismatched executable hashes, arguments, hosts, cycle counts, sample horizons, or process scopes. Its output validates against `docs/performance/issue-154-lifecycle-pair.schema.json`. It deliberately leaves `overall_pass` null until manual comparability, the process-set cross-check, and native behavior gates are signed off.
+Cross-check the captured process identities with Process Explorer and ETW/WPR before treating the attributed related-process set as complete. `experiments/issue-154-native-ui/compare_lifecycle_reports.ps1` computes this gate and rejects mismatched executable hashes, verified root arguments, hosts, cycle counts, sample horizons, process scopes, attribution-rule versions, or normalized WebView2 user-data-dir scopes. Hidden and destroyed reports come from independent process launches, so the comparator deliberately does **not** compare their PID/start-time identity sets; the pair contract records `cross_run_process_identity_set_equality_required=false`. Its output validates against `docs/performance/issue-154-lifecycle-pair.schema.json`. It deliberately leaves `overall_pass` null until manual comparability, the process-set cross-check, and native behavior gates are signed off.
 
 Accessibility, IME, focus restoration, paste behavior, tray and shortcut behavior, sync/background services, and crash/failure behavior are separate required Windows checks. Do not trade accessibility support for the approximately 1 to 1.4 MiB saving observed in earlier screening.
+
+Static parity rules keep the default-off path unchanged. In experiment mode, pre-paste focus restoration waits until the hidden/destroyed transition completes, post-paste hide waits for the same completion acknowledgement, tray-menu show preserves the baseline show-without-explicit-focus behavior, and tray-icon click plus other wake sources retain explicit focus. Windows validation must still exercise paste-to-origin and tray timing against native focus behavior.
 
 ## Windows runbook
 
@@ -109,7 +113,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experiments\issue-154-
   -Output "$out\hidden-vs-destroyed.json"
 ```
 
-Validate both raw reports against the draft-07 schema. Confirm `executable_sha256` is identical. Do not infer the paired memory gate from the per-mode baseline-ready sample because the acceptance comparison is destroyed versus hidden at the same down-state horizons.
+Validate both raw reports against the draft-07 schema. Confirm `executable_sha256` is identical. Do not infer the paired memory gate from the per-mode baseline-ready sample because the acceptance comparison is destroyed versus hidden at the same down-state horizons. At both 5 s and 30 s, private working set must release at least 40% and 50 MiB, and median commit/private bytes must independently release at least 40% to rule out a paging-only result.
+
+Before a Windows run, execute `experiments/issue-154-native-ui/test_lifecycle_validators.ps1`. It generates compact hidden/destroyed reports with 100 cycles and five memory runs, verifies the single and paired semantic validators, and rejects focused adversarial mutations. When Python 3 plus `jsonschema` is available it also runs draft-07 schema checks; otherwise pass `-SkipSchemaValidation` only for the PowerShell semantic pass and run the generated output through the schemas separately. These fixtures are tooling tests, not Windows evidence.
 
 ## Evidence filing skeleton
 
@@ -121,7 +127,7 @@ Create a dated note under `docs/performance/` only after a real Windows run:
 - Host: Windows 11 version/build, CPU, RAM, power plan.
 - WebView2 Runtime: version.
 - TieZ executable: path, version, commit, SHA-256.
-- Reports: hidden path/hash; destroyed path/hash; schema version 2.
+- Reports: hidden path/hash; destroyed path/hash; single schema version 3 and pair schema version 2.
 - Same executable and non-mode configuration: yes/no, with evidence.
 - Test data/profile and enabled services: describe.
 - Process Explorer and ETW/WPR descendant-set cross-check: describe.
@@ -132,8 +138,8 @@ Create a dated note under `docs/performance/` only after a real Windows run:
 | Hidden 100 cycles and readiness latency |  |  |
 | Destroyed 100 cycles and readiness latency |  |  |
 | Down-state clipboard listener plus unique history token |  |  |
-| 5 s destroyed-vs-hidden memory >=40% and >=50 MiB |  |  |
-| 30 s destroyed-vs-hidden memory >=40% and >=50 MiB |  |  |
+| 5 s private working set >=40% and >=50 MiB; commit >=40% |  |  |
+| 30 s private working set >=40% and >=50 MiB; commit >=40% |  |  |
 | Accessibility and Narrator |  |  |
 | IME composition |  |  |
 | Focus/no-activate semantics |  |  |
@@ -148,7 +154,7 @@ Do not mark Stage B as passing until the paired memory gate and all native-behav
 
 ## Current blockers
 
-- This Linux host has no PowerShell, Windows Rust target, WebView2, or Windows 11 GUI machine. It can validate Rust/frontend compilation, tests, JSON structure, and static protocol agreement only.
-- The script has not received a PowerShell 5.1 AST parse or an end-to-end Windows run.
+- This Linux host has no Windows PowerShell 5.1, Windows Rust target, WebView2, or Windows 11 GUI machine. It can validate Rust/frontend compilation, tests, JSON structure, PowerShell 7 logic, and static protocol agreement only.
+- The scripts still require the same generated fixtures under Windows PowerShell 5.1 and an end-to-end Windows run.
 - The paired comparator, ETW/WPR capture, Process Explorer cross-check, accessibility/Narrator, IME, real focus, paste, tray/shortcut, and service-survival tests remain Windows validation work.
 - No Windows conclusion should be inferred from Linux/WebKitGTK screening.

@@ -223,6 +223,40 @@ function Get-Issue154LockedFileSha256 {
     return (Get-FileHash -InputStream $Stream -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-Issue154VerifiedRootCommandLine {
+    param(
+        [int]$RootProcessId,
+        [string]$ExpectedExecutable,
+        [string[]]$ExpectedArguments
+    )
+
+    $rootCimProcess = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f $RootProcessId)
+    if ($null -eq $rootCimProcess -or [string]::IsNullOrWhiteSpace([string]$rootCimProcess.CommandLine)) {
+        throw "Measured root process command line is unavailable."
+    }
+    $parsed = @([Issue154LifecycleNative]::SplitCommandLine([string]$rootCimProcess.CommandLine))
+    if ($parsed.Count -eq 0) {
+        throw "Measured root process command line did not contain an executable."
+    }
+    $observedExecutable = ConvertTo-Issue154NormalizedPath -Path ([string]$parsed[0])
+    $expectedExecutablePath = ConvertTo-Issue154NormalizedPath -Path $ExpectedExecutable
+    if (-not [string]::Equals($observedExecutable, $expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Measured root process executable differs from the requested executable. Expected '$expectedExecutablePath', found '$observedExecutable'."
+    }
+    $observedArguments = @($parsed | Select-Object -Skip 1)
+    $expectedJson = ConvertTo-Json -InputObject @($ExpectedArguments) -Compress
+    $observedJson = ConvertTo-Json -InputObject @($observedArguments) -Compress
+    if ($observedJson -cne $expectedJson) {
+        throw "Measured root process arguments differ from the requested arguments. Expected $expectedJson, found $observedJson."
+    }
+    return [ordered]@{
+        raw = [string]$rootCimProcess.CommandLine
+        executable = $observedExecutable
+        arguments = $observedArguments
+        verified = $true
+    }
+}
+
 function Get-Issue154ProcessTreeIds {
     param(
         [int]$RootProcessId,
@@ -359,6 +393,29 @@ function Get-Issue154ProcessTreeSample {
                 }
             }
         }
+        if ($treeWebView2UserDataFolders.Count -eq 0) {
+            throw "Process sample has no normalized WebView2 --user-data-dir attribution scope."
+        }
+        $outOfScopeDescendantWebView2 = @(
+            $treeIds |
+                Where-Object {
+                    $candidate = $cimById[[int]$_]
+                    if ([string]$candidate.Name -notmatch '^msedgewebview2\.exe$') {
+                        return $false
+                    }
+                    $candidateFolder = Get-Issue154WebView2UserDataFolder -CommandLine ([string]$candidate.CommandLine)
+                    if ([string]::IsNullOrWhiteSpace($candidateFolder)) {
+                        return $false
+                    }
+                    @(
+                        $treeWebView2UserDataFolders |
+                            Where-Object { [string]::Equals($_, $candidateFolder, [StringComparison]::OrdinalIgnoreCase) }
+                    ).Count -eq 0
+                }
+        )
+        if ($outOfScopeDescendantWebView2.Count -gt 0) {
+            throw "A descendant WebView2 process used a --user-data-dir outside the fixed baseline attribution scope."
+        }
         $treeIds = @($attributedIds | Sort-Object)
         $processes = @()
         $sampleIncomplete = $false
@@ -408,6 +465,11 @@ function Get-Issue154ProcessTreeSample {
                 role = Get-Issue154ProcessRole -ProcessId $processId -RootProcessId $RootProcessId -Name $process.ProcessName -CommandLine ([string]$cimProcess.CommandLine)
                 attribution = if ($treeIdSet.Contains($processId)) { "descendant" } else { "webview2_user_data_dir" }
                 executable_path = [string]$cimProcess.ExecutablePath
+                webview2_user_data_folder = if ([string]$cimProcess.Name -match '^msedgewebview2\.exe$') {
+                    Get-Issue154WebView2UserDataFolder -CommandLine ([string]$cimProcess.CommandLine)
+                } else {
+                    $null
+                }
                 started_at_utc = $processStartUtc.ToString("o")
                 working_set_bytes = [int64]$process.WorkingSet64
                 private_working_set_bytes = [int64]$performanceProcess.WorkingSetPrivate
@@ -418,7 +480,7 @@ function Get-Issue154ProcessTreeSample {
         if (-not $sampleIncomplete -and $processes.Count -gt 0) {
             $processIdentityKeys = @(
                 $processes |
-                    ForEach-Object { "{0}|{1}|{2}" -f $_.role, $_.executable_path, $_.started_at_utc } |
+                    ForEach-Object { "{0}|{1}|{2}|{3}" -f $_.pid, $_.role, $_.executable_path, $_.started_at_utc } |
                     Sort-Object -Unique
             )
             $referenceProcessIdentityKeys = if ($ReferenceProcessIdentityKeys.Count -gt 0) {
@@ -434,6 +496,14 @@ function Get-Issue154ProcessTreeSample {
                 $referenceProcessIdentityKeys |
                     Where-Object { $processIdentityKeys -cnotcontains $_ }
             )
+            $roleCounts = New-Object System.Collections.Specialized.OrderedDictionary
+            foreach ($process in $processes) {
+                if ($roleCounts.Contains([string]$process.role)) {
+                    $roleCounts[[string]$process.role]++
+                } else {
+                    $roleCounts[[string]$process.role] = 1
+                }
+            }
             return [ordered]@{
                 captured_at_utc = [DateTime]::UtcNow.ToString("o")
                 process_count = $processes.Count
@@ -444,6 +514,7 @@ function Get-Issue154ProcessTreeSample {
                 reference_process_identity_keys = $referenceProcessIdentityKeys
                 identities_added_from_reference = $identitiesAddedFromReference
                 identities_missing_from_reference = $identitiesMissingFromReference
+                role_counts = $roleCounts
                 working_set_bytes = [int64](($processes | Measure-Object -Property working_set_bytes -Sum).Sum)
                 private_working_set_bytes = [int64](($processes | Measure-Object -Property private_working_set_bytes -Sum).Sum)
                 commit_bytes = [int64](($processes | Measure-Object -Property commit_bytes -Sum).Sum)
@@ -492,11 +563,11 @@ function Invoke-Issue154LifecycleCommand {
     $requestPath = Join-Path $harnessDirectory ("{0}.request.json" -f $requestId)
     $responsePath = Join-Path $harnessDirectory ("{0}.response.json" -f $requestId)
     $tmpRequestPath = Join-Path $harnessDirectory (".{0}.request.json.{1}.tmp" -f $requestId, $PID)
-    $body = [ordered]@{
+    $body = ConvertTo-Json -InputObject ([ordered]@{
         id = $requestId
         command = $CommandName
         payload = $Payload
-    } | ConvertTo-Json -Depth 20
+    }) -Depth 20
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [IO.File]::WriteAllText($tmpRequestPath, $body, $utf8NoBom)
@@ -507,7 +578,7 @@ function Invoke-Issue154LifecycleCommand {
         if ([IO.File]::Exists($responsePath)) {
             try {
                 $content = [IO.File]::ReadAllText($responsePath, [System.Text.Encoding]::UTF8)
-                $response = $content | ConvertFrom-Json
+                $response = ConvertFrom-Json -InputObject $content
             } catch {
                 Start-Sleep -Milliseconds $PollIntervalMilliseconds
                 continue
@@ -516,7 +587,7 @@ function Invoke-Issue154LifecycleCommand {
             if ($response.id -cne $requestId) {
                 throw "Lifecycle harness response id mismatch. Expected '$requestId', got '$($response.id)'."
             }
-            if (-not [bool]$response.success) {
+            if ($response.success -isnot [bool] -or -not $response.success) {
                 throw "Lifecycle harness command '$CommandName' failed: $($response.error)"
             }
             try {
@@ -589,7 +660,8 @@ function Test-Issue154ClipboardProbePayload {
     )
     $eventIncreased = Test-Issue154PositiveValue -Value $eventValue
 
-    $exactMatch = [bool](Get-Issue154PropertyValue -Object $Payload -Names @("exact_history_match"))
+    $exactMatchValue = Get-Issue154PropertyValue -Object $Payload -Names @("exact_history_match")
+    $exactMatch = $exactMatchValue -is [bool] -and $exactMatchValue
     $exactMatchCount = Get-Issue154PropertyValue -Object $Payload -Names @("exact_history_match_count")
     $persistentId = Get-Issue154PropertyValue -Object $Payload -Names @("persisted_entry_id")
     $sessionId = Get-Issue154PropertyValue -Object $Payload -Names @("session_entry_id")
@@ -730,6 +802,7 @@ $rootProcessStartUtc = $null
 $cyclesResult = @()
 $baselineSnapshot = $null
 $baselineSample = $null
+$rootCommandLine = $null
 $memoryAfter5s = $null
 $memoryAfter30s = $null
 $memoryRunsResult = @()
@@ -768,6 +841,10 @@ try {
     if ($executableSha256BeforeStart -cne $executableSha256AfterStart) {
         throw "Executable SHA-256 changed while the measured process was starting."
     }
+    $rootCommandLine = Get-Issue154VerifiedRootCommandLine `
+        -RootProcessId $rootProcess.Id `
+        -ExpectedExecutable $resolvedExecutable `
+        -ExpectedArguments $ExecutableArgument
 
     $baselineSnapshot = Wait-Issue154LifecycleSnapshot -RootProcessId $rootProcess.Id -ExpectedPhase "ready" -InitialReady -TimeoutSeconds $WindowTimeoutSeconds
     $baselineSample = Get-Issue154ProcessTreeSample `
@@ -822,8 +899,8 @@ try {
             clipboard_activity_history_consistent = $clipboardOk
             generation = $readySnapshot.generation
         }
-        if ($mainCount -gt 1) {
-            throw "Cycle $cycle observed more than one visible main window."
+        if ($mainCount -ne 1) {
+            throw "Cycle $cycle did not observe exactly one visible main window after wake."
         }
         if (-not $clipboardOk) {
             throw "Cycle $cycle clipboard probe did not confirm listener event increase and exact history token match."
@@ -913,7 +990,7 @@ $latencies = @($cyclesResult | ForEach-Object { [double]$_.requested_visible_foc
 $worstFive = @($latencies | Sort-Object -Descending | Select-Object -First 5)
 $latencyGatePass = (Get-Issue154Median -Values $latencies) -le $SearchReadyMedianThresholdMilliseconds -and (($worstFive | Measure-Object -Maximum).Maximum) -le $SearchReadyWorstFiveThresholdMilliseconds
 $clipboardGatePass = @($cyclesResult | Where-Object { -not $_.clipboard_activity_history_consistent }).Count -eq 0
-$lifecycleGatePass = @($cyclesResult | Where-Object { $_.main_window_count -gt 1 -or $_.down_phase -ne $Mode -or $_.ready_phase -ne "ready" }).Count -eq 0
+$lifecycleGatePass = @($cyclesResult | Where-Object { $_.main_window_count -ne 1 -or $_.down_phase -ne $Mode -or $_.ready_phase -ne "ready" }).Count -eq 0
 $generationGatePass = @(
     $cyclesResult |
         Where-Object { [uint64]$_.generation -ne [uint64]$_.show_response.expected_generation }
@@ -959,7 +1036,7 @@ if ($executableSha256BeforeStart -cne $executableSha256AfterRun) {
 }
 
 $document = [ordered]@{
-    schema_version = 2
+    schema_version = 3
     label = $Label
     captured_at_utc = [DateTime]::UtcNow.ToString("o")
     executable = $resolvedExecutable
@@ -970,6 +1047,7 @@ $document = [ordered]@{
         after_run = $executableSha256AfterRun
     }
     executable_arguments = $ExecutableArgument
+    root_command_line = $rootCommandLine
     main_window_title = $MainWindowTitle
     mode = $Mode
     protocol = [ordered]@{
@@ -988,6 +1066,10 @@ $document = [ordered]@{
         memory_samples_seconds = @($FastMemorySettleSeconds, $MemorySettleSeconds)
         memory_sampling_state = "independent $Mode down state for each memory run, followed by explicit lifecycle_test_show and ready wait"
         memory_scope = "root process plus recursively discovered descendants and msedgewebview2 processes sharing the baseline --user-data-dir"
+        process_identity_key = "pid|role|executable_path|started_at_utc"
+        process_attribution_rule = "root-descendants-plus-webview2-baseline-user-data-dir-v1"
+        stable_root_identity_required = $true
+        dynamic_process_identity_churn_allowed = $true
         descendant_tree_requires_process_explorer_etw_cross_check = $true
         paired_memory_gate = "pending; this single-mode report intentionally does not compute the hidden-vs-destroyed comparison gate. Compare matched reports from the same executable/configuration in a pair script or later analysis. Thresholds reserved for that paired analysis: >= $MemoryReductionPercentThreshold percent and >= $MemoryReductionMiBThreshold MiB at both horizons."
         clipboard_check = "while down, Set-Clipboard writes a unique token and get_main_ui_lifecycle_clipboard_probe must report listener event increase plus exact token in persistent or session history"
@@ -1044,7 +1126,17 @@ $document = [ordered]@{
 
 $json = $document | ConvertTo-Json -Depth 50
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-[IO.File]::WriteAllText($outputPath, $json, $utf8NoBom)
+$temporaryOutputPath = Join-Path $outputDirectory (".{0}.{1}.json" -f ([IO.Path]::GetFileName($outputPath)), [Guid]::NewGuid().ToString("N"))
+[IO.File]::WriteAllText($temporaryOutputPath, $json, $utf8NoBom)
 $validatorPath = Join-Path $PSScriptRoot "validate_lifecycle_report.ps1"
-& $validatorPath -Report $outputPath | Out-Null
+$published = $false
+try {
+    & $validatorPath -Report $temporaryOutputPath | Out-Null
+    Move-Item -LiteralPath $temporaryOutputPath -Destination $outputPath -Force
+    $published = $true
+} finally {
+    if (-not $published -and (Test-Path -LiteralPath $temporaryOutputPath)) {
+        Remove-Item -LiteralPath $temporaryOutputPath -Force -ErrorAction SilentlyContinue
+    }
+}
 $json
