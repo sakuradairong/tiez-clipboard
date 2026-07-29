@@ -138,7 +138,7 @@ Validate at the narrowest useful level first, then run both `npm run build` and 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **tiez-clipboard** (3275 symbols, 7896 relationships, 277 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **tiez-clipboard** (3860 symbols, 9347 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -161,7 +161,7 @@ This project is indexed by GitNexus as **tiez-clipboard** (3275 symbols, 7896 re
 ## Resources
 
 | Resource | Use for |
-| ---------- | --------- |
+|----------|---------|
 | `gitnexus://repo/tiez-clipboard/context` | Codebase overview, check index freshness |
 | `gitnexus://repo/tiez-clipboard/clusters` | All functional areas |
 | `gitnexus://repo/tiez-clipboard/processes` | All execution flows |
@@ -170,7 +170,7 @@ This project is indexed by GitNexus as **tiez-clipboard** (3275 symbols, 7896 re
 ## CLI
 
 | Task | Read this skill file |
-| ------ | --------------------- |
+|------|---------------------|
 | Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
 | Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
 | Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
