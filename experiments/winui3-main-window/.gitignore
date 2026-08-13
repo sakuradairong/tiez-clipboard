@@ -1,0 +1,7 @@
+/.tools/
+/artifacts/
+/packages/
+/rust-core/target/
+/winui-app/Generated Files/
+/winui-app/.vs/
+*.user
