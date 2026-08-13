@@ -31,7 +31,8 @@ import {
     ScanText,
     Copy,
     RefreshCw,
-    QrCode
+    QrCode,
+    ClipboardType
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClipboardItemProps } from "../types";
@@ -1717,6 +1718,19 @@ const ClipboardItem = ({
                                 title={isRevealed ? t('hide') : t('reveal')}
                             >
                                 {isRevealed ? <EyeOff size={12} /> : <Eye size={12} />}
+                            </button>
+                        )}
+                        {(item.content_type === 'text' || item.content_type === 'rich_text') && (
+                            <button
+                                className="btn-icon"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    void hideCompactPreview();
+                                    onCopy(false);
+                                }}
+                                title={t('paste_plain_text')}
+                            >
+                                <ClipboardType size={12} />
                             </button>
                         )}
                         <button
