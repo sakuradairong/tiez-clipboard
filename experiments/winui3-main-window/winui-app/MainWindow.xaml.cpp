@@ -29,11 +29,28 @@ namespace
     {
         winrt::Microsoft::UI::Xaml::Controls::Button button;
         button.Content(winrt::box_value(label));
+        winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(button, label);
         button.Click([action = std::move(action)](auto const&, auto const&)
         {
             action();
         });
         return button;
+    }
+
+    winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem CommandItem(
+        winrt::hstring const& label,
+        bool enabled,
+        std::function<void()> action)
+    {
+        winrt::Microsoft::UI::Xaml::Controls::MenuFlyoutItem item;
+        item.Text(label);
+        item.IsEnabled(enabled);
+        winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(item, label);
+        item.Click([action = std::move(action)](auto const&, auto const&)
+        {
+            action();
+        });
+        return item;
     }
 
     LRESULT CALLBACK HotkeySubclassProc(
@@ -58,6 +75,7 @@ namespace
 namespace winrt::Tiez::WinUIProbe::implementation
 {
     using namespace Microsoft::UI::Xaml;
+    using namespace Microsoft::UI::Xaml::Automation;
     using namespace Microsoft::UI::Xaml::Controls;
     using namespace Microsoft::UI::Xaml::Controls::Primitives;
     using namespace Microsoft::UI::Xaml::Input;
@@ -72,11 +90,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Title(L"TieZ · WinUI 3 main-window experiment");
         SetInitialWindowSize();
         SetupLifecycle();
+        SetupImeGuards();
         SearchBox().Focus(FocusState::Programmatic);
 
         try
         {
+            m_refreshSink = std::make_shared<HistoryRefreshSink>();
+            m_refreshSink->window = this;
+            m_refreshSink->dispatcher = DispatcherQueue();
             m_core = std::make_unique<tiez::probe::RustCoreBridge>();
+            m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
+            m_core->StartCapture();
             RefreshItems();
         }
         catch (std::exception const& error)
@@ -89,7 +113,59 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     MainWindow::~MainWindow()
     {
+        if (m_refreshSink)
+        {
+            std::lock_guard<std::mutex> guard(m_refreshSink->mutex);
+            m_refreshSink->window = nullptr;
+        }
+        if (m_core)
+        {
+            m_core->SetChangedCallback(nullptr, nullptr);
+            m_core.reset();
+        }
         TeardownLifecycle();
+    }
+
+    void MainWindow::OnHistoryChanged(void* userData, std::uint64_t)
+    {
+        auto* raw = static_cast<HistoryRefreshSink*>(userData);
+        if (raw == nullptr)
+        {
+            return;
+        }
+
+        std::shared_ptr<HistoryRefreshSink> sink;
+        try
+        {
+            sink = raw->shared_from_this();
+        }
+        catch (std::bad_weak_ptr const&)
+        {
+            return;
+        }
+
+        Microsoft::UI::Dispatching::DispatcherQueue dispatcher{ nullptr };
+        {
+            std::lock_guard<std::mutex> guard(sink->mutex);
+            if (sink->window == nullptr)
+            {
+                return;
+            }
+            dispatcher = sink->dispatcher;
+        }
+        if (!dispatcher)
+        {
+            return;
+        }
+
+        dispatcher.TryEnqueue([sink]()
+        {
+            std::lock_guard<std::mutex> guard(sink->mutex);
+            if (sink->window != nullptr)
+            {
+                sink->window->RefreshItems();
+            }
+        });
     }
 
     void MainWindow::SearchBox_TextChanged(IInspectable const&, TextChangedEventArgs const&)
@@ -275,11 +351,21 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Border card;
         card.Style(Application::Current().Resources()
             .Lookup(winrt::box_value(L"ClipboardCardStyle")).as<Style>());
-        card.PointerPressed([this, index](auto const&, auto const&)
+        card.PointerPressed([this, entryId, index](auto const&, auto const&)
         {
             m_selectedIndex = static_cast<int>(index);
             UpdateSelectionVisuals();
+            ShowContent(entryId);
         });
+        card.DoubleTapped([this, entryId, readOnly](auto const&, auto const&)
+        {
+            if (!readOnly)
+            {
+                ApplyAction(entryId, "paste-plain");
+            }
+        });
+        AutomationProperties::SetName(card, item.GetNamedString(L"preview"));
+        AttachCardCommands(card, entryId, readOnly);
         m_cards.push_back(card);
 
         StackPanel content;
@@ -349,6 +435,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto pasteRichButton = ActionButton(
             L"Paste rich",
             [this, entryId] { ApplyAction(entryId, "paste-rich"); });
+        auto copyButton = ActionButton(
+            L"Copy",
+            [this, entryId] { ApplyAction(entryId, "copy-plain"); });
         auto deleteButton = ActionButton(
             L"Delete",
             [this, entryId] { ApplyAction(entryId, "delete"); });
@@ -356,12 +445,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         pinButton.IsEnabled(!readOnly);
         pastePlainButton.IsEnabled(!readOnly);
         pasteRichButton.IsEnabled(!readOnly);
+        copyButton.IsEnabled(!readOnly);
         deleteButton.IsEnabled(!readOnly);
 
         actions.Children().Append(openButton);
         actions.Children().Append(pinButton);
         actions.Children().Append(pastePlainButton);
         actions.Children().Append(pasteRichButton);
+        actions.Children().Append(copyButton);
         actions.Children().Append(deleteButton);
 
         content.Children().Append(metadata);
@@ -407,11 +498,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 }
 
                 DetailsContentText().Text(displayContent);
+                ShowDetailsImage(contentType, displayContent);
                 SetStatus(L"Full content loaded from the Tauri-independent Rust core.");
             }
             else
             {
                 DetailsContentText().Text(content.GetNamedString(L"unavailable_reason"));
+                ShowDetailsImage(contentType, {});
                 SetStatus(L"Content metadata loaded; the payload remains protected.");
             }
         }
@@ -627,14 +720,86 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
         if (key == VirtualKey::Enter)
         {
+            if (m_imeComposing || m_ignoreNextEnter || (GetKeyState(VK_PROCESSKEY) & 0x8000))
+            {
+                m_ignoreNextEnter = false;
+                return false;
+            }
             if (m_selectedIndex >= 0
                 && m_selectedIndex < static_cast<int>(m_entryIds.size()))
             {
-                ApplyAction(m_entryIds[static_cast<std::size_t>(m_selectedIndex)], "paste-plain");
+                auto const rich = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                ApplyAction(
+                    m_entryIds[static_cast<std::size_t>(m_selectedIndex)],
+                    rich ? "paste-rich" : "paste-plain");
+            }
+            return true;
+        }
+        if (key == VirtualKey::Delete)
+        {
+            if (SearchBoxHasFocus())
+            {
+                return false;
+            }
+            if (m_selectedIndex >= 0
+                && m_selectedIndex < static_cast<int>(m_entryIds.size()))
+            {
+                ApplyAction(m_entryIds[static_cast<std::size_t>(m_selectedIndex)], "delete");
+            }
+            return true;
+        }
+        if (key == VirtualKey::C && (GetKeyState(VK_CONTROL) & 0x8000))
+        {
+            if (SearchBoxHasFocus() && !SearchBox().SelectedText().empty())
+            {
+                return false;
+            }
+            if (m_selectedIndex >= 0
+                && m_selectedIndex < static_cast<int>(m_entryIds.size()))
+            {
+                ApplyAction(m_entryIds[static_cast<std::size_t>(m_selectedIndex)], "copy-plain");
             }
             return true;
         }
         return false;
+    }
+
+    bool MainWindow::SearchBoxHasFocus()
+    {
+        return SearchBox().FocusState() != FocusState::Unfocused;
+    }
+
+    void MainWindow::AttachCardCommands(
+        Border const& card,
+        std::int64_t entryId,
+        bool readOnly)
+    {
+        MenuFlyout flyout;
+        flyout.Items().Append(CommandItem(
+            L"Paste plain",
+            !readOnly,
+            [this, entryId] { ApplyAction(entryId, "paste-plain"); }));
+        flyout.Items().Append(CommandItem(
+            L"Paste rich",
+            !readOnly,
+            [this, entryId] { ApplyAction(entryId, "paste-rich"); }));
+        flyout.Items().Append(CommandItem(
+            L"Copy",
+            !readOnly,
+            [this, entryId] { ApplyAction(entryId, "copy-plain"); }));
+        flyout.Items().Append(CommandItem(
+            L"Pin / unpin",
+            !readOnly,
+            [this, entryId] { ApplyAction(entryId, "pin"); }));
+        flyout.Items().Append(CommandItem(
+            L"Delete",
+            !readOnly,
+            [this, entryId] { ApplyAction(entryId, "delete"); }));
+        flyout.Items().Append(CommandItem(
+            L"Open details",
+            true,
+            [this, entryId] { ShowContent(entryId); }));
+        card.ContextFlyout(flyout);
     }
 
     void MainWindow::MoveSelection(int delta)
@@ -665,6 +830,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             if (selected)
             {
                 m_cards[index].BorderBrush(SolidColorBrush{ Windows::UI::Color{ 255, 0, 120, 212 } });
+                m_cards[index].StartBringIntoView();
             }
             else
             {
@@ -697,5 +863,50 @@ namespace winrt::Tiez::WinUIProbe::implementation
         TypeCodeButton().IsChecked(m_typeFilter == "code");
         TypeFilesButton().IsChecked(m_typeFilter == "files");
         RefreshItems();
+    }
+
+    void MainWindow::SetupImeGuards()
+    {
+        SearchBox().TextCompositionStarted([this](auto const&, auto const&)
+        {
+            m_imeComposing = true;
+        });
+        SearchBox().TextCompositionEnded([this](auto const&, auto const&)
+        {
+            m_imeComposing = false;
+            m_ignoreNextEnter = true;
+        });
+    }
+
+    void MainWindow::ShowDetailsImage(winrt::hstring const& contentType, winrt::hstring const& content)
+    {
+        DetailsImage().Source(nullptr);
+        DetailsImage().Visibility(Visibility::Collapsed);
+        if (contentType != L"image")
+        {
+            return;
+        }
+
+        std::wstring path{ content };
+        if (path.empty() || path.rfind(L"data:image/", 0) == 0)
+        {
+            return;
+        }
+        std::replace(path.begin(), path.end(), L'\\', L'/');
+        if (!std::filesystem::exists(std::filesystem::path{ content.c_str() }))
+        {
+            return;
+        }
+
+        try
+        {
+            Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+            bitmap.UriSource(Windows::Foundation::Uri{ L"file:///" + path });
+            DetailsImage().Source(bitmap);
+            DetailsImage().Visibility(Visibility::Visible);
+        }
+        catch (winrt::hresult_error const&)
+        {
+        }
     }
 }

@@ -19,8 +19,10 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 3,
+    TIEZ_CORE_ABI_VERSION = 4,
 };
+
+typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
 
 TIEZ_CORE_API uint32_t tiez_core_abi_version(void);
 TIEZ_CORE_API TiezCoreHandle* tiez_core_create(void);
@@ -50,6 +52,15 @@ TIEZ_CORE_API char* tiez_core_apply_action_json(
     TiezCoreHandle* handle,
     int64_t entry_id,
     const char* action_utf8);
+
+// History-changed notifications may arrive on a background worker thread.
+TIEZ_CORE_API void tiez_core_set_changed_callback(
+    TiezCoreHandle* handle,
+    TiezChangedCallback callback,
+    void* user_data);
+
+// Starts Unicode clipboard capture. The current clipboard is primed, not ingested.
+TIEZ_CORE_API bool tiez_core_start_capture(TiezCoreHandle* handle);
 
 // Returns and clears the calling thread's last error. The caller must release
 // the returned UTF-8 string with tiez_core_string_free.

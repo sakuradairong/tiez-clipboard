@@ -10,6 +10,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Extracted Tauri-independent `PasteCoordinator` and `UiLifecycle` policies into `tiez-core` for the WinUI main-window slice (payload planning, paste-queue cap, hotkey/Esc/deactivate hide, last-foreground capture).
 - WinUI probe can pin/delete against a writable `clipboard.db`, paste Unicode text through the shared coordinator, filter by type chips, and toggle with Alt+C.
+- WinUI `paste-rich` writes CF_HTML alongside Unicode text when the history item has HTML; the synthetic adapter includes one rich sample.
+- WinUI paste plans image/file payloads separately from text: CF_DIB/PNG for images, CF_HDROP for files. Enter does not paste while IME composition is confirming.
+- WinUI copy writes the clipboard without hiding or sending Ctrl+V. Ctrl+Enter pastes rich text; Delete and a card context menu cover pin/delete/copy.
+- WinUI live-captures Unicode text (CRLF normalized, not trimmed) through ABI v4. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
 
 ### Changed
 

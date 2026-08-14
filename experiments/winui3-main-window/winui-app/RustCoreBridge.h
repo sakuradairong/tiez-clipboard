@@ -18,6 +18,8 @@ namespace tiez::probe
         [[nodiscard]] std::string ApplyAction(
             std::int64_t entryId,
             std::string_view action) const;
+        void SetChangedCallback(TiezChangedCallback callback, void* userData) const;
+        bool StartCapture() const;
         [[nodiscard]] std::uint32_t AbiVersion() const noexcept;
 
         [[nodiscard]] static winrt::hstring Utf8ToHstring(std::string_view value);
@@ -29,6 +31,8 @@ namespace tiez::probe
         using SnapshotFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
+        using SetChangedCallbackFn = void(__cdecl*)(TiezCoreHandle*, TiezChangedCallback, void*);
+        using StartCaptureFn = bool(__cdecl*)(TiezCoreHandle*);
         using TakeLastErrorFn = char*(__cdecl*)();
         using StringFreeFn = void(__cdecl*)(char*);
 
@@ -47,6 +51,8 @@ namespace tiez::probe
         SnapshotFn m_snapshot{};
         ContentFn m_content{};
         ApplyActionJsonFn m_applyActionJson{};
+        SetChangedCallbackFn m_setChangedCallback{};
+        StartCaptureFn m_startCapture{};
         TakeLastErrorFn m_takeLastError{};
         StringFreeFn m_stringFree{};
     };

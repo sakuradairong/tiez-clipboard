@@ -53,6 +53,7 @@
             x:Name="SearchBox"
             Grid.Row="1"
             PlaceholderText="Search by text or source app · type chips filter content type"
+            AutomationProperties.Name="Search clipboard history"
             KeyDown="SearchBox_KeyDown"
             TextChanged="SearchBox_TextChanged" />
 
@@ -61,12 +62,12 @@
             Grid.Row="2"
             Orientation="Horizontal"
             Spacing="8">
-            <ToggleButton x:Name="TypeAllButton" Content="All" IsChecked="True" Click="TypeAllButton_Click" />
-            <ToggleButton x:Name="TypeTextButton" Content="text" Click="TypeChip_Click" Tag="text" />
-            <ToggleButton x:Name="TypeImageButton" Content="image" Click="TypeChip_Click" Tag="image" />
-            <ToggleButton x:Name="TypeUrlButton" Content="url" Click="TypeChip_Click" Tag="url" />
-            <ToggleButton x:Name="TypeCodeButton" Content="code" Click="TypeChip_Click" Tag="code" />
-            <ToggleButton x:Name="TypeFilesButton" Content="files" Click="TypeChip_Click" Tag="files" />
+            <ToggleButton x:Name="TypeAllButton" Content="All" AutomationProperties.Name="Show all types" IsChecked="True" Click="TypeAllButton_Click" />
+            <ToggleButton x:Name="TypeTextButton" Content="text" AutomationProperties.Name="Filter text" Click="TypeChip_Click" Tag="text" />
+            <ToggleButton x:Name="TypeImageButton" Content="image" AutomationProperties.Name="Filter image" Click="TypeChip_Click" Tag="image" />
+            <ToggleButton x:Name="TypeUrlButton" Content="url" AutomationProperties.Name="Filter url" Click="TypeChip_Click" Tag="url" />
+            <ToggleButton x:Name="TypeCodeButton" Content="code" AutomationProperties.Name="Filter code" Click="TypeChip_Click" Tag="code" />
+            <ToggleButton x:Name="TypeFilesButton" Content="files" AutomationProperties.Name="Filter files" Click="TypeChip_Click" Tag="files" />
         </StackPanel>
 
         <Grid Grid.Row="3" ColumnSpacing="16">
@@ -113,12 +114,20 @@
                         Grid.Row="2"
                         HorizontalScrollBarVisibility="Disabled"
                         VerticalScrollBarVisibility="Auto">
-                        <TextBlock
-                            x:Name="DetailsContentText"
-                            FontFamily="Consolas"
-                            IsTextSelectionEnabled="True"
-                            Text="Full clipboard content will appear here without WebView2."
-                            TextWrapping="Wrap" />
+                        <StackPanel Spacing="12">
+                            <Image
+                                x:Name="DetailsImage"
+                                MaxHeight="240"
+                                Stretch="Uniform"
+                                Visibility="Collapsed"
+                                AutomationProperties.Name="Clipboard image preview" />
+                            <TextBlock
+                                x:Name="DetailsContentText"
+                                FontFamily="Consolas"
+                                IsTextSelectionEnabled="True"
+                                Text="Full clipboard content will appear here without WebView2."
+                                TextWrapping="Wrap" />
+                        </StackPanel>
                     </ScrollViewer>
                 </Grid>
             </Border>
@@ -129,7 +138,7 @@
             Padding="12"
             Background="{ThemeResource LayerFillColorAltBrush}"
             CornerRadius="8">
-            <TextBlock x:Name="StatusText" Text="Loading Rust core…" TextWrapping="Wrap" />
+            <TextBlock x:Name="StatusText" AutomationProperties.LiveSetting="Assertive" Text="Loading Rust core…" TextWrapping="Wrap" />
         </Border>
     </Grid>
 </Window>

@@ -1,5 +1,7 @@
+use crate::clipboard_capture::preview_from_content;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -105,6 +107,8 @@ struct MemoryHistory {
     generation: u64,
     last_action: String,
     items: Vec<HistoryItem>,
+    html_by_id: HashMap<i64, String>,
+    payloads: HashMap<i64, String>,
 }
 
 #[derive(Debug)]
@@ -133,7 +137,15 @@ pub struct ClipboardHistory {
 
 impl ClipboardHistory {
     pub fn synthetic() -> Self {
-        Self::in_memory(sample_items())
+        let mut history = Self::in_memory(sample_items());
+        if let HistoryAdapter::Memory(adapter) = &mut history.adapter {
+            adapter.html_by_id.insert(
+                101,
+                "<p><b>WinUI 3</b> main-window probe is connected to Rust through a C ABI.</p>"
+                    .to_owned(),
+            );
+        }
+        history
     }
 
     pub fn in_memory(items: Vec<HistoryItem>) -> Self {
@@ -142,6 +154,8 @@ impl ClipboardHistory {
                 generation: 1,
                 last_action: "Rust memory adapter ready".to_owned(),
                 items,
+                html_by_id: HashMap::new(),
+                payloads: HashMap::new(),
             }),
         }
     }
@@ -188,6 +202,18 @@ impl ClipboardHistory {
             HistoryAdapter::Sqlite(adapter) => adapter.apply_action(entry_id, action),
         }
     }
+
+    pub fn ingest_text(
+        &mut self,
+        content: String,
+        source_app: impl Into<String>,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        let source_app = source_app.into();
+        match &mut self.adapter {
+            HistoryAdapter::Memory(adapter) => Ok(adapter.ingest_text(content, source_app)),
+            HistoryAdapter::Sqlite(adapter) => adapter.ingest_text(content, source_app),
+        }
+    }
 }
 
 impl MemoryHistory {
@@ -230,17 +256,14 @@ impl MemoryHistory {
                 if previous_len == self.items.len() {
                     return Err(entry_not_found(entry_id));
                 }
+                self.html_by_id.remove(&entry_id);
+                self.payloads.remove(&entry_id);
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true)
             }
-            "paste-plain" => {
+            "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
                 ensure_item_exists(&self.items, entry_id)?;
-                self.last_action = format!("Plain-text paste requested for entry {entry_id}");
-                (Some(entry_id), false)
-            }
-            "paste-rich" => {
-                ensure_item_exists(&self.items, entry_id)?;
-                self.last_action = format!("Rich paste requested for entry {entry_id}");
+                self.last_action = format!("{action} requested for entry {entry_id}");
                 (Some(entry_id), false)
             }
             _ => {
@@ -264,6 +287,36 @@ impl MemoryHistory {
         })
     }
 
+    fn ingest_text(&mut self, content: String, source_app: String) -> HistoryMutationResult {
+        let next_id = self.items.iter().map(|item| item.id).max().unwrap_or(0) + 1;
+        let preview = preview_from_content(&content);
+        self.payloads.insert(next_id, content);
+        self.items.insert(
+            0,
+            HistoryItem {
+                id: next_id,
+                content_type: "text".to_owned(),
+                preview,
+                source_app: source_app.clone(),
+                captured_at: "Just now".to_owned(),
+                is_pinned: false,
+                is_sensitive: false,
+            },
+        );
+        self.generation += 1;
+        self.last_action = format!("Captured text from {source_app}");
+        HistoryMutationResult {
+            adapter: "memory",
+            action: "ingest-text".to_owned(),
+            requested_id: next_id,
+            effective_id: Some(next_id),
+            replacement_id: None,
+            removed: false,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        }
+    }
+
     fn content(&self, entry_id: i64) -> Result<HistoryContent, HistoryError> {
         let item = self
             .items
@@ -282,8 +335,12 @@ impl MemoryHistory {
         Ok(HistoryContent {
             id: item.id,
             content_type: item.content_type.clone(),
-            content: item.preview.clone(),
-            html_content: None,
+            content: self
+                .payloads
+                .get(&item.id)
+                .cloned()
+                .unwrap_or_else(|| item.preview.clone()),
+            html_content: self.html_by_id.get(&item.id).cloned(),
             available: true,
             is_sensitive: false,
             unavailable_reason: None,
@@ -452,14 +509,9 @@ impl SqliteHistory {
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true, None)
             }
-            "paste-plain" => {
+            "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
                 ensure_sqlite_entry(&connection, entry_id)?;
-                self.last_action = format!("Plain-text paste requested for entry {entry_id}");
-                (Some(entry_id), false, None)
-            }
-            "paste-rich" => {
-                ensure_sqlite_entry(&connection, entry_id)?;
-                self.last_action = format!("Rich paste requested for entry {entry_id}");
+                self.last_action = format!("{action} requested for entry {entry_id}");
                 (Some(entry_id), false, None)
             }
             _ => {
@@ -478,6 +530,44 @@ impl SqliteHistory {
             effective_id,
             replacement_id,
             removed,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
+    }
+
+    fn ingest_text(
+        &mut self,
+        content: String,
+        source_app: String,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        if self.read_only {
+            return Err(HistoryError::new(
+                HistoryErrorKind::ReadOnly,
+                "ingest-text is disabled for sqlite-read-only history",
+            ));
+        }
+
+        let connection = open_sqlite_connection(&self.database_path, false)?;
+        let timestamp = now_unix_ms();
+        let preview = preview_from_content(&content);
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (content_type, content, html_content, source_app, timestamp, preview, is_pinned, pinned_order, tags)
+                 VALUES ('text', ?1, NULL, ?2, ?3, ?4, 0, 0, '[]')",
+                rusqlite::params![content, source_app, timestamp, preview],
+            )
+            .map_err(|error| storage_error("failed to ingest clipboard text", error))?;
+        let entry_id = connection.last_insert_rowid();
+        self.generation = self.generation.saturating_add(1);
+        self.last_action = format!("Captured text from {source_app}");
+        Ok(HistoryMutationResult {
+            adapter: self.adapter_name(),
+            action: "ingest-text".to_owned(),
+            requested_id: entry_id,
+            effective_id: Some(entry_id),
+            replacement_id: None,
+            removed: false,
             generation: self.generation,
             message: self.last_action.clone(),
         })
@@ -778,11 +868,16 @@ fn has_sensitive_tag(tags_json: &str) -> bool {
         })
 }
 
-fn format_timestamp(timestamp: i64) -> String {
-    let now_ms = SystemTime::now()
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(timestamp);
+        .unwrap_or(0)
+}
+
+fn format_timestamp(timestamp: i64) -> String {
+    let now_ms = now_unix_ms();
+    let now_ms = if now_ms == 0 { timestamp } else { now_ms };
     let age_ms = now_ms.saturating_sub(timestamp);
 
     match age_ms {
@@ -1069,6 +1164,25 @@ mod tests {
     }
 
     #[test]
+    fn memory_history_ingests_full_text_without_trimming() {
+        let mut history = ClipboardHistory::in_memory(vec![]);
+        let ingested = history
+            .ingest_text("  keep whitespace\nline two  ".to_owned(), "Notepad")
+            .unwrap();
+
+        assert_eq!(ingested.action, "ingest-text");
+        assert_eq!(ingested.effective_id, Some(1));
+        assert_eq!(
+            history.snapshot("").unwrap().items[0].preview,
+            "  keep whitespace\nline two  "
+        );
+        assert_eq!(
+            history.content(1).unwrap().content,
+            "  keep whitespace\nline two  "
+        );
+    }
+
+    #[test]
     fn sqlite_history_reads_production_schema_without_writing() {
         let path = temporary_database("read-only");
         create_test_database(&path);
@@ -1134,6 +1248,18 @@ mod tests {
         let error = history.content(999).unwrap_err();
 
         assert_eq!(error.kind(), HistoryErrorKind::NotFound);
+    }
+
+    #[test]
+    fn synthetic_history_exposes_html_for_rich_paste() {
+        let history = ClipboardHistory::synthetic();
+        let content = history.content(101).unwrap();
+
+        assert_eq!(
+            content.html_content.as_deref(),
+            Some("<p><b>WinUI 3</b> main-window probe is connected to Rust through a C ABI.</p>")
+        );
+        assert_eq!(history.content(102).unwrap().html_content, None);
     }
 
     #[test]
@@ -1255,6 +1381,35 @@ mod tests {
         assert_eq!(code.items.len(), 1);
         assert_eq!(code.items[0].id, 4);
         assert_eq!(history.snapshot("type:text").unwrap().items.len(), 3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_history_ingests_text_and_rejects_read_only() {
+        let path = temporary_database("ingest");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let ingested = history
+            .ingest_text("live copy\r\nsecond".to_owned(), "Notepad")
+            .unwrap();
+        let id = ingested.effective_id.unwrap();
+        assert_eq!(history.content(id).unwrap().content, "live copy\r\nsecond");
+        assert!(history
+            .snapshot("")
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.id == id));
+
+        drop(history);
+        let mut read_only = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+        assert_eq!(
+            read_only
+                .ingest_text("blocked".to_owned(), "Notepad")
+                .unwrap_err()
+                .kind(),
+            HistoryErrorKind::ReadOnly
+        );
         fs::remove_file(path).unwrap();
     }
 }

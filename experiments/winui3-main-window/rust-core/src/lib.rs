@@ -7,19 +7,21 @@
 use serde::Serialize;
 use std::cell::RefCell;
 use std::env;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tiez_core::clipboard_capture::CaptureFilter;
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
-use tiez_core::paste_coordinator::{plan_paste, PasteFormat};
+use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 
 #[cfg(windows)]
 mod win32_paste;
+mod win32_capture;
 
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 
@@ -27,12 +29,39 @@ thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
+#[derive(Clone, Copy)]
+struct ChangedSink {
+    callback: extern "C" fn(*mut c_void, u64),
+    user_data: usize,
+}
+
+unsafe impl Send for ChangedSink {}
+unsafe impl Sync for ChangedSink {}
+
+pub(crate) struct TiezCoreInner {
+    history: Mutex<ClipboardHistory>,
+    capture: Mutex<CaptureFilter>,
+    changed: Mutex<Option<ChangedSink>>,
+}
+
 #[repr(C)]
 pub struct TiezCoreHandle {
-    history: Mutex<ClipboardHistory>,
+    inner: Arc<TiezCoreInner>,
+    session: Mutex<Option<win32_capture::Session>>,
 }
 
 impl TiezCoreHandle {
+    fn wrap(history: ClipboardHistory) -> Self {
+        Self {
+            inner: Arc::new(TiezCoreInner {
+                history: Mutex::new(history),
+                capture: Mutex::new(CaptureFilter::new()),
+                changed: Mutex::new(None),
+            }),
+            session: Mutex::new(None),
+        }
+    }
+
     fn new_from_environment() -> Result<Self, String> {
         let history = match env::var_os(DATABASE_ENV) {
             Some(value) if !value.is_empty() => {
@@ -43,9 +72,7 @@ impl TiezCoreHandle {
             _ => ClipboardHistory::synthetic(),
         };
 
-        Ok(Self {
-            history: Mutex::new(history),
-        })
+        Ok(Self::wrap(history))
     }
 }
 
@@ -97,12 +124,16 @@ fn apply_history_action(
     action: &str,
 ) -> Result<HistoryMutationResult, String> {
     let mut history = handle
+        .inner
         .history
         .lock()
         .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
 
-    if matches!(action, "paste-plain" | "paste-rich") {
-        let format = if action == "paste-rich" {
+    if matches!(
+        action,
+        "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich"
+    ) {
+        let format = if action.ends_with("rich") {
             PasteFormat::Rich
         } else {
             PasteFormat::Plain
@@ -110,15 +141,23 @@ fn apply_history_action(
         let content = history
             .content(entry_id)
             .map_err(|error| error.to_string())?;
-        let plan = plan_paste(&content, format, false).map_err(|error| error.to_string())?;
+        let mut plan = plan_paste(&content, format, false).map_err(|error| error.to_string())?;
+        let copied = action.starts_with("copy-");
+        if copied {
+            plan = plan.into_clipboard_only();
+        }
         execute_os_paste(&plan)?;
+        if let Ok(mut filter) = handle.inner.capture.lock() {
+            filter.note_self_write(&plan.payload.text);
+        }
         let mut mutation = history
             .apply_action(entry_id, action)
             .map_err(|error| error.to_string())?;
         mutation.message = format!(
-            "Pasted item {entry_id} as {} ({} chars)",
+            "{} item {entry_id} as {} ({})",
+            if copied { "Copied" } else { "Pasted" },
             plan.payload.format.as_str(),
-            plan.payload.text.chars().count()
+            paste_payload_summary(&plan.payload)
         );
         return Ok(mutation);
     }
@@ -126,6 +165,66 @@ fn apply_history_action(
     history
         .apply_action(entry_id, action)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn ingest_captured_text(
+    inner: &TiezCoreInner,
+    raw: &str,
+) -> Result<Option<u64>, String> {
+    let accepted = {
+        let mut filter = inner
+            .capture
+            .lock()
+            .map_err(|_| "CaptureFilter lock is poisoned".to_owned())?;
+        match filter.accept(raw) {
+            Ok(text) => text,
+            Err(_) => return Ok(None),
+        }
+    };
+    let mutation = {
+        let mut history = inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .ingest_text(accepted, "Clipboard")
+            .map_err(|error| error.to_string())?
+    };
+    notify_changed(inner, mutation.generation);
+    Ok(Some(mutation.generation))
+}
+
+fn notify_changed(inner: &TiezCoreInner, generation: u64) {
+    let sink = inner.changed.lock().ok().and_then(|guard| *guard);
+    if let Some(sink) = sink {
+        (sink.callback)(sink.user_data as *mut c_void, generation);
+    }
+}
+
+fn start_capture(handle: &TiezCoreHandle) -> Result<(), String> {
+    let mut session = handle
+        .session
+        .lock()
+        .map_err(|_| "capture session lock is poisoned".to_owned())?;
+    if session.is_some() {
+        return Ok(());
+    }
+    *session = Some(win32_capture::start(Arc::clone(&handle.inner))?);
+    Ok(())
+}
+
+fn paste_payload_summary(payload: &PastePayload) -> String {
+    if let Some(image) = &payload.image {
+        format!("image {image}")
+    } else if !payload.files.is_empty() {
+        format!("{} files", payload.files.len())
+    } else {
+        format!(
+            "{} chars{}",
+            payload.text.chars().count(),
+            if payload.html.is_some() { " + HTML" } else { "" }
+        )
+    }
 }
 
 fn execute_os_paste(plan: &tiez_core::paste_coordinator::PastePlan) -> Result<(), String> {
@@ -239,8 +338,13 @@ pub unsafe extern "C" fn tiez_core_destroy(handle: *mut TiezCoreHandle) {
         }
 
         // SAFETY: handles are produced by tiez_core_create and ownership is
-        // transferred back exactly once by this function.
-        drop(unsafe { Box::from_raw(handle) });
+        // transferred back exactly once by this function. Drop the listener
+        // before the inner Arc so the worker can finish using it.
+        let boxed = unsafe { Box::from_raw(handle) };
+        if let Ok(mut session) = boxed.session.lock() {
+            session.take();
+        }
+        drop(boxed);
     });
 }
 
@@ -259,6 +363,7 @@ pub unsafe extern "C" fn tiez_core_get_snapshot_json(
             unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
         let query = optional_utf8(query_utf8)?;
         let history = handle
+            .inner
             .history
             .lock()
             .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
@@ -281,6 +386,7 @@ pub unsafe extern "C" fn tiez_core_get_content_json(
         let handle =
             unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
         let history = handle
+            .inner
             .history
             .lock()
             .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
@@ -330,6 +436,57 @@ pub unsafe extern "C" fn tiez_core_apply_action_json(
         let action = required_utf8(action_utf8, "action_utf8")?;
         let mutation = apply_history_action(handle, entry_id, &action)?;
         into_owned_c_string(mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Register a history-changed callback. Pass a null callback to clear it.
+///
+/// The callback may run on a background clipboard worker thread. The C++
+/// host must marshal UI work onto its dispatcher.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `user_data` must remain valid until the callback is cleared or the handle
+/// is destroyed.
+pub unsafe extern "C" fn tiez_core_set_changed_callback(
+    handle: *mut TiezCoreHandle,
+    callback: Option<extern "C" fn(*mut c_void, u64)>,
+    user_data: *mut c_void,
+) {
+    catch_ffi((), || {
+        let handle = match unsafe { handle.as_ref() } {
+            Some(handle) => handle,
+            None => {
+                set_last_error("handle must not be null");
+                return;
+            }
+        };
+        match handle.inner.changed.lock() {
+            Ok(mut slot) => {
+                *slot = callback.map(|callback| ChangedSink {
+                    callback,
+                    user_data: user_data as usize,
+                });
+            }
+            Err(_) => set_last_error("changed-callback lock is poisoned"),
+        }
+    });
+}
+
+#[no_mangle]
+/// Start live Unicode clipboard capture. Startup content is primed, not ingested.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_start_capture(handle: *mut TiezCoreHandle) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        start_capture(handle)?;
+        Ok(true)
     })
 }
 
@@ -387,7 +544,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":3"));
+        assert!(json.contains("\"abi_version\":4"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -397,8 +554,8 @@ mod tests {
 
     #[test]
     fn content_export_serializes_full_utf8_payload() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle {
-            history: Mutex::new(ClipboardHistory::in_memory(vec![HistoryItem {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::in_memory(
+            vec![HistoryItem {
                 id: -7,
                 content_type: "text".to_owned(),
                 preview: "完整内容 🚀".to_owned(),
@@ -406,8 +563,8 @@ mod tests {
                 captured_at: "now".to_owned(),
                 is_pinned: false,
                 is_sensitive: false,
-            }])),
-        }));
+            }],
+        ))));
 
         unsafe {
             let value = tiez_core_get_content_json(handle, -7);
@@ -423,9 +580,7 @@ mod tests {
 
     #[test]
     fn action_export_serializes_structured_mutation_result() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle {
-            history: Mutex::new(ClipboardHistory::synthetic()),
-        }));
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
         let pin = CString::new("pin").unwrap();
         let delete = CString::new("delete").unwrap();
 
@@ -433,7 +588,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":3"));
+            assert!(pin_json.contains("\"abi_version\":4"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -456,9 +611,7 @@ mod tests {
 
     #[test]
     fn paste_action_plans_payload_instead_of_logging_only() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle {
-            history: Mutex::new(ClipboardHistory::synthetic()),
-        }));
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
         let action = CString::new("paste-plain").unwrap();
 
         unsafe {
@@ -467,8 +620,34 @@ mod tests {
             let json = CStr::from_ptr(value).to_str().unwrap();
             assert!(json.contains("\"action\":\"paste-plain\""));
             assert!(json.contains("Pasted item 101 as plain"));
+            assert!(!json.contains(" + HTML"));
             assert!(json.contains("\"replacement_id\":null"));
             tiez_core_string_free(value);
+
+            let rich = CString::new("paste-rich").unwrap();
+            let rich_value = tiez_core_apply_action_json(handle, 101, rich.as_ptr());
+            assert!(!rich_value.is_null());
+            let rich_json = CStr::from_ptr(rich_value).to_str().unwrap();
+            assert!(rich_json.contains("Pasted item 101 as rich"));
+            assert!(rich_json.contains(" + HTML"));
+            tiez_core_string_free(rich_value);
+
+            let copy = CString::new("copy-plain").unwrap();
+            let copy_value = tiez_core_apply_action_json(handle, 101, copy.as_ptr());
+            assert!(!copy_value.is_null());
+            let copy_json = CStr::from_ptr(copy_value).to_str().unwrap();
+            assert!(copy_json.contains("Copied item 101 as plain"));
+            assert!(!copy_json.contains("Pasted item 101 as plain"));
+            tiez_core_string_free(copy_value);
+
+            assert!(tiez_core_apply_action_json(handle, 105, action.as_ptr()).is_null());
+            let image_error = tiez_core_take_last_error();
+            assert!(!image_error.is_null());
+            assert!(CStr::from_ptr(image_error)
+                .to_str()
+                .unwrap()
+                .contains("image"));
+            tiez_core_string_free(image_error);
 
             assert!(tiez_core_apply_action_json(handle, 107, action.as_ptr()).is_null());
             let error = tiez_core_take_last_error();
@@ -484,9 +663,7 @@ mod tests {
 
     #[test]
     fn invalid_action_sets_a_retrievable_error() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle {
-            history: Mutex::new(ClipboardHistory::synthetic()),
-        }));
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
         let action = CString::new("explode").unwrap();
 
         unsafe {
@@ -498,6 +675,42 @@ mod tests {
                 "unsupported action: explode"
             );
             tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn ingest_notifies_changed_callback_and_skips_duplicates() {
+        static LAST_GENERATION: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        extern "C" fn on_changed(_: *mut c_void, generation: u64) {
+            LAST_GENERATION.store(generation, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        LAST_GENERATION.store(0, std::sync::atomic::Ordering::SeqCst);
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::in_memory(
+            vec![],
+        ))));
+        unsafe {
+            tiez_core_set_changed_callback(handle, Some(on_changed), ptr::null_mut());
+            assert!(tiez_core_start_capture(handle));
+            let first = ingest_captured_text(&(*handle).inner, "hello from notepad").unwrap();
+            assert_eq!(first, Some(2));
+            assert_eq!(
+                LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+            assert!(ingest_captured_text(&(*handle).inner, "hello from notepad")
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+            let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
+            let json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(json.contains("hello from notepad"));
+            tiez_core_string_free(snapshot);
             tiez_core_destroy(handle);
         }
     }

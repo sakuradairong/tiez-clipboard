@@ -66,17 +66,23 @@ versioned request/response structs or another explicitly versioned wire format.
 - search plus type chips (`type:text` and friends) driven by the Rust snapshot;
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
-- real plain/rich paste through `PasteCoordinator` (Unicode text + Ctrl+V);
-- keyboard up/down + Enter to paste, Esc to hide;
+- real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
+- copy without paste (clipboard write only);
+- keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
+- card context menu and double-click paste;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
 
-Paste uses the shared coordinator. On Windows the probe writes CF_UNICODETEXT and
-sends Ctrl+V after hiding and restoring the last foreground window. Sensitive and
-encrypted payloads stay unavailable until a privacy adapter exists. Do not start
-Tauri and this executable against the same `clipboard.db` at once.
+Paste uses the shared coordinator. On Windows the probe writes CF_UNICODETEXT and,
+for paste-rich when HTML is available, CF_HTML (`HTML Format`). Image entries with a
+local path or `data:image/` payload write CF_DIB (and PNG when the source is PNG).
+File lists write CF_HDROP. Ctrl+V is sent after hiding and restoring the last
+foreground window. Synthetic image/file placeholders are not pasteable; use a real
+`clipboard.db` to try those types. Sensitive and encrypted payloads stay unavailable
+until a privacy adapter exists. Do not start Tauri and this executable against the
+same `clipboard.db` at once.
 
 ## Windows prerequisites
 
@@ -219,9 +225,11 @@ It records requested-to-ready time plus one-second samples of private bytes,
 working set, handles, and thread count. Use the **Hide for 5 seconds** button for
 manual visible/hidden comparison.
 
-The SQLite mode allows UI measurements against a copied production dataset,
-but it still omits the clipboard listener, sync, paste, hotkeys, tray, and
-other production services. Record the active adapter with every result.
+The SQLite mode allows UI measurements against a copied production dataset.
+Live **text** capture is on (Unicode, consecutive-copy dedup, paste-echo skip).
+Do not point `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while
+Tauri TieZ is running. Image/HTML capture, privacy tagging, OCR, and cloud sync
+are still omitted. Record the active adapter with every result.
 
 ## Acceptance checklist
 
@@ -229,7 +237,7 @@ other production services. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 3`.
+- [ ] Status shows `Rust ABI 4`.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
@@ -241,12 +249,19 @@ other production services. Record the active adapter with every result.
 - [ ] Delete removes an entry.
 - [ ] Mutation status shows the Rust result message and generation.
 - [ ] Plain/rich paste writes the system clipboard and sends Ctrl+V after restoring the last HWND.
-- [ ] Up/Down moves the selected card; Enter pastes plain text; Esc hides.
+- [ ] Image paste writes CF_DIB (and PNG when applicable); file paste writes CF_HDROP.
+- [ ] Enter in the search box does not paste while an IME composition is being confirmed.
+- [ ] Up/Down moves the selected card; Enter pastes plain text; Ctrl+Enter pastes rich; Esc hides.
+- [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
+- [ ] Right-click a card for paste/copy/pin/delete; double-click pastes plain text.
 - [ ] Alt+C toggles visibility and captures the last foreground window.
 - [ ] Sensitive cards show a redacted preview and a sensitive label.
 - [ ] Open details displays full UTF-8 content without WebView2.
 - [ ] Keyboard Tab traversal and text selection work.
-- [ ] Hide/show restores a focused, usable window.
+- [ ] Copying text in another app prepends a new card without restarting the probe.
+- [ ] The clipboard already present at startup is not ingested.
+- [ ] Pasting from the probe does not create a duplicate card.
+- [ ] Leading/trailing whitespace and internal newlines are preserved.
 
 ### Copied production history
 
@@ -289,7 +304,7 @@ window should call, and which extraction phase owns it.
 | Toggle hotkey (default Alt+C) | `toggle_window_cmd` | WinUI `RegisterHotKey` + last HWND | 1 |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
-| Live capture | clipboard listener + pipeline | later (phase 3); reuse existing Rust monitor | 3 |
+| Live capture (Unicode text) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture` / changed callback; image/HTML/privacy later | 3 |
 | Item tags / tag search | `update_tags` | later C ABI | 4 |
 | Pinned drag reorder | `update_pinned_order` | later | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
@@ -317,11 +332,16 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    still Tauri-only);
 3. `PasteCoordinator` — **extracted**: payload planning, hide/restore-focus/
    Ctrl+V contract, delete-after-paste intent, and a bounded paste-queue policy.
-   WinUI executes Unicode paste on Windows; Tauri still wraps the existing
-   Win32 clipboard/keystroke path after planning text payloads;
+   WinUI executes Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
+   Tauri still wraps the existing Win32 clipboard/keystroke path after planning
+   text payloads;
 4. `UiLifecycle` — **WinUI minimum connected**: Alt+C toggle, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste. Tray, close
-   policy, and single-instance remain later.
+   policy, and single-instance remain later;
+5. `ClipboardCapture` — **WinUI Unicode text connected**: CRLF normalization
+   without trim, consecutive-copy dedup, self-paste echo skip, and a
+   `WM_CLIPBOARDUPDATE` worker that never reads the clipboard in WndProc.
+   Image/HTML capture and the full production pipeline remain later.
 
 Only after live clipboard capture (phase 3) should the WinUI executable become
 a daily-driver alternative to WebView2.

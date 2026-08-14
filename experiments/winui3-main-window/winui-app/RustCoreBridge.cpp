@@ -45,6 +45,8 @@ namespace tiez::probe
             m_snapshot = Resolve<SnapshotFn>("tiez_core_get_snapshot_json");
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
+            m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
+            m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
             m_stringFree = Resolve<StringFreeFn>("tiez_core_string_free");
 
@@ -70,6 +72,11 @@ namespace tiez::probe
 
     RustCoreBridge::~RustCoreBridge()
     {
+        if (m_handle != nullptr && m_setChangedCallback != nullptr)
+        {
+            m_setChangedCallback(m_handle, nullptr, nullptr);
+        }
+
         if (m_handle != nullptr && m_destroy != nullptr)
         {
             m_destroy(m_handle);
@@ -118,6 +125,21 @@ namespace tiez::probe
         }
 
         return ConsumeString(result);
+    }
+
+    void RustCoreBridge::SetChangedCallback(TiezChangedCallback callback, void* userData) const
+    {
+        m_setChangedCallback(m_handle, callback, userData);
+    }
+
+    bool RustCoreBridge::StartCapture() const
+    {
+        if (!m_startCapture(m_handle))
+        {
+            throw std::runtime_error("Rust capture start failed: " + TakeLastError());
+        }
+
+        return true;
     }
 
     std::uint32_t RustCoreBridge::AbiVersion() const noexcept

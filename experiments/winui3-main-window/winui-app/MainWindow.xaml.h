@@ -54,12 +54,28 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void ShowMainWindow(bool captureForeground);
         void PreparePasteTarget();
         bool HandleNavigationKey(Windows::System::VirtualKey key);
+        bool SearchBoxHasFocus();
+        void AttachCardCommands(
+            Microsoft::UI::Xaml::Controls::Border const& card,
+            std::int64_t entryId,
+            bool readOnly);
         void MoveSelection(int delta);
         void UpdateSelectionVisuals();
         std::string CurrentQuery();
         void SetTypeFilter(std::string filter);
+        void SetupImeGuards();
+        void ShowDetailsImage(winrt::hstring const& contentType, winrt::hstring const& content);
+        static void __cdecl OnHistoryChanged(void* userData, std::uint64_t generation);
+
+        struct HistoryRefreshSink : std::enable_shared_from_this<HistoryRefreshSink>
+        {
+            std::mutex mutex;
+            MainWindow* window{};
+            Microsoft::UI::Dispatching::DispatcherQueue dispatcher{ nullptr };
+        };
 
         std::unique_ptr<tiez::probe::RustCoreBridge> m_core;
+        std::shared_ptr<HistoryRefreshSink> m_refreshSink;
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_showTimer{ nullptr };
         HWND m_hwnd{};
         HWND m_hotkeyHwnd{};
@@ -67,6 +83,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_readyMarkerWritten{};
         bool m_pinned{};
         bool m_suspendLifecycle{};
+        bool m_imeComposing{};
+        bool m_ignoreNextEnter{};
         std::string m_typeFilter;
         std::vector<std::int64_t> m_entryIds;
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;
