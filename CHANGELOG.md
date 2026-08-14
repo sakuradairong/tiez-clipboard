@@ -6,6 +6,15 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- Extracted Tauri-independent `PasteCoordinator` and `UiLifecycle` policies into `tiez-core` for the WinUI main-window slice (payload planning, paste-queue cap, hotkey/Esc/deactivate hide, last-foreground capture).
+- WinUI probe can pin/delete against a writable `clipboard.db`, paste Unicode text through the shared coordinator, filter by type chips, and toggle with Alt+C.
+
+### Changed
+
+- Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
+
 ## [0.3.8] - 2026-07-27
 
 ### Added

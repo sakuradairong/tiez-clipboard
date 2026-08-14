@@ -62,6 +62,7 @@ if ($hostTriple -notmatch "windows-msvc$") {
 }
 
 if (-not $SkipRustTests) {
+    $env:CARGO_TARGET_DIR = Join-Path $Root "rust-core\target"
     & $cargo.Source test --manifest-path $CoreManifest --locked
     if ($LASTEXITCODE -ne 0) { throw "Shared Rust core tests failed." }
 
@@ -69,6 +70,7 @@ if (-not $SkipRustTests) {
     if ($LASTEXITCODE -ne 0) { throw "WinUI C ABI tests failed." }
 }
 
+$env:CARGO_TARGET_DIR = Join-Path $Root "rust-core\target"
 & $cargo.Source build --manifest-path $RustManifest --release --locked
 if ($LASTEXITCODE -ne 0) { throw "Rust core build failed." }
 

@@ -14,9 +14,14 @@ use std::sync::Mutex;
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
+use tiez_core::paste_coordinator::{plan_paste, PasteFormat};
+
+#[cfg(windows)]
+mod win32_paste;
 
 const ABI_VERSION: u32 = 3;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
+const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -30,8 +35,11 @@ pub struct TiezCoreHandle {
 impl TiezCoreHandle {
     fn new_from_environment() -> Result<Self, String> {
         let history = match env::var_os(DATABASE_ENV) {
-            Some(value) if !value.is_empty() => ClipboardHistory::open_sqlite_read_only(value)
-                .map_err(|error| format!("{DATABASE_ENV}: {error}"))?,
+            Some(value) if !value.is_empty() => {
+                let read_only = env_flag(DATABASE_READ_ONLY_ENV);
+                ClipboardHistory::open_sqlite(value, read_only)
+                    .map_err(|error| format!("{DATABASE_ENV}: {error}"))?
+            }
             _ => ClipboardHistory::synthetic(),
         };
 
@@ -39,6 +47,13 @@ impl TiezCoreHandle {
             history: Mutex::new(history),
         })
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    matches!(
+        env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE")
+    )
 }
 
 #[derive(Serialize)]
@@ -85,9 +100,45 @@ fn apply_history_action(
         .history
         .lock()
         .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+
+    if matches!(action, "paste-plain" | "paste-rich") {
+        let format = if action == "paste-rich" {
+            PasteFormat::Rich
+        } else {
+            PasteFormat::Plain
+        };
+        let content = history
+            .content(entry_id)
+            .map_err(|error| error.to_string())?;
+        let plan = plan_paste(&content, format, false).map_err(|error| error.to_string())?;
+        execute_os_paste(&plan)?;
+        let mut mutation = history
+            .apply_action(entry_id, action)
+            .map_err(|error| error.to_string())?;
+        mutation.message = format!(
+            "Pasted item {entry_id} as {} ({} chars)",
+            plan.payload.format.as_str(),
+            plan.payload.text.chars().count()
+        );
+        return Ok(mutation);
+    }
+
     history
         .apply_action(entry_id, action)
         .map_err(|error| error.to_string())
+}
+
+fn execute_os_paste(plan: &tiez_core::paste_coordinator::PastePlan) -> Result<(), String> {
+    #[cfg(all(windows, not(test)))]
+    {
+        crate::win32_paste::execute(plan)
+    }
+    #[cfg(not(all(windows, not(test))))]
+    {
+        use tiez_core::paste_coordinator::{execute_paste, RecordingPasteExecutor};
+        let mut executor = RecordingPasteExecutor::default();
+        execute_paste(plan, &mut executor)
+    }
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -399,6 +450,34 @@ mod tests {
             assert!(delete_json.contains("\"removed\":true"));
             assert!(delete_json.contains("\"generation\":3"));
             tiez_core_string_free(delete_value);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn paste_action_plans_payload_instead_of_logging_only() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle {
+            history: Mutex::new(ClipboardHistory::synthetic()),
+        }));
+        let action = CString::new("paste-plain").unwrap();
+
+        unsafe {
+            let value = tiez_core_apply_action_json(handle, 101, action.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"action\":\"paste-plain\""));
+            assert!(json.contains("Pasted item 101 as plain"));
+            assert!(json.contains("\"replacement_id\":null"));
+            tiez_core_string_free(value);
+
+            assert!(tiez_core_apply_action_json(handle, 107, action.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("not available to paste"));
+            tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }
     }

@@ -108,23 +108,24 @@ struct MemoryHistory {
 }
 
 #[derive(Debug)]
-struct SqliteReadOnlyHistory {
+struct SqliteHistory {
     database_path: PathBuf,
+    read_only: bool,
+    generation: u64,
+    last_action: String,
 }
 
 #[derive(Debug)]
 enum HistoryAdapter {
     Memory(MemoryHistory),
-    SqliteReadOnly(SqliteReadOnlyHistory),
+    Sqlite(SqliteHistory),
 }
 
 /// Read/search clipboard history without exposing Tauri or storage details.
 ///
-/// The module currently has two real adapters: mutable in-memory history for
-/// development/tests and the production-schema SQLite reader opened with
-/// read-only flags. Mutation support is intentionally limited to the memory
-/// adapter until the production mutation and synchronization policy is
-/// extracted behind its own module.
+/// Adapters: mutable in-memory history for development/tests, a production-schema
+/// SQLite reader, and an opt-in SQLite writer for the WinUI probe when it is
+/// the only process using `clipboard.db`.
 #[derive(Debug)]
 pub struct ClipboardHistory {
     adapter: HistoryAdapter,
@@ -146,23 +147,34 @@ impl ClipboardHistory {
     }
 
     pub fn open_sqlite_read_only(database_path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
-        let adapter = SqliteReadOnlyHistory::open(database_path.into())?;
+        Self::open_sqlite(database_path, true)
+    }
+
+    pub fn open_sqlite_read_write(database_path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
+        Self::open_sqlite(database_path, false)
+    }
+
+    pub fn open_sqlite(
+        database_path: impl Into<PathBuf>,
+        read_only: bool,
+    ) -> Result<Self, HistoryError> {
+        let adapter = SqliteHistory::open(database_path.into(), read_only)?;
         Ok(Self {
-            adapter: HistoryAdapter::SqliteReadOnly(adapter),
+            adapter: HistoryAdapter::Sqlite(adapter),
         })
     }
 
     pub fn snapshot(&self, query: &str) -> Result<HistorySnapshot, HistoryError> {
         match &self.adapter {
             HistoryAdapter::Memory(adapter) => Ok(adapter.snapshot(query)),
-            HistoryAdapter::SqliteReadOnly(adapter) => adapter.snapshot(query),
+            HistoryAdapter::Sqlite(adapter) => adapter.snapshot(query),
         }
     }
 
     pub fn content(&self, entry_id: i64) -> Result<HistoryContent, HistoryError> {
         match &self.adapter {
             HistoryAdapter::Memory(adapter) => adapter.content(entry_id),
-            HistoryAdapter::SqliteReadOnly(adapter) => adapter.content(entry_id),
+            HistoryAdapter::Sqlite(adapter) => adapter.content(entry_id),
         }
     }
 
@@ -173,17 +185,15 @@ impl ClipboardHistory {
     ) -> Result<HistoryMutationResult, HistoryError> {
         match &mut self.adapter {
             HistoryAdapter::Memory(adapter) => adapter.apply_action(entry_id, action),
-            HistoryAdapter::SqliteReadOnly(_) => Err(HistoryError::new(
-                HistoryErrorKind::ReadOnly,
-                format!("action {action} is disabled for sqlite-read-only history"),
-            )),
+            HistoryAdapter::Sqlite(adapter) => adapter.apply_action(entry_id, action),
         }
     }
 }
 
 impl MemoryHistory {
     fn snapshot(&self, query: &str) -> HistorySnapshot {
-        let items = filter_items(&self.items, query);
+        let mut items = filter_items(&self.items, query);
+        redact_sensitive_previews(&mut items);
         HistorySnapshot {
             adapter: "memory",
             read_only: false,
@@ -281,8 +291,8 @@ impl MemoryHistory {
     }
 }
 
-impl SqliteReadOnlyHistory {
-    fn open(database_path: PathBuf) -> Result<Self, HistoryError> {
+impl SqliteHistory {
+    fn open(database_path: PathBuf, read_only: bool) -> Result<Self, HistoryError> {
         if !database_path.is_file() {
             return Err(HistoryError::new(
                 HistoryErrorKind::InvalidDatabase,
@@ -293,7 +303,7 @@ impl SqliteReadOnlyHistory {
             ));
         }
 
-        let connection = open_read_only(&database_path)?;
+        let connection = open_sqlite_connection(&database_path, read_only)?;
         let table_exists = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'clipboard_history')",
@@ -311,38 +321,57 @@ impl SqliteReadOnlyHistory {
             ));
         }
 
-        Ok(Self { database_path })
+        let last_action = if read_only {
+            format!("Read-only snapshot from {}", database_path.display())
+        } else {
+            format!("SQLite write adapter ready ({})", database_path.display())
+        };
+
+        Ok(Self {
+            database_path,
+            read_only,
+            generation: 1,
+            last_action,
+        })
+    }
+
+    fn adapter_name(&self) -> &'static str {
+        if self.read_only {
+            "sqlite-read-only"
+        } else {
+            "sqlite"
+        }
     }
 
     fn snapshot(&self, query: &str) -> Result<HistorySnapshot, HistoryError> {
-        let connection = open_read_only(&self.database_path)?;
-        let normalized_query = query.trim();
-        let mut items = if normalized_query.is_empty() {
-            load_latest_history(&connection, DEFAULT_HISTORY_LIMIT)?
+        let connection = open_sqlite_connection(&self.database_path, self.read_only)?;
+        let mut items = load_snapshot_items(&connection, query, DEFAULT_HISTORY_LIMIT)?;
+        redact_sensitive_previews(&mut items);
+
+        let generation = if self.read_only {
+            database_generation(&self.database_path)
         } else {
-            search_latest_history(&connection, normalized_query, DEFAULT_HISTORY_LIMIT)?
+            self.generation
+        };
+        let last_action = if self.read_only {
+            format!("Read-only snapshot from {}", self.database_path.display())
+        } else {
+            self.last_action.clone()
         };
 
-        for item in &mut items {
-            if item.is_sensitive || item.preview.starts_with(ENCRYPT_PREFIX) {
-                item.preview = SENSITIVE_PREVIEW.to_owned();
-                item.is_sensitive = true;
-            }
-        }
-
         Ok(HistorySnapshot {
-            adapter: "sqlite-read-only",
-            read_only: true,
-            generation: database_generation(&self.database_path),
+            adapter: self.adapter_name(),
+            read_only: self.read_only,
+            generation,
             total: items.len(),
             query: query.to_owned(),
-            last_action: format!("Read-only snapshot from {}", self.database_path.display()),
+            last_action,
             items,
         })
     }
 
     fn content(&self, entry_id: i64) -> Result<HistoryContent, HistoryError> {
-        let connection = open_read_only(&self.database_path)?;
+        let connection = open_sqlite_connection(&self.database_path, self.read_only)?;
         let mut statement = connection
             .prepare(
                 "SELECT content_type, content, html_content, tags
@@ -394,19 +423,141 @@ impl SqliteReadOnlyHistory {
             unavailable_reason: None,
         })
     }
+
+    fn apply_action(
+        &mut self,
+        entry_id: i64,
+        action: &str,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        if self.read_only {
+            return Err(HistoryError::new(
+                HistoryErrorKind::ReadOnly,
+                format!("action {action} is disabled for sqlite-read-only history"),
+            ));
+        }
+
+        let connection = open_sqlite_connection(&self.database_path, false)?;
+        let (effective_id, removed, replacement_id) = match action {
+            "pin" => {
+                self.toggle_pin(&connection, entry_id)?;
+                (Some(entry_id), false, None)
+            }
+            "delete" => {
+                let deleted = connection
+                    .execute("DELETE FROM clipboard_history WHERE id = ?1", [entry_id])
+                    .map_err(|error| storage_error("failed to delete clipboard entry", error))?;
+                if deleted == 0 {
+                    return Err(entry_not_found(entry_id));
+                }
+                self.last_action = format!("Entry {entry_id} deleted");
+                (None, true, None)
+            }
+            "paste-plain" => {
+                ensure_sqlite_entry(&connection, entry_id)?;
+                self.last_action = format!("Plain-text paste requested for entry {entry_id}");
+                (Some(entry_id), false, None)
+            }
+            "paste-rich" => {
+                ensure_sqlite_entry(&connection, entry_id)?;
+                self.last_action = format!("Rich paste requested for entry {entry_id}");
+                (Some(entry_id), false, None)
+            }
+            _ => {
+                return Err(HistoryError::new(
+                    HistoryErrorKind::UnsupportedAction,
+                    format!("unsupported action: {action}"),
+                ));
+            }
+        };
+
+        self.generation = self.generation.saturating_add(1);
+        Ok(HistoryMutationResult {
+            adapter: self.adapter_name(),
+            action: action.to_owned(),
+            requested_id: entry_id,
+            effective_id,
+            replacement_id,
+            removed,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
+    }
+
+    fn toggle_pin(
+        &mut self,
+        connection: &Connection,
+        entry_id: i64,
+    ) -> Result<(), HistoryError> {
+        let current: i32 = match connection.query_row(
+            "SELECT is_pinned FROM clipboard_history WHERE id = ?1",
+            [entry_id],
+            |row| row.get(0),
+        ) {
+            Ok(value) => value,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Err(entry_not_found(entry_id)),
+            Err(error) => {
+                return Err(storage_error("failed to read pin state", error));
+            }
+        };
+
+        let new_pinned = current == 0;
+        let pinned_order: i64 = if new_pinned {
+            connection
+                .query_row(
+                    "SELECT COALESCE(MAX(pinned_order), 0) + 1 FROM clipboard_history WHERE is_pinned = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1)
+        } else {
+            0
+        };
+
+        connection
+            .execute(
+                "UPDATE clipboard_history SET is_pinned = ?1, pinned_order = ?2 WHERE id = ?3",
+                rusqlite::params![i32::from(new_pinned), pinned_order, entry_id],
+            )
+            .map_err(|error| storage_error("failed to update pin state", error))?;
+
+        self.last_action = format!(
+            "Entry {entry_id} {}",
+            if new_pinned { "pinned" } else { "unpinned" }
+        );
+        Ok(())
+    }
 }
 
-fn open_read_only(path: &Path) -> Result<Connection, HistoryError> {
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| {
+fn open_sqlite_connection(path: &Path, read_only: bool) -> Result<Connection, HistoryError> {
+    let flags = if read_only {
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    };
+    Connection::open_with_flags(path, flags).map_err(|error| {
         storage_error(
-            &format!("failed to open {} read-only", path.display()),
+            &format!(
+                "failed to open {} {}",
+                path.display(),
+                if read_only { "read-only" } else { "read-write" }
+            ),
             error,
         )
     })
+}
+
+fn ensure_sqlite_entry(connection: &Connection, entry_id: i64) -> Result<(), HistoryError> {
+    let exists: i64 = match connection.query_row(
+        "SELECT 1 FROM clipboard_history WHERE id = ?1",
+        [entry_id],
+        |row| row.get(0),
+    ) {
+        Ok(value) => value,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(entry_not_found(entry_id)),
+        Err(error) => return Err(storage_error("failed to look up clipboard entry", error)),
+    };
+    let _ = exists;
+    Ok(())
 }
 
 fn database_generation(path: &Path) -> u64 {
@@ -433,9 +584,55 @@ fn load_latest_history(
          FROM clipboard_history
          ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
          LIMIT ?1",
-        None,
-        limit,
+        QueryArgs::Limit(limit),
     )
+}
+
+fn load_snapshot_items(
+    connection: &Connection,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<HistoryItem>, HistoryError> {
+    match parse_snapshot_query(query) {
+        SnapshotQuery::Latest => load_latest_history(connection, limit),
+        SnapshotQuery::Type {
+            content_type,
+            text,
+        } if text.is_empty() => query_history(
+            connection,
+            "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
+             FROM clipboard_history
+             WHERE lower(content_type) = lower(?1)
+             ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+             LIMIT ?2",
+            QueryArgs::Type {
+                content_type,
+                text: None,
+                limit,
+            },
+        ),
+        SnapshotQuery::Type {
+            content_type,
+            text,
+        } => query_history(
+            connection,
+            "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
+             FROM clipboard_history
+             WHERE lower(content_type) = lower(?1)
+               AND (
+                    instr(lower(source_app), lower(?2)) > 0
+                    OR instr(lower(preview), lower(?2)) > 0
+               )
+             ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+             LIMIT ?3",
+            QueryArgs::Type {
+                content_type,
+                text: Some(text),
+                limit,
+            },
+        ),
+        SnapshotQuery::Text(text) => search_latest_history(connection, text, limit),
+    }
 }
 
 fn search_latest_history(
@@ -452,16 +649,76 @@ fn search_latest_history(
             OR instr(lower(preview), lower(?1)) > 0
          ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
          LIMIT ?2",
-        Some(query),
-        limit,
+        QueryArgs::Search { query, limit },
     )
+}
+
+enum SnapshotQuery<'a> {
+    Latest,
+    Text(&'a str),
+    Type {
+        content_type: &'a str,
+        text: &'a str,
+    },
+}
+
+enum QueryArgs<'a> {
+    Limit(i64),
+    Search {
+        query: &'a str,
+        limit: i64,
+    },
+    Type {
+        content_type: &'a str,
+        text: Option<&'a str>,
+        limit: i64,
+    },
+}
+
+fn parse_snapshot_query(query: &str) -> SnapshotQuery<'_> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return SnapshotQuery::Latest;
+    }
+    if let Some(rest) = strip_type_prefix(trimmed) {
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            return SnapshotQuery::Text(trimmed);
+        }
+        let (content_type, text) = match rest.split_once(char::is_whitespace) {
+            Some((content_type, text)) => (content_type, text.trim()),
+            None => (rest, ""),
+        };
+        if content_type.is_empty() {
+            return SnapshotQuery::Text(trimmed);
+        }
+        return SnapshotQuery::Type { content_type, text };
+    }
+    SnapshotQuery::Text(trimmed)
+}
+
+fn strip_type_prefix(query: &str) -> Option<&str> {
+    let bytes = query.as_bytes();
+    if bytes.len() >= 5 && bytes[..5].eq_ignore_ascii_case(b"type:") {
+        Some(&query[5..])
+    } else {
+        None
+    }
+}
+
+fn redact_sensitive_previews(items: &mut [HistoryItem]) {
+    for item in items {
+        if item.is_sensitive || item.preview.starts_with(ENCRYPT_PREFIX) {
+            item.preview = SENSITIVE_PREVIEW.to_owned();
+            item.is_sensitive = true;
+        }
+    }
 }
 
 fn query_history(
     connection: &Connection,
     sql: &str,
-    query: Option<&str>,
-    limit: i64,
+    args: QueryArgs<'_>,
 ) -> Result<Vec<HistoryItem>, HistoryError> {
     let mut statement = connection
         .prepare(sql)
@@ -481,13 +738,29 @@ fn query_history(
         })
     };
 
-    let rows = match query {
-        Some(value) => statement
-            .query_map(rusqlite::params![value, limit], map_row)
-            .map_err(|error| storage_error("failed to search clipboard history", error))?,
-        None => statement
+    let rows = match args {
+        QueryArgs::Limit(limit) => statement
             .query_map([limit], map_row)
             .map_err(|error| storage_error("failed to load clipboard history", error))?,
+        QueryArgs::Search { query, limit } => statement
+            .query_map(rusqlite::params![query, limit], map_row)
+            .map_err(|error| storage_error("failed to search clipboard history", error))?,
+        QueryArgs::Type {
+            content_type,
+            text: None,
+            limit,
+        } => statement
+            .query_map(rusqlite::params![content_type, limit], map_row)
+            .map_err(|error| storage_error("failed to filter clipboard history by type", error))?,
+        QueryArgs::Type {
+            content_type,
+            text: Some(text),
+            limit,
+        } => statement
+            .query_map(rusqlite::params![content_type, text, limit], map_row)
+            .map_err(|error| {
+                storage_error("failed to search clipboard history by type", error)
+            })?,
     };
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -522,17 +795,35 @@ fn format_timestamp(timestamp: i64) -> String {
 }
 
 fn filter_items(items: &[HistoryItem], query: &str) -> Vec<HistoryItem> {
-    let normalized_query = query.trim().to_lowercase();
     items
         .iter()
-        .filter(|item| {
-            normalized_query.is_empty()
-                || item.preview.to_lowercase().contains(&normalized_query)
-                || item.source_app.to_lowercase().contains(&normalized_query)
-                || item.content_type.to_lowercase().contains(&normalized_query)
-        })
+        .filter(|item| item_matches_query(item, query))
         .cloned()
         .collect()
+}
+
+fn item_matches_query(item: &HistoryItem, query: &str) -> bool {
+    match parse_snapshot_query(query) {
+        SnapshotQuery::Latest => true,
+        SnapshotQuery::Type {
+            content_type,
+            text,
+        } => {
+            item.content_type.eq_ignore_ascii_case(content_type)
+                && (text.is_empty() || item_matches_text(item, text))
+        }
+        SnapshotQuery::Text(text) => item_matches_text(item, text),
+    }
+}
+
+fn item_matches_text(item: &HistoryItem, query: &str) -> bool {
+    let normalized_query = query.trim().to_lowercase();
+    if normalized_query.is_empty() {
+        return true;
+    }
+    item.preview.to_lowercase().contains(&normalized_query)
+        || item.source_app.to_lowercase().contains(&normalized_query)
+        || item.content_type.to_lowercase().contains(&normalized_query)
 }
 
 fn ensure_item_exists(items: &[HistoryItem], entry_id: i64) -> Result<(), HistoryError> {
@@ -625,6 +916,15 @@ fn sample_items() -> Vec<HistoryItem> {
             captured_at: "12 minutes ago".to_owned(),
             is_pinned: false,
             is_sensitive: false,
+        },
+        HistoryItem {
+            id: 107,
+            content_type: "text".to_owned(),
+            preview: "hunter2-should-not-appear-in-snapshot".to_owned(),
+            source_app: "Password Manager".to_owned(),
+            captured_at: "15 minutes ago".to_owned(),
+            is_pinned: false,
+            is_sensitive: true,
         },
     ]
 }
@@ -834,5 +1134,127 @@ mod tests {
         let error = history.content(999).unwrap_err();
 
         assert_eq!(error.kind(), HistoryErrorKind::NotFound);
+    }
+
+    #[test]
+    fn memory_type_filter_is_exact_and_redacts_sensitive_preview() {
+        let history = ClipboardHistory::synthetic();
+
+        let typed = history.snapshot("type:text").unwrap();
+        assert!(typed.items.iter().all(|item| item.content_type == "text"));
+        assert!(typed.items.iter().any(|item| item.id == 101));
+        assert!(typed.items.iter().any(|item| item.id == 107));
+        assert!(!typed.items.iter().any(|item| item.id == 102));
+
+        let sensitive = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == 107)
+            .unwrap();
+        assert!(sensitive.is_sensitive);
+        assert_eq!(sensitive.preview, SENSITIVE_PREVIEW);
+        assert!(!history
+            .snapshot("")
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.preview.contains("hunter2")));
+
+        let content = history.content(107).unwrap();
+        assert!(!content.available);
+        assert!(content.is_sensitive);
+    }
+
+    #[test]
+    fn sqlite_history_writes_pin_and_delete_with_stable_ids() {
+        let path = temporary_database("write");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let pin = history.apply_action(1, "pin").unwrap();
+        assert_eq!(pin.adapter, "sqlite");
+        assert!(!history.snapshot("").unwrap().read_only);
+        assert_eq!(pin.replacement_id, None);
+        assert_eq!(pin.effective_id, Some(1));
+        assert!(
+            history
+                .snapshot("")
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == 1)
+                .unwrap()
+                .is_pinned
+        );
+
+        drop(history);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        assert!(
+            history
+                .snapshot("")
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == 1)
+                .unwrap()
+                .is_pinned
+        );
+
+        let delete = history.apply_action(1, "delete").unwrap();
+        assert!(delete.removed);
+        assert_eq!(delete.effective_id, None);
+        assert_eq!(delete.replacement_id, None);
+        assert!(!history
+            .snapshot("")
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.id == 1));
+
+        drop(history);
+        let history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+        assert!(!history
+            .snapshot("")
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.id == 1));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_type_filter_matches_content_type_exactly() {
+        let path = temporary_database("type-filter");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (id, content_type, content, html_content, source_app, timestamp, preview, is_pinned, pinned_order, tags)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    4,
+                    "code",
+                    "fn main() {}",
+                    Option::<String>::None,
+                    "VS Code",
+                    5,
+                    "preview mentions text without being a text item",
+                    0,
+                    0,
+                    "[]"
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+        let code = history.snapshot("type:code").unwrap();
+        assert_eq!(code.items.len(), 1);
+        assert_eq!(code.items[0].id, 4);
+        assert_eq!(history.snapshot("type:text").unwrap().items.len(), 3);
+        fs::remove_file(path).unwrap();
     }
 }

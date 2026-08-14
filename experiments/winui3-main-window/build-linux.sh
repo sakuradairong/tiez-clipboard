@@ -63,6 +63,8 @@ done
 
 echo "Rust host: $(rustc -vV | awk '/^host:/ { print $2 }')"
 
+export CARGO_TARGET_DIR="$ROOT/rust-core/target"
+
 if [[ "$SKIP_TESTS" == false ]]; then
   cargo test --manifest-path "$CORE_MANIFEST" --locked
   cargo test --manifest-path "$RUST_MANIFEST" --locked
