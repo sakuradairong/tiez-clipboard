@@ -81,18 +81,20 @@ Tauri and this executable against the same `clipboard.db` at once.
 ## Windows prerequisites
 
 - Windows 11 x64 recommended; Windows 10 2004 is the current project minimum;
-- Visual Studio 2022 with:
+- Visual Studio 2022 (or Build Tools) with:
   - **Desktop development with C++**;
   - **Windows application development** / Windows App SDK tools;
   - MSVC v143;
   - Windows 11 SDK `10.0.26100`;
+  - `build.ps1` searches every VS product, including Build Tools;
 - repository-pinned Rust `1.88.0-x86_64-pc-windows-msvc` toolchain;
 - PowerShell 5.1 or newer;
 - internet access for first-time NuGet restore.
 
 The project currently pins the maintained Windows App SDK `1.8.260710003`
 line instead of the newer `2.x` line so the first build tests a serviced,
-established toolchain before exploring a major SDK upgrade.
+established toolchain before exploring a major SDK upgrade. 1.8 ships WinUI
+and WebView2 as split packages; `packages.config` restores those explicitly.
 
 ## Linux development
 

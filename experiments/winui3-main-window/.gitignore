@@ -4,4 +4,5 @@
 /rust-core/target/
 /winui-app/Generated Files/
 /winui-app/.vs/
+/x64/
 *.user

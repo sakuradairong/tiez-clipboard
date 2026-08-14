@@ -11,7 +11,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ~MainWindow();
 
         void SearchBox_TextChanged(
-            Microsoft::UI::Xaml::Controls::TextBox const&,
+            winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::Controls::TextChangedEventArgs const&);
         void SearchBox_KeyDown(
             winrt::Windows::Foundation::IInspectable const&,
@@ -56,7 +56,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool HandleNavigationKey(Windows::System::VirtualKey key);
         void MoveSelection(int delta);
         void UpdateSelectionVisuals();
-        std::string CurrentQuery() const;
+        std::string CurrentQuery();
         void SetTypeFilter(std::string filter);
 
         std::unique_ptr<tiez::probe::RustCoreBridge> m_core;

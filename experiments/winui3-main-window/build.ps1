@@ -24,9 +24,17 @@ $Nuget = Join-Path $Root ".tools\nuget.exe"
 function Resolve-MSBuild {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere) {
-        $resolved = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
-        if ($resolved) {
-            return $resolved
+        # Default vswhere product filter skips Build Tools. This machine (and many
+        # CI images) only has VS Build Tools, so search every product first.
+        $queries = @(
+            @("-latest", "-products", "*", "-requires", "Microsoft.Component.MSBuild", "-find", "MSBuild\**\Bin\MSBuild.exe"),
+            @("-latest", "-prerelease", "-products", "*", "-requires", "Microsoft.Component.MSBuild", "-find", "MSBuild\**\Bin\MSBuild.exe")
+        )
+        foreach ($query in $queries) {
+            $resolved = & $vswhere @query | Select-Object -First 1
+            if ($resolved) {
+                return $resolved
+            }
         }
     }
 
@@ -35,7 +43,7 @@ function Resolve-MSBuild {
         return $command.Source
     }
 
-    throw "MSBuild was not found. Install Visual Studio 2022 with Desktop development with C++ and Windows application development workloads."
+    throw "MSBuild was not found. Install Visual Studio 2022 with Desktop development with C++ and Windows application development workloads, or Visual Studio Build Tools with the MSBuild and C++ workloads."
 }
 
 function Ensure-NuGet {

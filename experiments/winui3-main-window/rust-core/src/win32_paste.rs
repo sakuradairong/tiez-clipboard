@@ -6,13 +6,14 @@
 use std::ptr;
 use tiez_core::paste_coordinator::{execute_paste, PasteExecutor, PastePayload, PastePlan};
 use windows_sys::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_UNICODETEXT,
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 
+const CF_UNICODETEXT: u32 = 13;
 const VK_CONTROL: VIRTUAL_KEY = 0x11;
 const VK_V: VIRTUAL_KEY = 0x56;
 

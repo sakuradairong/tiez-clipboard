@@ -23,11 +23,11 @@ namespace
         return winrt::hstring{ message };
     }
 
-    Microsoft::UI::Xaml::Controls::Button ActionButton(
+    winrt::Microsoft::UI::Xaml::Controls::Button ActionButton(
         winrt::hstring const& label,
         std::function<void()> action)
     {
-        Microsoft::UI::Xaml::Controls::Button button;
+        winrt::Microsoft::UI::Xaml::Controls::Button button;
         button.Content(winrt::box_value(label));
         button.Click([action = std::move(action)](auto const&, auto const&)
         {
@@ -59,6 +59,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
 {
     using namespace Microsoft::UI::Xaml;
     using namespace Microsoft::UI::Xaml::Controls;
+    using namespace Microsoft::UI::Xaml::Controls::Primitives;
     using namespace Microsoft::UI::Xaml::Input;
     using namespace Microsoft::UI::Xaml::Media;
     using namespace Windows::Data::Json;
@@ -91,7 +92,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         TeardownLifecycle();
     }
 
-    void MainWindow::SearchBox_TextChanged(TextBox const&, TextChangedEventArgs const&)
+    void MainWindow::SearchBox_TextChanged(IInspectable const&, TextChangedEventArgs const&)
     {
         if (m_core)
         {
@@ -672,7 +673,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
-    std::string MainWindow::CurrentQuery() const
+    std::string MainWindow::CurrentQuery()
     {
         auto text = winrt::to_string(SearchBox().Text());
         if (m_typeFilter.empty())

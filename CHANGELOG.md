@@ -15,6 +15,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
 
+### Fixed
+
+- WinUI probe now restores WASDK 1.8 split WinUI/WebView2 packages, finds MSBuild on Visual Studio Build Tools, and compiles the Windows paste helper against `windows-sys` 0.59.
+
 ## [0.3.8] - 2026-07-27
 
 ### Added
