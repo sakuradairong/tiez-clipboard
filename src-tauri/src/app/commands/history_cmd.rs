@@ -1,3 +1,5 @@
+use crate::app::history_adapter::TauriHistoryAdapter;
+use crate::app::mutation_adapter::TauriMutationAdapter;
 use crate::app_state::{AppDataDir, SessionHistory};
 use crate::database::DbState;
 use crate::domain::models::ClipboardEntry;
@@ -7,7 +9,7 @@ use crate::infrastructure::repository::tag_repo::TagRepository;
 use crate::services::clipboard::{
     build_entry_preview, derive_rich_text_content, truncate_html_for_preview,
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 fn normalize_rich_text_item_content(item: &mut ClipboardEntry) {
     if item.content_type != "rich_text" {
@@ -28,43 +30,11 @@ pub fn get_clipboard_history(
     offset: i32,
     content_type: Option<String>,
 ) -> AppResult<Vec<ClipboardEntry>> {
-    // 1. Get history from repository
-    let mut history = state
-        .repo
-        .get_history(limit, offset, content_type.as_deref())?;
+    let adapter = TauriHistoryAdapter::new(&state.repo, session.inner());
+    let mut history = adapter.list(limit, offset, content_type.as_deref())?;
 
-    // 2. Add session history items (non-persisted) ONLY on the first page
-    if offset == 0 {
-        let session_items = session.inner().0.lock().unwrap();
-        for item in session_items.iter().rev() {
-            if let Some(ct) = content_type.as_deref() {
-                if item.content_type != ct {
-                    continue;
-                }
-            }
-            // Avoid duplicates: if item is already in DB, it will have id > 0
-            if !history.iter().any(|h| h.id == item.id && item.id != 0) {
-                history.push(item.clone());
-            }
-        }
-    }
-
-    // 3. Apply stable sorting: Pinned -> Pinned Order -> Timestamp -> ID
-    // This MUST match the repository's logic to maintain pagination stability
-    history.sort_by(|a, b| {
-        b.is_pinned
-            .cmp(&a.is_pinned)
-            .then_with(|| b.pinned_order.cmp(&a.pinned_order))
-            .then_with(|| b.timestamp.cmp(&a.timestamp))
-            .then_with(|| b.id.cmp(&a.id))
-    });
-
-    // 4. Truncate to limit
-    if history.len() > limit as usize {
-        history.truncate(limit as usize);
-    }
-
-    // 5. Truncate content for UI performance
+    // Truncate content for UI performance after the shared history policy has
+    // merged session-only entries and established stable ordering.
     for item in &mut history {
         normalize_rich_text_item_content(item);
 
@@ -111,30 +81,8 @@ pub fn search_clipboard_history(
     tag_only: Option<bool>,
 ) -> AppResult<Vec<ClipboardEntry>> {
     let is_tag_only = tag_only.unwrap_or(false);
-    let mut history = state.repo.search(&search_term, limit, is_tag_only)?;
-
-    let term = search_term.to_lowercase();
-    let session_items = session.inner().0.lock().unwrap();
-    for item in session_items.iter().rev() {
-        let matches = if is_tag_only {
-            item.tags.iter().any(|t| t.to_lowercase().contains(&term))
-        } else {
-            item.content.to_lowercase().contains(&term)
-                || item.source_app.to_lowercase().contains(&term)
-                || item.tags.iter().any(|t| t.to_lowercase().contains(&term))
-        };
-
-        if matches {
-            if !history.iter().any(|h| h.id == item.id && item.id != 0) {
-                history.push(item.clone());
-            }
-        }
-    }
-
-    history.sort_by(|a, b| b.timestamp.cmp(&a.timestamp).then_with(|| b.id.cmp(&a.id)));
-    if history.len() > limit as usize {
-        history.truncate(limit as usize);
-    }
+    let adapter = TauriHistoryAdapter::new(&state.repo, session.inner());
+    let mut history = adapter.search(&search_term, limit, is_tag_only)?;
 
     for item in &mut history {
         normalize_rich_text_item_content(item);
@@ -181,18 +129,11 @@ pub fn delete_clipboard_entry(
     app_data: State<'_, AppDataDir>,
     id: i64,
 ) -> AppResult<()> {
-    {
-        let mut session_items = session.inner().0.lock().unwrap();
-        session_items.retain(|item| item.id != id);
-    }
-
-    if id > 0 {
-        let data_dir = app_data.0.lock().unwrap();
-        state.repo.delete(id, Some(&data_dir))?;
-    }
-    let _ = app_handle.emit("clipboard-changed", ());
-    crate::services::cloud_sync::request_cloud_sync(app_handle);
-    Ok(())
+    TauriMutationAdapter::new(state.inner(), &app_handle).delete(
+        session.inner(),
+        app_data.inner(),
+        id,
+    )
 }
 
 #[tauri::command]
@@ -202,15 +143,7 @@ pub fn clear_clipboard_history(
     session: State<'_, SessionHistory>,
     app_data: State<'_, AppDataDir>,
 ) -> AppResult<()> {
-    {
-        let mut session_items = session.inner().0.lock().unwrap();
-        session_items.retain(|item| item.is_pinned || !item.tags.is_empty());
-    }
-    let data_dir = app_data.0.lock().unwrap();
-    state.repo.clear(Some(&data_dir)).map_err(AppError::from)?;
-    let _ = app_handle.emit("clipboard-changed", ());
-    crate::services::cloud_sync::request_cloud_sync(app_handle);
-    Ok(())
+    TauriMutationAdapter::new(state.inner(), &app_handle).clear(session.inner(), app_data.inner())
 }
 
 #[tauri::command]
@@ -325,32 +258,16 @@ pub fn get_clipboard_content(
     session: State<'_, SessionHistory>,
     id: i64,
 ) -> AppResult<String> {
-    {
-        let session_items = session.inner().0.lock().unwrap();
-        if let Some(item) = session_items.iter().find(|i| i.id == id) {
-            if item.content_type == "rich_text" {
-                let normalized =
-                    derive_rich_text_content(&item.content, item.html_content.as_deref());
-                if !normalized.trim().is_empty() {
-                    return Ok(normalized);
-                }
-            }
-            return Ok(item.content.clone());
-        }
-    }
-
-    if let Some((content, content_type, html_content)) = state
-        .repo
-        .get_entry_content_with_html(id)
-        .map_err(AppError::from)?
-    {
-        if content_type == "rich_text" {
-            let normalized = derive_rich_text_content(&content, html_content.as_deref());
+    let adapter = TauriHistoryAdapter::new(&state.repo, session.inner());
+    if let Some(resolved) = adapter.content(id).map_err(AppError::from)? {
+        if resolved.content_type == "rich_text" {
+            let normalized =
+                derive_rich_text_content(&resolved.content, resolved.html_content.as_deref());
             if !normalized.trim().is_empty() {
                 return Ok(normalized);
             }
         }
-        return Ok(content);
+        return Ok(resolved.content);
     }
 
     Err(AppError::Validation("Entry not found".to_string()))
@@ -362,13 +279,7 @@ pub fn update_pinned_order(
     state: State<'_, DbState>,
     orders: Vec<(i64, i64)>,
 ) -> AppResult<()> {
-    state
-        .repo
-        .update_pinned_order(orders)
-        .map_err(AppError::from)?;
-    let _ = app_handle.emit("clipboard-changed", ());
-    crate::services::cloud_sync::request_cloud_sync(app_handle);
-    Ok(())
+    TauriMutationAdapter::new(state.inner(), &app_handle).update_pinned_order(orders)
 }
 
 #[tauri::command]

@@ -6244,6 +6244,7 @@ dependencies = [
  "tauri-plugin-sql",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tiez-core",
  "tokio",
  "tokio-util",
  "urlencoding",
@@ -6255,6 +6256,15 @@ dependencies = [
  "windows-version",
  "winreg 0.55.0",
  "zip 2.4.2",
+]
+
+[[package]]
+name = "tiez-core"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
