@@ -16,6 +16,7 @@ Set-StrictMode -Version Latest
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Packages = Join-Path $Root "packages"
 $Artifacts = Join-Path $Root "artifacts\$Platform\$Configuration"
+$CoreManifest = Join-Path $Root "..\..\crates\tiez-core\Cargo.toml"
 $RustManifest = Join-Path $Root "rust-core\Cargo.toml"
 $Solution = Join-Path $Root "Tiez.WinUIProbe.sln"
 $Nuget = Join-Path $Root ".tools\nuget.exe"
@@ -61,11 +62,14 @@ if ($hostTriple -notmatch "windows-msvc$") {
 }
 
 if (-not $SkipRustTests) {
-    & $cargo.Source test --manifest-path $RustManifest
-    if ($LASTEXITCODE -ne 0) { throw "Rust tests failed." }
+    & $cargo.Source test --manifest-path $CoreManifest --locked
+    if ($LASTEXITCODE -ne 0) { throw "Shared Rust core tests failed." }
+
+    & $cargo.Source test --manifest-path $RustManifest --locked
+    if ($LASTEXITCODE -ne 0) { throw "WinUI C ABI tests failed." }
 }
 
-& $cargo.Source build --manifest-path $RustManifest --release
+& $cargo.Source build --manifest-path $RustManifest --release --locked
 if ($LASTEXITCODE -ne 0) { throw "Rust core build failed." }
 
 New-Item -ItemType Directory -Force -Path $Artifacts | Out-Null

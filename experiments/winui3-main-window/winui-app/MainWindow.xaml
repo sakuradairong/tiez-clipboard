@@ -17,11 +17,24 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <StackPanel Spacing="4">
+            <StackPanel Spacing="6">
                 <TextBlock Text="TieZ" Style="{ThemeResource TitleTextBlockStyle}" />
                 <TextBlock
-                    Text="WinUI 3 main-window experiment · C++/WinRT + in-process Rust C ABI"
+                    Text="WinUI 3 main-window experiment · C++/WinRT + switchable Rust adapter"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="Adapter" VerticalAlignment="Center" />
+                    <Border
+                        Padding="8,3"
+                        Background="{ThemeResource AccentFillColorSecondaryBrush}"
+                        CornerRadius="10">
+                        <TextBlock x:Name="AdapterText" Text="loading" />
+                    </Border>
+                    <TextBlock
+                        x:Name="ReadOnlyText"
+                        VerticalAlignment="Center"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -36,16 +49,59 @@
             PlaceholderText="Search the Rust snapshot by text, source app, or content type"
             TextChanged="SearchBox_TextChanged" />
 
-        <Grid Grid.Row="2">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="ItemsPanel" Spacing="12" />
-            </ScrollViewer>
-            <TextBlock
-                x:Name="EmptyState"
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                Text="No clipboard entries match this query."
-                Visibility="Collapsed" />
+        <Grid Grid.Row="2" ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*" />
+                <ColumnDefinition Width="2*" />
+            </Grid.ColumnDefinitions>
+
+            <Grid>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="ItemsPanel" Spacing="12" />
+                </ScrollViewer>
+                <TextBlock
+                    x:Name="EmptyState"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Text="No clipboard entries match this query."
+                    Visibility="Collapsed" />
+            </Grid>
+
+            <Border
+                Grid.Column="1"
+                Padding="16"
+                Background="{ThemeResource LayerFillColorAltBrush}"
+                CornerRadius="8">
+                <Grid RowSpacing="10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock
+                        x:Name="DetailsTitleText"
+                        Text="Clipboard details"
+                        Style="{ThemeResource SubtitleTextBlockStyle}" />
+                    <TextBlock
+                        x:Name="DetailsMetadataText"
+                        Grid.Row="1"
+                        Text="Select Open details on an entry"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap" />
+                    <ScrollViewer
+                        Grid.Row="2"
+                        HorizontalScrollBarVisibility="Disabled"
+                        VerticalScrollBarVisibility="Auto">
+                        <TextBlock
+                            x:Name="DetailsContentText"
+                            FontFamily="Consolas"
+                            IsTextSelectionEnabled="True"
+                            Text="Full clipboard content will appear here without WebView2."
+                            TextWrapping="Wrap" />
+                    </ScrollViewer>
+                </Grid>
+            </Border>
         </Grid>
 
         <Border

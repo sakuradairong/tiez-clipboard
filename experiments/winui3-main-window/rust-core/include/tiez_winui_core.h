@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 1,
+    TIEZ_CORE_ABI_VERSION = 3,
 };
 
 TIEZ_CORE_API uint32_t tiez_core_abi_version(void);
@@ -32,8 +32,21 @@ TIEZ_CORE_API char* tiez_core_get_snapshot_json(
     TiezCoreHandle* handle,
     const char* query_utf8);
 
+// Returns full content metadata for one stable entry ID as newly allocated
+// UTF-8 JSON. Sensitive or encrypted payloads are returned as unavailable.
+TIEZ_CORE_API char* tiez_core_get_content_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id);
+
 // Supported prototype actions: pin, delete, paste-plain, and paste-rich.
 TIEZ_CORE_API bool tiez_core_apply_action(
+    TiezCoreHandle* handle,
+    int64_t entry_id,
+    const char* action_utf8);
+
+// Applies an action and returns a newly allocated structured JSON result with
+// requested/effective/replacement IDs, removal state, generation, and message.
+TIEZ_CORE_API char* tiez_core_apply_action_json(
     TiezCoreHandle* handle,
     int64_t entry_id,
     const char* action_utf8);

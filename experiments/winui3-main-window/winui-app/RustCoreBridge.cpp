@@ -43,7 +43,8 @@ namespace tiez::probe
             m_create = Resolve<CreateFn>("tiez_core_create");
             m_destroy = Resolve<DestroyFn>("tiez_core_destroy");
             m_snapshot = Resolve<SnapshotFn>("tiez_core_get_snapshot_json");
-            m_applyAction = Resolve<ApplyActionFn>("tiez_core_apply_action");
+            m_content = Resolve<ContentFn>("tiez_core_get_content_json");
+            m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
             m_stringFree = Resolve<StringFreeFn>("tiez_core_string_free");
 
@@ -94,13 +95,29 @@ namespace tiez::probe
         return ConsumeString(result);
     }
 
-    void RustCoreBridge::ApplyAction(std::int64_t entryId, std::string_view action) const
+    std::string RustCoreBridge::Content(std::int64_t entryId) const
+    {
+        auto* result = m_content(m_handle, entryId);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust content lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ApplyAction(
+        std::int64_t entryId,
+        std::string_view action) const
     {
         std::string actionValue{ action };
-        if (!m_applyAction(m_handle, entryId, actionValue.c_str()))
+        auto* result = m_applyActionJson(m_handle, entryId, actionValue.c_str());
+        if (result == nullptr)
         {
             throw std::runtime_error("Rust action failed: " + TakeLastError());
         }
+
+        return ConsumeString(result);
     }
 
     std::uint32_t RustCoreBridge::AbiVersion() const noexcept

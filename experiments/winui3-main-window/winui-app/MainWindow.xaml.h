@@ -21,9 +21,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     private:
         void RefreshItems();
+        void ShowContent(std::int64_t entryId);
         void ApplyAction(std::int64_t entryId, std::string_view action);
         Microsoft::UI::Xaml::UIElement CreateItemCard(
-            Windows::Data::Json::JsonObject const& item);
+            Windows::Data::Json::JsonObject const& item,
+            bool readOnly);
         void SetStatus(winrt::hstring const& message);
         void WriteReadyMarker();
         HWND GetWindowHandle();

@@ -14,7 +14,10 @@ namespace tiez::probe
         RustCoreBridge& operator=(RustCoreBridge const&) = delete;
 
         [[nodiscard]] std::string Snapshot(std::string_view query) const;
-        void ApplyAction(std::int64_t entryId, std::string_view action) const;
+        [[nodiscard]] std::string Content(std::int64_t entryId) const;
+        [[nodiscard]] std::string ApplyAction(
+            std::int64_t entryId,
+            std::string_view action) const;
         [[nodiscard]] std::uint32_t AbiVersion() const noexcept;
 
         [[nodiscard]] static winrt::hstring Utf8ToHstring(std::string_view value);
@@ -24,7 +27,8 @@ namespace tiez::probe
         using CreateFn = TiezCoreHandle*(__cdecl*)();
         using DestroyFn = void(__cdecl*)(TiezCoreHandle*);
         using SnapshotFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
-        using ApplyActionFn = bool(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
+        using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
+        using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using TakeLastErrorFn = char*(__cdecl*)();
         using StringFreeFn = void(__cdecl*)(char*);
 
@@ -41,7 +45,8 @@ namespace tiez::probe
         CreateFn m_create{};
         DestroyFn m_destroy{};
         SnapshotFn m_snapshot{};
-        ApplyActionFn m_applyAction{};
+        ContentFn m_content{};
+        ApplyActionJsonFn m_applyActionJson{};
         TakeLastErrorFn m_takeLastError{};
         StringFreeFn m_stringFree{};
     };

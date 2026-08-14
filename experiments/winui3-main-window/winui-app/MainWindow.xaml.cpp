@@ -103,17 +103,26 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const snapshot = m_core->Snapshot(winrt::to_string(SearchBox().Text()));
             auto const root = JsonObject::Parse(tiez::probe::RustCoreBridge::Utf8ToHstring(snapshot));
             auto const items = root.GetNamedArray(L"items");
+            auto const adapter = root.GetNamedString(L"adapter");
+            auto const readOnly = root.GetNamedBoolean(L"read_only");
+
+            AdapterText().Text(adapter);
+            ReadOnlyText().Text(readOnly
+                ? L"Real TieZ history · actions disabled"
+                : L"Synthetic data · actions enabled");
 
             ItemsPanel().Children().Clear();
             for (std::uint32_t index = 0; index < items.Size(); ++index)
             {
-                ItemsPanel().Children().Append(CreateItemCard(items.GetObjectAt(index)));
+                ItemsPanel().Children().Append(CreateItemCard(items.GetObjectAt(index), readOnly));
             }
 
             EmptyState().Visibility(items.Size() == 0 ? Visibility::Visible : Visibility::Collapsed);
 
             std::wstringstream status;
-            status << L"Rust ABI " << static_cast<std::uint32_t>(root.GetNamedNumber(L"abi_version"))
+            status << adapter.c_str()
+                   << (readOnly ? L" · read-only · " : L" · mutable · ")
+                   << L"Rust ABI " << static_cast<std::uint32_t>(root.GetNamedNumber(L"abi_version"))
                    << L" · generation " << static_cast<std::uint64_t>(root.GetNamedNumber(L"generation"))
                    << L" · " << items.Size() << L" visible entries · "
                    << root.GetNamedString(L"last_action").c_str();
@@ -132,7 +141,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
-    UIElement MainWindow::CreateItemCard(JsonObject const& item)
+    UIElement MainWindow::CreateItemCard(JsonObject const& item, bool readOnly)
     {
         auto const entryId = static_cast<std::int64_t>(item.GetNamedNumber(L"id"));
         auto const isPinned = item.GetNamedBoolean(L"is_pinned");
@@ -183,18 +192,32 @@ namespace winrt::Tiez::WinUIProbe::implementation
         StackPanel actions;
         actions.Orientation(Orientation::Horizontal);
         actions.Spacing(8);
-        actions.Children().Append(ActionButton(
+        auto openButton = ActionButton(
+            L"Open details",
+            [this, entryId] { ShowContent(entryId); });
+        auto pinButton = ActionButton(
             isPinned ? L"Unpin" : L"Pin",
-            [this, entryId] { ApplyAction(entryId, "pin"); }));
-        actions.Children().Append(ActionButton(
+            [this, entryId] { ApplyAction(entryId, "pin"); });
+        auto pastePlainButton = ActionButton(
             L"Paste plain",
-            [this, entryId] { ApplyAction(entryId, "paste-plain"); }));
-        actions.Children().Append(ActionButton(
+            [this, entryId] { ApplyAction(entryId, "paste-plain"); });
+        auto pasteRichButton = ActionButton(
             L"Paste rich",
-            [this, entryId] { ApplyAction(entryId, "paste-rich"); }));
-        actions.Children().Append(ActionButton(
+            [this, entryId] { ApplyAction(entryId, "paste-rich"); });
+        auto deleteButton = ActionButton(
             L"Delete",
-            [this, entryId] { ApplyAction(entryId, "delete"); }));
+            [this, entryId] { ApplyAction(entryId, "delete"); });
+
+        pinButton.IsEnabled(!readOnly);
+        pastePlainButton.IsEnabled(!readOnly);
+        pasteRichButton.IsEnabled(!readOnly);
+        deleteButton.IsEnabled(!readOnly);
+
+        actions.Children().Append(openButton);
+        actions.Children().Append(pinButton);
+        actions.Children().Append(pastePlainButton);
+        actions.Children().Append(pasteRichButton);
+        actions.Children().Append(deleteButton);
 
         content.Children().Append(metadata);
         content.Children().Append(preview);
@@ -203,12 +226,82 @@ namespace winrt::Tiez::WinUIProbe::implementation
         return card;
     }
 
+    void MainWindow::ShowContent(std::int64_t entryId)
+    {
+        if (!m_core)
+        {
+            return;
+        }
+
+        try
+        {
+            auto const value = m_core->Content(entryId);
+            auto const content = JsonObject::Parse(tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            auto const contentType = content.GetNamedString(L"content_type");
+            auto const available = content.GetNamedBoolean(L"available");
+            auto const isSensitive = content.GetNamedBoolean(L"is_sensitive");
+
+            std::wstringstream title;
+            title << L"Entry " << entryId;
+            DetailsTitleText().Text(title.str());
+
+            std::wstring metadata{ contentType.c_str() };
+            metadata.append(isSensitive ? L" · sensitive" : L" · available");
+            DetailsMetadataText().Text(metadata);
+
+            if (available)
+            {
+                auto displayContent = content.GetNamedString(L"content");
+                if (displayContent.empty())
+                {
+                    auto const htmlContent = content.GetNamedValue(L"html_content");
+                    if (htmlContent.ValueType() == JsonValueType::String)
+                    {
+                        displayContent = htmlContent.GetString();
+                    }
+                }
+
+                DetailsContentText().Text(displayContent);
+                SetStatus(L"Full content loaded from the Tauri-independent Rust core.");
+            }
+            else
+            {
+                DetailsContentText().Text(content.GetNamedString(L"unavailable_reason"));
+                SetStatus(L"Content metadata loaded; the payload remains protected.");
+            }
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetStatus(StatusMessage(L"Content lookup failed: ", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"Content lookup failed: ",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
     void MainWindow::ApplyAction(std::int64_t entryId, std::string_view action)
     {
         try
         {
-            m_core->ApplyAction(entryId, action);
+            auto const value = m_core->ApplyAction(entryId, action);
+            auto const mutation = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
             RefreshItems();
+
+            std::wstringstream status;
+            status << mutation.GetNamedString(L"message").c_str()
+                   << L" · generation "
+                   << static_cast<std::uint64_t>(mutation.GetNamedNumber(L"generation"));
+            auto const replacement = mutation.GetNamedValue(L"replacement_id");
+            if (replacement.ValueType() == JsonValueType::Number)
+            {
+                status << L" · replacement ID "
+                       << static_cast<std::int64_t>(replacement.GetNumber());
+            }
+            SetStatus(status.str());
         }
         catch (std::exception const& error)
         {

@@ -1,106 +1,93 @@
-//! Throwaway Rust core used by the WinUI 3 main-window experiment.
+//! C ABI transport adapter for the WinUI 3 migration slice.
 //!
-//! The interface deliberately stays C-only. It tests the seam that a future
-//! WinUI adapter would use without coupling the experiment to Tauri types.
+//! Clipboard history behavior lives in the Tauri-independent `tiez-core`
+//! crate. This library only owns environment selection, panic containment,
+//! UTF-8/C string ownership, and the stable ABI consumed by C++/WinRT.
 
+use serde::Serialize;
 use std::cell::RefCell;
+use std::env;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::Mutex;
+use tiez_core::clipboard_history::{
+    ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
+};
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 3;
+const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ClipboardItem {
-    id: i64,
-    content_type: &'static str,
-    preview: String,
-    source_app: &'static str,
-    captured_at: &'static str,
-    is_pinned: bool,
-}
-
-#[derive(Debug)]
-struct CoreState {
-    generation: u64,
-    last_action: String,
-    items: Vec<ClipboardItem>,
-}
-
 #[repr(C)]
 pub struct TiezCoreHandle {
-    state: Mutex<CoreState>,
+    history: Mutex<ClipboardHistory>,
 }
 
 impl TiezCoreHandle {
-    fn new() -> Self {
-        Self {
-            state: Mutex::new(CoreState {
-                generation: 1,
-                last_action: "Rust core ready".to_owned(),
-                items: sample_items(),
-            }),
-        }
+    fn new_from_environment() -> Result<Self, String> {
+        let history = match env::var_os(DATABASE_ENV) {
+            Some(value) if !value.is_empty() => ClipboardHistory::open_sqlite_read_only(value)
+                .map_err(|error| format!("{DATABASE_ENV}: {error}"))?,
+            _ => ClipboardHistory::synthetic(),
+        };
+
+        Ok(Self {
+            history: Mutex::new(history),
+        })
     }
 }
 
-fn sample_items() -> Vec<ClipboardItem> {
-    vec![
-        ClipboardItem {
-            id: 101,
-            content_type: "text",
-            preview: "WinUI 3 main-window probe is connected to Rust through a C ABI."
-                .to_owned(),
-            source_app: "Visual Studio",
-            captured_at: "Just now",
-            is_pinned: true,
-        },
-        ClipboardItem {
-            id: 102,
-            content_type: "code",
-            preview: "tiez_core_get_snapshot_json(handle, query);".to_owned(),
-            source_app: "Windows Terminal",
-            captured_at: "1 minute ago",
-            is_pinned: false,
-        },
-        ClipboardItem {
-            id: 103,
-            content_type: "url",
-            preview: "https://github.com/jimuzhe/tiez-clipboard/issues/154".to_owned(),
-            source_app: "Microsoft Edge",
-            captured_at: "3 minutes ago",
-            is_pinned: false,
-        },
-        ClipboardItem {
-            id: 104,
-            content_type: "text",
-            preview: "中文、emoji 🚀 和 UTF-8 必须完整穿过 Rust/C++ 边界。".to_owned(),
-            source_app: "TieZ",
-            captured_at: "5 minutes ago",
-            is_pinned: false,
-        },
-        ClipboardItem {
-            id: 105,
-            content_type: "image",
-            preview: "Image preview placeholder · 1920 × 1080".to_owned(),
-            source_app: "Snipping Tool",
-            captured_at: "8 minutes ago",
-            is_pinned: false,
-        },
-        ClipboardItem {
-            id: 106,
-            content_type: "files",
-            preview: "release-notes.md\nTieZ-setup.exe".to_owned(),
-            source_app: "File Explorer",
-            captured_at: "12 minutes ago",
-            is_pinned: false,
-        },
-    ]
+#[derive(Serialize)]
+struct SnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a HistorySnapshot,
+}
+
+#[derive(Serialize)]
+struct MutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a HistoryMutationResult,
+}
+
+fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
+    serde_json::to_string(&SnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize clipboard history snapshot: {error}"))
+}
+
+fn content_json(content: &HistoryContent) -> Result<String, String> {
+    serde_json::to_string(content)
+        .map_err(|error| format!("failed to serialize clipboard history content: {error}"))
+}
+
+fn mutation_json(mutation: &HistoryMutationResult) -> Result<String, String> {
+    serde_json::to_string(&MutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("failed to serialize clipboard mutation result: {error}"))
+}
+
+fn apply_history_action(
+    handle: &TiezCoreHandle,
+    entry_id: i64,
+    action: &str,
+) -> Result<HistoryMutationResult, String> {
+    let mut history = handle
+        .history
+        .lock()
+        .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+    history
+        .apply_action(entry_id, action)
+        .map_err(|error| error.to_string())
 }
 
 fn set_last_error(message: impl Into<String>) {
@@ -139,70 +126,6 @@ fn optional_utf8(value: *const c_char) -> Result<String, String> {
         .to_str()
         .map(str::to_owned)
         .map_err(|error| format!("query_utf8 must be valid UTF-8: {error}"))
-}
-
-fn json_string(value: &str) -> String {
-    let mut output = String::with_capacity(value.len() + 2);
-    output.push('"');
-
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            value if value <= '\u{001f}' => {
-                use std::fmt::Write;
-                write!(output, "\\u{:04x}", value as u32).expect("writing to String cannot fail");
-            }
-            value => output.push(value),
-        }
-    }
-
-    output.push('"');
-    output
-}
-
-fn snapshot_json(state: &CoreState, query: &str) -> String {
-    let normalized_query = query.trim().to_lowercase();
-    let visible_items: Vec<_> = state
-        .items
-        .iter()
-        .filter(|item| {
-            normalized_query.is_empty()
-                || item.preview.to_lowercase().contains(&normalized_query)
-                || item.source_app.to_lowercase().contains(&normalized_query)
-                || item.content_type.contains(&normalized_query)
-        })
-        .collect();
-
-    let mut output = format!(
-        "{{\"abi_version\":{ABI_VERSION},\"generation\":{},\"total\":{},\"query\":{},\"last_action\":{},\"items\":[",
-        state.generation,
-        visible_items.len(),
-        json_string(query),
-        json_string(&state.last_action),
-    );
-
-    for (index, item) in visible_items.iter().enumerate() {
-        if index > 0 {
-            output.push(',');
-        }
-
-        output.push_str(&format!(
-            "{{\"id\":{},\"content_type\":{},\"preview\":{},\"source_app\":{},\"captured_at\":{},\"is_pinned\":{}}}",
-            item.id,
-            json_string(item.content_type),
-            json_string(&item.preview),
-            json_string(item.source_app),
-            json_string(item.captured_at),
-            item.is_pinned,
-        ));
-    }
-
-    output.push_str("]}");
-    output
 }
 
 fn into_owned_c_string(value: String) -> Result<*mut c_char, String> {
@@ -247,11 +170,17 @@ pub extern "C" fn tiez_core_abi_version() -> u32 {
 #[no_mangle]
 pub extern "C" fn tiez_core_create() -> *mut TiezCoreHandle {
     with_ffi_result(ptr::null_mut(), || {
-        Ok(Box::into_raw(Box::new(TiezCoreHandle::new())))
+        Ok(Box::into_raw(Box::new(
+            TiezCoreHandle::new_from_environment()?,
+        )))
     })
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `handle` must be null or a live pointer returned by `tiez_core_create`.
+/// A non-null handle must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_destroy(handle: *mut TiezCoreHandle) {
     catch_ffi((), || {
         if handle.is_null() {
@@ -265,83 +194,92 @@ pub unsafe extern "C" fn tiez_core_destroy(handle: *mut TiezCoreHandle) {
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `query_utf8` may be null; otherwise it must remain a readable,
+/// NUL-terminated UTF-8 string for the duration of this call.
 pub unsafe extern "C" fn tiez_core_get_snapshot_json(
     handle: *mut TiezCoreHandle,
     query_utf8: *const c_char,
 ) -> *mut c_char {
     with_ffi_result(ptr::null_mut(), || {
-        let handle = unsafe { handle.as_ref() }
-            .ok_or_else(|| "handle must not be null".to_owned())?;
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
         let query = optional_utf8(query_utf8)?;
-        let state = handle
-            .state
+        let history = handle
+            .history
             .lock()
-            .map_err(|_| "Rust core state lock is poisoned".to_owned())?;
-
-        into_owned_c_string(snapshot_json(&state, &query))
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        let snapshot = history
+            .snapshot(&query)
+            .map_err(|error| error.to_string())?;
+        into_owned_c_string(snapshot_json(&snapshot)?)
     })
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_content_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let history = handle
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        let content = history
+            .content(entry_id)
+            .map_err(|error| error.to_string())?;
+        into_owned_c_string(content_json(&content)?)
+    })
+}
+
+#[no_mangle]
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `action_utf8` must remain a readable, NUL-terminated UTF-8 string for the
+/// duration of this call.
 pub unsafe extern "C" fn tiez_core_apply_action(
     handle: *mut TiezCoreHandle,
     entry_id: i64,
     action_utf8: *const c_char,
 ) -> bool {
     with_ffi_result(false, || {
-        let handle = unsafe { handle.as_ref() }
-            .ok_or_else(|| "handle must not be null".to_owned())?;
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
         let action = required_utf8(action_utf8, "action_utf8")?;
-        let mut state = handle
-            .state
-            .lock()
-            .map_err(|_| "Rust core state lock is poisoned".to_owned())?;
-
-        match action.as_str() {
-            "pin" => {
-                let item = state
-                    .items
-                    .iter_mut()
-                    .find(|item| item.id == entry_id)
-                    .ok_or_else(|| format!("clipboard entry {entry_id} was not found"))?;
-                item.is_pinned = !item.is_pinned;
-                let is_pinned = item.is_pinned;
-                state.last_action = format!(
-                    "Entry {entry_id} {}",
-                    if is_pinned { "pinned" } else { "unpinned" }
-                );
-            }
-            "delete" => {
-                let previous_len = state.items.len();
-                state.items.retain(|item| item.id != entry_id);
-                if previous_len == state.items.len() {
-                    return Err(format!("clipboard entry {entry_id} was not found"));
-                }
-                state.last_action = format!("Entry {entry_id} deleted");
-            }
-            "paste-plain" => {
-                ensure_item_exists(&state, entry_id)?;
-                state.last_action = format!("Plain-text paste requested for entry {entry_id}");
-            }
-            "paste-rich" => {
-                ensure_item_exists(&state, entry_id)?;
-                state.last_action = format!("Rich paste requested for entry {entry_id}");
-            }
-            _ => return Err(format!("unsupported action: {action}")),
-        }
-
-        state.generation += 1;
+        apply_history_action(handle, entry_id, &action)?;
         Ok(true)
     })
 }
 
-fn ensure_item_exists(state: &CoreState, entry_id: i64) -> Result<(), String> {
-    state
-        .items
-        .iter()
-        .any(|item| item.id == entry_id)
-        .then_some(())
-        .ok_or_else(|| format!("clipboard entry {entry_id} was not found"))
+#[no_mangle]
+/// Apply an action and return its structured outcome as newly allocated JSON.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `action_utf8` must remain a readable, NUL-terminated UTF-8 string for the
+/// duration of this call.
+pub unsafe extern "C" fn tiez_core_apply_action_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+    action_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let action = required_utf8(action_utf8, "action_utf8")?;
+        let mutation = apply_history_action(handle, entry_id, &action)?;
+        into_owned_c_string(mutation_json(&mutation)?)
+    })
 }
 
 #[no_mangle]
@@ -360,6 +298,12 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `value` must be null or a pointer returned by this library through
+/// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
+/// `tiez_core_apply_action_json`, or `tiez_core_take_last_error`. A non-null
+/// pointer must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
         if value.is_null() {
@@ -375,54 +319,95 @@ pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tiez_core::clipboard_history::HistoryItem;
 
     #[test]
-    fn snapshot_filters_and_escapes_items() {
-        let state = CoreState {
-            generation: 7,
-            last_action: "ready".to_owned(),
-            items: vec![ClipboardItem {
-                id: -1,
-                content_type: "text",
-                preview: "line one\n\"line two\" 中文".to_owned(),
-                source_app: "TieZ",
-                captured_at: "now",
-                is_pinned: false,
-            }],
-        };
+    fn snapshot_serializes_the_stable_abi_and_utf8() {
+        let history = ClipboardHistory::in_memory(vec![HistoryItem {
+            id: -1,
+            content_type: "text".to_owned(),
+            preview: "line one\n\"line two\" 中文".to_owned(),
+            source_app: "TieZ".to_owned(),
+            captured_at: "now".to_owned(),
+            is_pinned: false,
+            is_sensitive: false,
+        }]);
+        let snapshot = history.snapshot("中文").unwrap();
 
-        let json = snapshot_json(&state, "中文");
+        let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"generation\":7"));
+        assert!(json.contains("\"abi_version\":3"));
+        assert!(json.contains("\"adapter\":\"memory\""));
+        assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
         assert!(json.contains("\"total\":1"));
-        assert!(snapshot_json(&state, "missing").contains("\"total\":0"));
+        assert!(json.contains("\"query\":\"中文\""));
     }
 
     #[test]
-    fn actions_update_the_generation_and_snapshot() {
-        let handle = tiez_core_create();
-        assert!(!handle.is_null());
-
-        let pin = CString::new("pin").unwrap();
-        let query = CString::new("").unwrap();
+    fn content_export_serializes_full_utf8_payload() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle {
+            history: Mutex::new(ClipboardHistory::in_memory(vec![HistoryItem {
+                id: -7,
+                content_type: "text".to_owned(),
+                preview: "完整内容 🚀".to_owned(),
+                source_app: "TieZ".to_owned(),
+                captured_at: "now".to_owned(),
+                is_pinned: false,
+                is_sensitive: false,
+            }])),
+        }));
 
         unsafe {
-            assert!(tiez_core_apply_action(handle, 102, pin.as_ptr()));
-            let snapshot = tiez_core_get_snapshot_json(handle, query.as_ptr());
-            assert!(!snapshot.is_null());
-            let snapshot_text = CStr::from_ptr(snapshot).to_str().unwrap().to_owned();
-            assert!(snapshot_text.contains("\"generation\":2"));
-            assert!(snapshot_text.contains("\"id\":102"));
-            assert!(snapshot_text.contains("\"is_pinned\":true"));
-            tiez_core_string_free(snapshot);
+            let value = tiez_core_get_content_json(handle, -7);
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"id\":-7"));
+            assert!(json.contains("\"content\":\"完整内容 🚀\""));
+            assert!(json.contains("\"available\":true"));
+            tiez_core_string_free(value);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn action_export_serializes_structured_mutation_result() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle {
+            history: Mutex::new(ClipboardHistory::synthetic()),
+        }));
+        let pin = CString::new("pin").unwrap();
+        let delete = CString::new("delete").unwrap();
+
+        unsafe {
+            let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
+            assert!(!pin_value.is_null());
+            let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
+            assert!(pin_json.contains("\"abi_version\":3"));
+            assert!(pin_json.contains("\"adapter\":\"memory\""));
+            assert!(pin_json.contains("\"action\":\"pin\""));
+            assert!(pin_json.contains("\"requested_id\":102"));
+            assert!(pin_json.contains("\"effective_id\":102"));
+            assert!(pin_json.contains("\"replacement_id\":null"));
+            assert!(pin_json.contains("\"removed\":false"));
+            assert!(pin_json.contains("\"generation\":2"));
+            tiez_core_string_free(pin_value);
+
+            let delete_value = tiez_core_apply_action_json(handle, 101, delete.as_ptr());
+            assert!(!delete_value.is_null());
+            let delete_json = CStr::from_ptr(delete_value).to_str().unwrap();
+            assert!(delete_json.contains("\"effective_id\":null"));
+            assert!(delete_json.contains("\"removed\":true"));
+            assert!(delete_json.contains("\"generation\":3"));
+            tiez_core_string_free(delete_value);
             tiez_core_destroy(handle);
         }
     }
 
     #[test]
     fn invalid_action_sets_a_retrievable_error() {
-        let handle = tiez_core_create();
+        let handle = Box::into_raw(Box::new(TiezCoreHandle {
+            history: Mutex::new(ClipboardHistory::synthetic()),
+        }));
         let action = CString::new("explode").unwrap();
 
         unsafe {
