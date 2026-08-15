@@ -1,7 +1,5 @@
 use crate::app::commands::file_cmd::{image_ext_from_mime, save_emoji_favorite_bytes_to_dir};
-use crate::database::{
-    calc_legacy_text_hash, has_sensitive_tag, uses_text_content_hash, DbState, ENCRYPT_PREFIX,
-};
+use crate::database::{has_sensitive_tag, DbState, ENCRYPT_PREFIX};
 use crate::domain::models::ClipboardEntry;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::encryption;
@@ -17,13 +15,26 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+use tiez_core::cloud_sync_protocol::{
+    collapse_items_by_sync_key as shared_collapse_items_by_sync_key,
+    compute_legacy_sync_content_hash as shared_compute_legacy_sync_content_hash,
+    compute_sync_content_hash as shared_compute_sync_content_hash,
+    item_revision as shared_item_revision, item_updated_at as shared_item_updated_at,
+    resolved_content_hash as shared_resolved_content_hash,
+    sync_digest_for_item as shared_sync_digest_for_item,
+    sync_key_for_item as shared_sync_key_for_item,
+    uses_text_sync_hash as shared_uses_text_sync_hash, CloudSyncContentPrefs, CloudSyncItem,
+    WebDavDeviceHead, WebDavDeviceSnapshot, WebDavOpsBatch, WebDavSettingsSnapshot, WebDavSyncHead,
+    HASH_VERSION_LEGACY, HASH_VERSION_WHITESPACE,
+};
 use tiez_core::cloud_sync_webdav::{
     build_webdav_http_client_with_timeout, collection_url as shared_webdav_collection_url,
     fetch_json_with_retry as shared_fetch_webdav_json,
     parse_op_references as shared_parse_webdav_op_refs,
     parse_snapshot_ids as shared_parse_webdav_snapshot_ids,
     resource_url as shared_webdav_resource_url, send_with_retry as shared_webdav_send_with_retry,
-    WebDavRetryPolicy, WebDavTransport, WebDavTransportError,
+    WebDavLayout as WebDavPaths, WebDavOpReference as WebDavOpRef, WebDavRetryPolicy,
+    WebDavTransport, WebDavTransportError,
 };
 use tokio::time::sleep;
 use urlencoding::decode;
@@ -60,13 +71,6 @@ const WEBDAV_RETRY_BASE_DELAY_MS: u64 = 600;
 const WEBDAV_HEAD_REBUILD_INTERVAL_SECS: i64 = 5 * 60;
 const WEBDAV_HEAD_FILENAME: &str = "head.json";
 const WEBDAV_BLOB_CACHE_MAX_ENTRIES: usize = 5000;
-const HASH_VERSION_LEGACY: i64 = 1;
-const HASH_VERSION_WHITESPACE: i64 = 2;
-
-fn default_hash_version() -> i64 {
-    HASH_VERSION_LEGACY
-}
-
 static CLOUD_SYNC_TASK_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLOUD_SYNC_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CLOUD_SYNC_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -103,48 +107,6 @@ pub struct CloudSyncStatus {
     pub received_items: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CloudSyncContentPrefs {
-    #[serde(default = "default_cloud_sync_pref_true")]
-    text: bool,
-    #[serde(default = "default_cloud_sync_pref_true")]
-    image: bool,
-    #[serde(rename = "file_path", default = "default_cloud_sync_pref_true")]
-    file_path: bool,
-    #[serde(default = "default_cloud_sync_pref_true")]
-    emoji: bool,
-}
-
-const fn default_cloud_sync_pref_true() -> bool {
-    true
-}
-
-impl Default for CloudSyncContentPrefs {
-    fn default() -> Self {
-        Self {
-            text: true,
-            image: true,
-            file_path: true,
-            emoji: true,
-        }
-    }
-}
-
-impl CloudSyncContentPrefs {
-    fn includes_content_type(&self, content_type: &str) -> bool {
-        if !is_cloud_clipboard_content_type(content_type) {
-            return false;
-        }
-        match content_type {
-            "image" => self.image,
-            "file" | "video" => self.file_path,
-            "emoji_sync" => self.emoji,
-            "text" | "code" | "url" | "rich_text" => self.text,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct CloudSyncConfig {
     enabled: bool,
@@ -161,39 +123,6 @@ struct CloudSyncConfig {
     webdav_password: String,
     webdav_base_path: String,
     content_prefs: CloudSyncContentPrefs,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CloudSyncItem {
-    pub content_type: String,
-    pub content: String,
-    #[serde(default)]
-    pub content_hash: i64,
-    #[serde(default = "default_hash_version")]
-    pub hash_version: i64,
-    #[serde(default)]
-    pub deleted_at: i64,
-    #[serde(default)]
-    pub html_content: Option<String>,
-    #[serde(default)]
-    pub content_blob_hash: Option<String>,
-    #[serde(default)]
-    pub html_blob_hash: Option<String>,
-    pub source_app: String,
-    pub timestamp: i64,
-    #[serde(default)]
-    pub updated_at: i64,
-    #[serde(default)]
-    pub updated_by: String,
-    pub preview: String,
-    #[serde(default)]
-    pub is_pinned: bool,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub use_count: i32,
-    #[serde(default)]
-    pub pinned_order: i64,
 }
 
 type LocalSyncEntryState = (
@@ -223,65 +152,6 @@ struct CloudSyncResponse {
     cursor: Option<i64>,
     #[serde(default)]
     entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavDeviceSnapshot {
-    device_id: String,
-    updated_at: i64,
-    #[serde(default)]
-    latest_op_seq: i64,
-    entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavSettingsSnapshot {
-    device_id: String,
-    updated_at: i64,
-    settings: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-struct WebDavPaths {
-    devices_path: String,
-    settings_path: String,
-    ops_path: String,
-    head_path: String,
-    blobs_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavOpsBatch {
-    device_id: String,
-    seq: i64,
-    updated_at: i64,
-    entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Clone)]
-struct WebDavOpRef {
-    device_id: String,
-    seq: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct WebDavDeviceHead {
-    #[serde(default)]
-    latest_op_seq: i64,
-    #[serde(default)]
-    snapshot_updated_at: i64,
-    #[serde(default)]
-    snapshot_op_seq: i64,
-    #[serde(default)]
-    settings_updated_at: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct WebDavSyncHead {
-    #[serde(default)]
-    updated_at: i64,
-    #[serde(default)]
-    devices: BTreeMap<String, WebDavDeviceHead>,
 }
 
 fn now_ms() -> i64 {
@@ -834,25 +704,15 @@ fn normalize_item_for_sync(mut item: CloudSyncItem) -> Option<CloudSyncItem> {
 }
 
 fn uses_text_sync_hash(content_type: &str) -> bool {
-    uses_text_content_hash(content_type)
+    shared_uses_text_sync_hash(content_type)
 }
 
 fn compute_sync_content_hash(content_type: &str, content: &str) -> i64 {
-    match content_type {
-        "image" => crate::database::calc_image_hash(content).unwrap_or(0),
-        content_type if uses_text_sync_hash(content_type) => {
-            crate::database::calc_text_hash(content) as i64
-        }
-        _ => 0,
-    }
+    shared_compute_sync_content_hash(content_type, content)
 }
 
 fn compute_legacy_sync_content_hash(content_type: &str, content: &str) -> i64 {
-    if uses_text_sync_hash(content_type) {
-        calc_legacy_text_hash(content) as i64
-    } else {
-        compute_sync_content_hash(content_type, content)
-    }
+    shared_compute_legacy_sync_content_hash(content_type, content)
 }
 
 fn canonicalize_incoming_live_hash(item: &mut CloudSyncItem) {
@@ -888,62 +748,23 @@ fn canonicalize_incoming_live_hash(item: &mut CloudSyncItem) {
 }
 
 fn resolved_content_hash(item: &CloudSyncItem) -> i64 {
-    if item.content_hash != 0 {
-        item.content_hash
-    } else {
-        compute_sync_content_hash(&item.content_type, &item.content)
-    }
+    shared_resolved_content_hash(item)
 }
 
 fn item_updated_at(item: &CloudSyncItem) -> i64 {
-    if item.updated_at > 0 {
-        item.updated_at
-    } else {
-        item.timestamp
-    }
+    shared_item_updated_at(item)
 }
 
 fn item_revision(item: &CloudSyncItem) -> i64 {
-    item.deleted_at.max(item_updated_at(item))
+    shared_item_revision(item)
 }
 
 fn sync_key_for_item(item: &CloudSyncItem) -> Option<String> {
-    let hash = resolved_content_hash(item);
-    if hash == 0 {
-        return None;
-    }
-    Some(format!(
-        "{}:{}:{}",
-        item.content_type, item.hash_version, hash
-    ))
+    shared_sync_key_for_item(item)
 }
 
 fn sync_digest_for_item(item: &CloudSyncItem) -> String {
-    let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
-    let html_hash = item
-        .html_content
-        .as_ref()
-        .map(|v| crate::database::calc_text_hash(v))
-        .unwrap_or(0);
-    let preview_hash = crate::database::calc_text_hash(&item.preview);
-    let source_hash = crate::database::calc_text_hash(&item.source_app);
-    let meta = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        resolved_content_hash(item),
-        item.hash_version,
-        item.timestamp,
-        item.updated_at,
-        item.updated_by,
-        item.deleted_at,
-        item.is_pinned,
-        item.pinned_order,
-        item.use_count,
-        html_hash,
-        preview_hash,
-        source_hash,
-        crate::database::calc_text_hash(&tags_json)
-    );
-    crate::database::calc_text_hash(&meta).to_string()
+    shared_sync_digest_for_item(item)
 }
 
 async fn process_items_blobs_before_push(
@@ -1059,26 +880,7 @@ async fn enrich_item_blobs_after_pull(
 }
 
 fn collapse_items_by_sync_key(items: &[CloudSyncItem]) -> BTreeMap<String, CloudSyncItem> {
-    let mut map: BTreeMap<String, CloudSyncItem> = BTreeMap::new();
-    for item in items {
-        let Some(key) = sync_key_for_item(item) else {
-            continue;
-        };
-        let mut normalized = item.clone();
-        normalized.content_hash = resolved_content_hash(item);
-
-        let replace = map
-            .get(&key)
-            .map(|old| {
-                (item_revision(&normalized), normalized.updated_by.as_str())
-                    >= (item_revision(old), old.updated_by.as_str())
-            })
-            .unwrap_or(true);
-        if replace {
-            map.insert(key, normalized);
-        }
-    }
-    map
+    shared_collapse_items_by_sync_key(items)
 }
 
 fn load_local_sync_index(app: &AppHandle) -> AppResult<HashMap<String, String>> {

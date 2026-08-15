@@ -459,6 +459,7 @@ window should call, and which extraction phase owns it.
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
 | WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 11 + write-only secret and read-only `PROPFIND` | 5 (connected) |
 | WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
+| Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
 | Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | Tauri-independent database/conflict runner still required; no `AppHandle` may cross the ABI | 5 (remaining) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Emoji, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
@@ -515,9 +516,11 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    write-only, validates HTTPS and safe remote paths, and runs a redirect-free
    read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the
    reusable retry, safe path/layout, atomic PUT/MOVE, blob, JSON, and listing
-   transport contract, with the Tauri service using compatibility wrappers.
-   The periodic scheduler, database merge/mutation distribution, and remote
-   conflict-reconciliation runner still need extraction before default cutover.
+   transport contract, while `CloudSyncProtocol` owns the compatible item,
+   snapshot, op/head, digest, and deterministic revision-collapse model. The
+   Tauri service uses compatibility wrappers for both. The periodic scheduler,
+   database merge/mutation distribution, and remote conflict-reconciliation
+   runner still need extraction before default cutover.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs release-critical sync/service parity plus manual Windows 10/11,
