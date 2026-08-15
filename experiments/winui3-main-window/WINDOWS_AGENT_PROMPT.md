@@ -6,7 +6,7 @@ Copy the prompt below into an agent running on a Windows 11 x64 workstation.
 
 You are validating the TieZ WinUI 3 main-window experiment on Windows.
 
-Repository branch: `explore/winui3-main-window`
+Repository branch: the current WinUI migration branch
 
 Experiment directory:
 
@@ -14,23 +14,26 @@ Experiment directory:
 experiments/winui3-main-window
 ```
 
-The prototype is deliberately isolated from the production Tauri application.
-It now has an opt-in SQLite adapter that reads a **copied** TieZ database with
-read-only open flags. Do not point it at live production files or wire it to
-the clipboard listener, global hotkeys, sync, or updater. Do not refactor
-production Rust modules unless a build fix absolutely requires it, and report
-before making such a change.
+This is a production-intended, mutually exclusive WinUI candidate. Release
+builds use the Tauri-compatible data directory by default; synthetic and copied
+read-only adapters remain available for diagnostics. Never run WinUI and Tauri
+against the same live database. Cloud sync, file transfer, updater UI, and some
+secondary surfaces are not yet parity-complete, so do not make WinUI the default
+installed entry during this validation.
 
 Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
-2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v3;
-3. verify search, full-content details, pin/unpin, delete, plain/rich paste
-   requests, UTF-8, and the hide/show button;
-4. verify the copied production-history adapter is genuinely read-only;
-5. collect release startup and memory evidence for both adapters;
-6. make only focused fixes inside the experiment directory;
-7. produce a concise verdict: proceed to a real product slice, revise, or stop.
+2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v10;
+3. verify Chinese-first search/details, tags, pin ordering, capture, copy/paste,
+   safe opening, settings, compact preview, backup/restore, and OCR/QR analysis;
+4. verify the copied production-history adapter is genuinely read-only and the
+   writable adapter remains schema/data compatible with Tauri;
+5. verify sensitive/encrypted payloads and recognition results stay protected;
+6. collect release startup and memory evidence for synthetic, copied read-only,
+   and isolated writable adapters;
+7. produce a concise verdict and list every remaining blocker before the native
+   executable can become the installed default.
 
 Prerequisites to confirm:
 
@@ -57,14 +60,16 @@ the copied files before launch, then run:
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
+$env:TIEZ_WINUI_DB_READ_ONLY = "1"
 .\artifacts\x64\Release\TieZ.exe
 ```
 
 Verify the badge says `sqlite-read-only`, newest persisted entries match TieZ,
-search works, all action buttons are disabled, and sensitive-tagged/encrypted
-previews show a sensitive-entry label. Verify **Open details** displays full
-content for an ordinary entry while sensitive/encrypted entries remain
-metadata-only. Close the probe and confirm the copied files' hashes are
+search (including existing OCR/QR indexes) works, mutation/paste buttons are
+disabled, and sensitive-tagged/encrypted previews show a sensitive-entry label.
+Verify **Open details** displays full content for an ordinary entry while
+sensitive/encrypted entries remain metadata-only. Close the probe and confirm
+the copied files' hashes are
 unchanged. Never use the live production database for this validation.
 
 Required negative tests:
@@ -103,11 +108,12 @@ Save:
 - `verdict.md` with medians, worst-five startup values, private/working-set
   ranges, failures, and recommendation.
 
-Do not claim this proves a full TieZ replacement. The copied-history adapter
-only reads persisted previews/content and does not include production services,
-decryption, or session-only entries. The decision question is only whether C++/WinRT + WinUI
-3 + an in-process Rust C interface is sufficiently stable, fast, accessible,
-and maintainable to justify extracting the first real Rust module.
+Do not claim this proves a full TieZ replacement. The current candidate already
+owns substantial daily-use history, capture, privacy, lifecycle, backup, and
+image-analysis behavior, but release-critical service parity and the default
+entry switch remain unfinished. The decision question is whether the verified
+native slice can proceed toward those remaining blockers without regressing
+data compatibility, privacy, accessibility, or rollback safety.
 
 Before committing, inspect the diff and ensure generated NuGet packages,
 Visual Studio caches, build artifacts, logs, and screenshots are not committed.

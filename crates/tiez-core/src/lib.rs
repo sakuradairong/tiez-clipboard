@@ -10,6 +10,7 @@ pub mod database_bootstrap;
 pub mod database_migrations;
 pub mod database_mutation;
 pub mod encryption;
+pub mod image_analysis;
 pub mod native_settings;
 pub mod paste_coordinator;
 pub mod privacy;

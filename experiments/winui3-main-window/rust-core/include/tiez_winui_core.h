@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 9,
+    TIEZ_CORE_ABI_VERSION = 10,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -39,6 +39,19 @@ TIEZ_CORE_API char* tiez_core_get_snapshot_json(
 TIEZ_CORE_API char* tiez_core_get_content_json(
     TiezCoreHandle* handle,
     int64_t entry_id);
+
+// Returns cached OCR/QR analysis as JSON. The `analysis` property is null when
+// the image has not yet been analyzed.
+TIEZ_CORE_API char* tiez_core_get_image_analysis_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id);
+
+// Runs Windows OCR and QR decoding. Read-only or sensitive results remain
+// memory-only and never write recognized plaintext to the database.
+TIEZ_CORE_API char* tiez_core_analyze_image_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id,
+    bool force);
 
 // Returns a validated URL or local-file launch plan as newly allocated JSON.
 // Sensitive and unavailable entries are rejected. The native frontend owns

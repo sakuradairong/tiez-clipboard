@@ -163,6 +163,56 @@
                                 Stretch="Uniform"
                                 Visibility="Collapsed"
                                 AutomationProperties.Name="剪贴板图片预览" />
+                            <Border
+                                x:Name="ImageAnalysisPanel"
+                                Padding="12"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                CornerRadius="6"
+                                Visibility="Collapsed">
+                                <StackPanel Spacing="8">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock
+                                            VerticalAlignment="Center"
+                                            FontWeight="SemiBold"
+                                            Text="图片文字与二维码" />
+                                        <ProgressRing
+                                            x:Name="ImageAnalysisProgress"
+                                            Grid.Column="1"
+                                            Width="20"
+                                            Height="20"
+                                            IsActive="False"
+                                            Visibility="Collapsed" />
+                                        <Button
+                                            x:Name="AnalyzeImageButton"
+                                            Grid.Column="2"
+                                            AutomationProperties.Name="识别当前图片中的文字和二维码"
+                                            Click="AnalyzeImageButton_Click"
+                                            Content="开始识别" />
+                                    </Grid>
+                                    <TextBlock
+                                        x:Name="ImageAnalysisStatusText"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="尚未识别。结果只会在非敏感可写记录中建立搜索索引。"
+                                        TextWrapping="Wrap" />
+                                    <TextBlock
+                                        x:Name="ImageAnalysisResultText"
+                                        FontFamily="Consolas"
+                                        IsTextSelectionEnabled="True"
+                                        TextWrapping="Wrap" />
+                                    <Button
+                                        x:Name="CopyImageAnalysisButton"
+                                        HorizontalAlignment="Left"
+                                        AutomationProperties.Name="复制图片识别结果"
+                                        Click="CopyImageAnalysisButton_Click"
+                                        Content="复制识别结果"
+                                        Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
                             <TextBlock
                                 x:Name="DetailsContentText"
                                 FontFamily="Consolas"

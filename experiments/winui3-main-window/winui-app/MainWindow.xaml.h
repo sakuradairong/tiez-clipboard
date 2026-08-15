@@ -46,12 +46,21 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void OpenSelectedButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void AnalyzeImageButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void CopyImageAnalysisButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void OnToggleHotkey();
         bool OnNativeMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     private:
         void RefreshItems();
         void ShowContent(std::int64_t entryId);
+        winrt::fire_and_forget AnalyzeSelectedImageAsync();
+        void ShowImageAnalysis(Windows::Data::Json::JsonObject const& response);
+        void SetImageAnalysisBusy(bool busy, winrt::hstring const& message);
         void OpenEntry(std::int64_t entryId);
         void LaunchOpenPlan(Windows::Data::Json::JsonObject const& plan);
         void ApplyAction(std::int64_t entryId, std::string_view action);
@@ -164,6 +173,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_settingsReadOnly{};
         bool m_settingsLoading{};
         bool m_backupBusy{};
+        bool m_imageAnalysisBusy{};
+        bool m_imageAnalysisLoaded{};
         bool m_productionData{};
         bool m_compactMode{};
         bool m_trayVisible{ true };
@@ -174,7 +185,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;
         std::unordered_map<std::int64_t, std::vector<winrt::hstring>> m_tagsById;
         std::optional<std::int64_t> m_detailsEntryId;
+        std::optional<std::int64_t> m_imageAnalysisEntryId;
         std::optional<std::int64_t> m_draggedPinnedId;
+        std::wstring m_imageAnalysisCopyText;
         int m_selectedIndex{-1};
     };
 }

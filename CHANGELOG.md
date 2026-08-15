@@ -23,6 +23,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI compact mode now opens a no-activate, always-on-top native hover preview for text, rich text, files, images, and protected-entry messages without using WebView2.
 - WinUI ABI v8 adds a shared, privacy-preserving open-content plan. The Chinese native UI can open trusted web links, existing files, UTF-8 text, rich text, and images through `ShellExecuteW` without command shells; dangerous URL schemes are rejected and custom protocols or local HTML require confirmation.
 - WinUI ABI v9 adds asynchronous Chinese backup export and restore controls backed by a shared `tiez-core` archive implementation. Both frontends now create and validate the same database/attachment archives, while WinUI applies scheduled restores before opening SQLite and retains a rollback copy.
+- WinUI ABI v10 adds shared OCR/QR image analysis, an asynchronous Chinese native details panel, result copying, and native history search over cached recognition text. The Tauri commands remain compatible wrappers over the same `tiez-core` implementation.
 - Native Windows CI now builds a versioned `TieZ.exe` and structurally validates a self-contained x64 MSIX. Release publishing requires a matching Publisher certificate, SHA256/RFC 3161 signing, package re-verification, and emits an App Installer update feed plus checksum.
 
 ### Changed
@@ -32,6 +33,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Writable WinUI capture now follows the production persistence and deduplication settings: session-only entries use replaceable negative IDs with a 500-item cap, while persisted captures reuse matching rows and enforce the configured unprotected-history limit.
 - Tauri and the WinUI candidate now share the same default, redirected, and portable data-directory selection policy. WinUI Release builds use production data by default, while Debug/tests remain synthetic and Release can opt back into synthetic diagnostics explicitly.
 - Release version validation now covers the WinUI Rust core in addition to the four Tauri version files; native backup metadata, EXE resources, MSIX identity, and the release tag derive from the synchronized product version.
+- Native clipboard search now matches cached OCR text and QR payloads without exposing those payloads in list previews, and remains compatible with older read-only databases that do not yet have the analysis table.
 - WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
 - WinUI Debug builds now use the correct C++/WinRT namespaces in the generated-XAML unhandled-exception hook.
 
@@ -42,6 +44,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
 - WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.
 - Shared backup validation rejects undeclared or duplicate ZIP entries, unsafe paths, oversized payloads, invalid hashes, and checksum mismatches; failed pending restores are quarantined before either frontend opens SQLite.
+- Shared image analysis never persists OCR or QR results for sensitive/encrypted entries and rechecks the current row before writing, so a privacy-tag change during background recognition cannot leave a plaintext index behind.
 - Native MSIX packaging disables AppData write virtualization and verifies the required capability so installed WinUI builds continue using the Tauri-compatible data directory instead of package-private clipboard history.
 
 ### Fixed

@@ -1891,10 +1891,7 @@ fn load_snapshot_items(
 ) -> Result<Vec<HistoryItem>, HistoryError> {
     match parse_snapshot_query(query) {
         SnapshotQuery::Latest => load_latest_history(connection, limit),
-        SnapshotQuery::Type {
-            content_type,
-            text,
-        } if text.is_empty() => query_history(
+        SnapshotQuery::Type { content_type, text } if text.is_empty() => query_history(
             connection,
             "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
              FROM clipboard_history
@@ -1907,29 +1904,59 @@ fn load_snapshot_items(
                 limit,
             },
         ),
-        SnapshotQuery::Type {
-            content_type,
-            text,
-        } => query_history(
-            connection,
-            "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
-             FROM clipboard_history
-             WHERE lower(content_type) = lower(?1)
-               AND (
-                    instr(lower(source_app), lower(?2)) > 0
-                    OR instr(lower(preview), lower(?2)) > 0
-                    OR instr(lower(tags), lower(?2)) > 0
-               )
-             ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
-             LIMIT ?3",
-            QueryArgs::Type {
-                content_type,
-                text: Some(text),
-                limit,
-            },
-        ),
+        SnapshotQuery::Type { content_type, text } => {
+            search_history_by_type(connection, content_type, text, limit)
+        }
         SnapshotQuery::Text(text) => search_latest_history(connection, text, limit),
     }
+}
+
+fn search_history_by_type(
+    connection: &Connection,
+    content_type: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<HistoryItem>, HistoryError> {
+    let sql = if has_image_analysis_table(connection)? {
+        "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
+         FROM clipboard_history
+         WHERE lower(content_type) = lower(?1)
+           AND (
+                instr(lower(source_app), lower(?2)) > 0
+                OR instr(lower(preview), lower(?2)) > 0
+                OR instr(lower(tags), lower(?2)) > 0
+                OR EXISTS (
+                    SELECT 1 FROM clipboard_image_analysis analysis
+                    WHERE analysis.entry_id = clipboard_history.id
+                      AND (
+                           instr(lower(analysis.ocr_text), lower(?2)) > 0
+                           OR instr(lower(analysis.qr_codes), lower(?2)) > 0
+                      )
+                )
+           )
+         ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+         LIMIT ?3"
+    } else {
+        "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
+         FROM clipboard_history
+         WHERE lower(content_type) = lower(?1)
+           AND (
+                instr(lower(source_app), lower(?2)) > 0
+                OR instr(lower(preview), lower(?2)) > 0
+                OR instr(lower(tags), lower(?2)) > 0
+           )
+         ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+         LIMIT ?3"
+    };
+    query_history(
+        connection,
+        sql,
+        QueryArgs::Type {
+            content_type,
+            text: Some(query),
+            limit,
+        },
+    )
 }
 
 fn search_latest_history(
@@ -1937,8 +1964,24 @@ fn search_latest_history(
     query: &str,
     limit: i64,
 ) -> Result<Vec<HistoryItem>, HistoryError> {
-    query_history(
-        connection,
+    let sql = if has_image_analysis_table(connection)? {
+        "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
+         FROM clipboard_history
+         WHERE instr(lower(content_type), lower(?1)) > 0
+            OR instr(lower(source_app), lower(?1)) > 0
+            OR instr(lower(preview), lower(?1)) > 0
+            OR instr(lower(tags), lower(?1)) > 0
+            OR EXISTS (
+                SELECT 1 FROM clipboard_image_analysis analysis
+                WHERE analysis.entry_id = clipboard_history.id
+                  AND (
+                       instr(lower(analysis.ocr_text), lower(?1)) > 0
+                       OR instr(lower(analysis.qr_codes), lower(?1)) > 0
+                  )
+            )
+         ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
+         LIMIT ?2"
+    } else {
         "SELECT id, content_type, preview, source_app, timestamp, is_pinned, tags
          FROM clipboard_history
          WHERE instr(lower(content_type), lower(?1)) > 0
@@ -1946,9 +1989,22 @@ fn search_latest_history(
             OR instr(lower(preview), lower(?1)) > 0
             OR instr(lower(tags), lower(?1)) > 0
          ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
-         LIMIT ?2",
-        QueryArgs::Search { query, limit },
-    )
+         LIMIT ?2"
+    };
+    query_history(connection, sql, QueryArgs::Search { query, limit })
+}
+
+fn has_image_analysis_table(connection: &Connection) -> Result<bool, HistoryError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'clipboard_image_analysis'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| storage_error("failed to inspect image-analysis schema", error))
 }
 
 enum SnapshotQuery<'a> {
@@ -2057,9 +2113,7 @@ fn query_history(
             limit,
         } => statement
             .query_map(rusqlite::params![content_type, text, limit], map_row)
-            .map_err(|error| {
-                storage_error("failed to search clipboard history by type", error)
-            })?,
+            .map_err(|error| storage_error("failed to search clipboard history by type", error))?,
     };
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -3048,6 +3102,62 @@ mod tests {
         assert_eq!(code.items.len(), 1);
         assert_eq!(code.items[0].id, 4);
         assert_eq!(history.snapshot("type:text").unwrap().items.len(), 3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_search_matches_cached_ocr_and_qr_without_exposing_payloads() {
+        let path = temporary_database("ocr-search");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (id, content_type, content, source_app, timestamp, preview, tags)
+                 VALUES (4, 'image', 'C:\\images\\receipt.png', 'Snipping Tool', 30,
+                         '图片预览', '[]')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_image_analysis
+                    (entry_id, content_hash, ocr_text, qr_codes, language, analyzed_at)
+                 VALUES (4, 0, '发票号码 20260815', '[\"https://example.com/pay\"]',
+                         'zh-CN', 31)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+
+        assert_eq!(history.snapshot("发票号码").unwrap().items[0].id, 4);
+        assert_eq!(
+            history.snapshot("type:image 20260815").unwrap().items[0].id,
+            4
+        );
+        assert_eq!(history.snapshot("example.com/pay").unwrap().items[0].id, 4);
+
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_search_remains_compatible_without_analysis_table() {
+        let path = temporary_database("no-ocr-table");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute("DROP TABLE clipboard_image_analysis", [])
+            .unwrap();
+        drop(connection);
+        let history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+
+        let snapshot = history.snapshot("hello").unwrap();
+
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].id, 1);
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 

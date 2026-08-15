@@ -15,6 +15,8 @@ namespace tiez::probe
 
         [[nodiscard]] std::string Snapshot(std::string_view query) const;
         [[nodiscard]] std::string Content(std::int64_t entryId) const;
+        [[nodiscard]] std::string ImageAnalysis(std::int64_t entryId) const;
+        [[nodiscard]] std::string AnalyzeImage(std::int64_t entryId, bool force) const;
         [[nodiscard]] std::string PrepareOpenContent(std::int64_t entryId) const;
         [[nodiscard]] std::string CreateBackup(std::string_view destination) const;
         [[nodiscard]] std::string InspectBackup(std::string_view path) const;
@@ -42,6 +44,7 @@ namespace tiez::probe
         using DestroyFn = void(__cdecl*)(TiezCoreHandle*);
         using SnapshotFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
+        using AnalyzeImageFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, bool);
         using PrepareOpenContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using PathJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
@@ -68,6 +71,8 @@ namespace tiez::probe
         DestroyFn m_destroy{};
         SnapshotFn m_snapshot{};
         ContentFn m_content{};
+        ContentFn m_imageAnalysis{};
+        AnalyzeImageFn m_analyzeImage{};
         PrepareOpenContentFn m_prepareOpenContent{};
         PathJsonFn m_createBackup{};
         PathJsonFn m_inspectBackup{};

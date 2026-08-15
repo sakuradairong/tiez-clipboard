@@ -577,6 +577,33 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::AnalyzeImageButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        AnalyzeSelectedImageAsync();
+    }
+
+    void MainWindow::CopyImageAnalysisButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        if (m_imageAnalysisCopyText.empty())
+        {
+            SetStatus(L"当前没有可复制的图片识别结果。");
+            return;
+        }
+
+        try
+        {
+            DataPackage package;
+            package.SetText(winrt::hstring{ m_imageAnalysisCopyText });
+            Clipboard::SetContent(package);
+            Clipboard::Flush();
+            SetStatus(L"图片识别结果已复制到剪贴板。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetStatus(StatusMessage(L"复制图片识别结果失败：", error.message()));
+        }
+    }
+
     void MainWindow::OnToggleHotkey()
     {
         if (IsWindowVisible(GetWindowHandle()))
@@ -912,6 +939,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
 
         OpenSelectedButton().IsEnabled(false);
+        ImageAnalysisPanel().Visibility(Visibility::Collapsed);
+        ImageAnalysisProgress().IsActive(false);
+        ImageAnalysisProgress().Visibility(Visibility::Collapsed);
+        ImageAnalysisResultText().Text(L"");
+        CopyImageAnalysisButton().Visibility(Visibility::Collapsed);
+        m_imageAnalysisLoaded = false;
+        m_imageAnalysisCopyText.clear();
 
         try
         {
@@ -936,6 +970,48 @@ namespace winrt::Tiez::WinUIProbe::implementation
             std::wstring metadata{ ContentTypeLabel(contentType).c_str() };
             metadata.append(isSensitive ? L" · 敏感内容" : L" · 内容可用");
             DetailsMetadataText().Text(metadata);
+
+            auto const canAnalyzeImage = m_productionData
+                && entryId > 0
+                && contentType == L"image"
+                && available
+                && !isSensitive;
+            if (canAnalyzeImage)
+            {
+                ImageAnalysisPanel().Visibility(Visibility::Visible);
+                if (m_imageAnalysisBusy)
+                {
+                    SetImageAnalysisBusy(
+                        true,
+                        m_imageAnalysisEntryId == entryId
+                            ? L"正在识别当前图片，请稍候……"
+                            : L"正在后台识别另一张图片，请稍候……");
+                }
+                else
+                {
+                    try
+                    {
+                        auto const response = JsonObject::Parse(
+                            tiez::probe::RustCoreBridge::Utf8ToHstring(
+                                m_core->ImageAnalysis(entryId)));
+                        ShowImageAnalysis(response);
+                    }
+                    catch (winrt::hresult_error const& error)
+                    {
+                        SetImageAnalysisBusy(
+                            false,
+                            StatusMessage(L"读取图片识别缓存失败：", error.message()));
+                    }
+                    catch (std::exception const& error)
+                    {
+                        SetImageAnalysisBusy(
+                            false,
+                            StatusMessage(
+                                L"读取图片识别缓存失败：",
+                                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+                    }
+                }
+            }
 
             if (available && !isSensitive)
             {
@@ -971,6 +1047,172 @@ namespace winrt::Tiez::WinUIProbe::implementation
             SetStatus(StatusMessage(
                 L"查询内容失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::SetImageAnalysisBusy(bool busy, winrt::hstring const& message)
+    {
+        m_imageAnalysisBusy = busy;
+        ImageAnalysisProgress().IsActive(busy);
+        ImageAnalysisProgress().Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
+        AnalyzeImageButton().IsEnabled(
+            m_productionData
+            && ImageAnalysisPanel().Visibility() == Visibility::Visible
+            && !busy);
+        if (!message.empty())
+        {
+            ImageAnalysisStatusText().Text(message);
+        }
+    }
+
+    void MainWindow::ShowImageAnalysis(JsonObject const& response)
+    {
+        auto const value = response.GetNamedValue(L"analysis");
+        if (value.ValueType() == JsonValueType::Null)
+        {
+            m_imageAnalysisLoaded = false;
+            m_imageAnalysisCopyText.clear();
+            AnalyzeImageButton().Content(winrt::box_value(L"开始识别"));
+            ImageAnalysisResultText().Text(L"");
+            CopyImageAnalysisButton().Visibility(Visibility::Collapsed);
+            SetImageAnalysisBusy(
+                false,
+                L"尚未识别。非敏感可写记录会把结果加入本地搜索索引。");
+            return;
+        }
+
+        auto const analysis = value.GetObject();
+        auto const text = analysis.GetNamedString(L"text", L"");
+        auto const qrCodes = analysis.GetNamedArray(L"qrCodes", JsonArray{});
+        auto const optionalString = [&analysis](winrt::hstring const& name)
+        {
+            if (!analysis.HasKey(name))
+            {
+                return winrt::hstring{};
+            }
+            auto const field = analysis.GetNamedValue(name);
+            return field.ValueType() == JsonValueType::String
+                ? field.GetString()
+                : winrt::hstring{};
+        };
+        auto const language = optionalString(L"language");
+        auto const cached = analysis.GetNamedBoolean(L"cached", false);
+        auto const persisted = analysis.GetNamedBoolean(L"persisted", false);
+        auto const ocrError = optionalString(L"ocrError");
+
+        std::wstringstream display;
+        std::wstringstream copy;
+        if (!text.empty())
+        {
+            display << L"识别文字";
+            if (!language.empty())
+            {
+                display << L"（" << language.c_str() << L"）";
+            }
+            display << L"\n" << text.c_str();
+            copy << text.c_str();
+        }
+        for (std::uint32_t index = 0; index < qrCodes.Size(); ++index)
+        {
+            auto const code = qrCodes.GetStringAt(index);
+            if (!display.str().empty())
+            {
+                display << L"\n\n";
+            }
+            display << L"二维码 " << (index + 1) << L"\n" << code.c_str();
+            if (!copy.str().empty())
+            {
+                copy << L"\n\n";
+            }
+            copy << code.c_str();
+        }
+
+        m_imageAnalysisLoaded = true;
+        m_imageAnalysisCopyText = copy.str();
+        AnalyzeImageButton().Content(winrt::box_value(L"重新识别"));
+        ImageAnalysisResultText().Text(winrt::hstring{ display.str() });
+        CopyImageAnalysisButton().Visibility(
+            m_imageAnalysisCopyText.empty() ? Visibility::Collapsed : Visibility::Visible);
+
+        std::wstring status = cached ? L"已加载本地识别缓存。" : L"图片识别完成。";
+        if (m_imageAnalysisCopyText.empty())
+        {
+            status = ocrError.empty()
+                ? L"没有识别到文字或二维码。"
+                : std::wstring{ L"系统 OCR 不可用：" } + ocrError.c_str();
+        }
+        if (!persisted)
+        {
+            status.append(L" 本次结果仅在内存中显示，未写入搜索索引。");
+        }
+        SetImageAnalysisBusy(false, winrt::hstring{ status });
+    }
+
+    winrt::fire_and_forget MainWindow::AnalyzeSelectedImageAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || !m_detailsEntryId || m_imageAnalysisBusy || !m_productionData)
+        {
+            co_return;
+        }
+
+        auto const entryId = *m_detailsEntryId;
+        auto const force = m_imageAnalysisLoaded;
+        auto const uiThread = winrt::apartment_context{};
+        m_imageAnalysisEntryId = entryId;
+        SetImageAnalysisBusy(true, L"正在使用 Windows OCR 和本地二维码解码器识别图片……");
+        std::string response;
+        std::string failure;
+        co_await winrt::resume_background();
+        try
+        {
+            response = m_core->AnalyzeImage(entryId, force);
+        }
+        catch (std::exception const& error)
+        {
+            failure = error.what();
+        }
+        try
+        {
+            co_await uiThread;
+        }
+        catch (...)
+        {
+            co_return;
+        }
+
+        m_imageAnalysisBusy = false;
+        m_imageAnalysisEntryId.reset();
+        if (!m_detailsEntryId || *m_detailsEntryId != entryId)
+        {
+            if (m_detailsEntryId)
+            {
+                ShowContent(*m_detailsEntryId);
+            }
+            co_return;
+        }
+        if (!failure.empty())
+        {
+            auto const message = StatusMessage(
+                L"图片识别失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(failure));
+            SetImageAnalysisBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        try
+        {
+            auto const analysis = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+            ShowImageAnalysis(analysis);
+            SetStatus(L"图片识别完成；可复制结果，已持久化的结果也可直接搜索。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法读取图片识别结果：", error.message());
+            SetImageAnalysisBusy(false, message);
+            SetStatus(message);
         }
     }
 

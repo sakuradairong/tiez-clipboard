@@ -6264,10 +6264,12 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "regex",
+ "rqrr",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
  "zip 2.4.2",
 ]

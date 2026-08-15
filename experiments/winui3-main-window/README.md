@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v9
+        │ dynamic loading + C ABI v10
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · image_analysis · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -326,9 +326,10 @@ the native capture settings; images remain supported by the format pipeline
 (consecutive-copy dedup, paste-echo skip, configured privacy detection).
 Do not point
 `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
-running. OCR analysis/search and cloud sync are still omitted; applying a
-sensitive tag does remove any existing plaintext OCR index. Record the active
-adapter with every result.
+running. OCR/QR analysis and native search are connected through the shared
+core; cloud sync is still omitted. Sensitive or encrypted entries never retain
+plaintext analysis, including when a privacy tag is added during background
+recognition. Record the active adapter with every result.
 
 ## Acceptance checklist
 
@@ -336,7 +337,7 @@ adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 9`.
+- [ ] Status shows `Rust ABI 10`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -381,6 +382,9 @@ adapter with every result.
 - [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
 - [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
 - [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
+- [ ] An ordinary image can run OCR/QR recognition without blocking the UI, shows Chinese progress/error state, and copies the combined result.
+- [ ] Reopening an analyzed image uses the cache, “重新识别” forces a refresh, and searching recognized OCR text or a QR payload finds the image card without exposing that payload in its preview.
+- [ ] Sensitive/encrypted images expose no recognition action or cached plaintext; adding a privacy tag during recognition leaves no persisted analysis row.
 - [ ] HTTP/HTTPS and existing files open through the Windows default handler without `cmd` or PowerShell.
 - [ ] Custom URL protocols and local rich-text HTML require Chinese confirmation; dangerous URL protocols and sensitive entries are rejected.
 - [ ] Text and embedded images open from uniquely named files under the TieZ temporary directory without changing the stored clipboard entry.
@@ -394,7 +398,7 @@ adapter with every result.
 
 - [ ] `TIEZ_WINUI_DB_PATH` with `TIEZ_WINUI_DB_READ_ONLY=1` switches the badge to `sqlite-read-only`.
 - [ ] The newest persisted items match the production TieZ history ordering.
-- [ ] Search matches preview, source app, and content type without writing.
+- [ ] Search matches preview, source app, content type, cached OCR text, and QR payloads without writing.
 - [ ] Mutation/paste/copy buttons are disabled in read-only mode; details and safe opening remain available for non-sensitive content.
 - [ ] Sensitive-tagged and encrypted previews show the sensitive-entry label.
 - [ ] Sensitive-tagged and encrypted details remain metadata-only.
@@ -432,14 +436,15 @@ window should call, and which extraction phase owns it.
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
-| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy connected, OCR/cloud later | 3 |
+| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy and OCR/QR connected, cloud later | 3 |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
 | Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
 | Open URL/file/text/rich/image | `open_content` | `tiez_core_prepare_open_content_json` + native `ShellExecuteW`, without command shells | 4 |
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
-| Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + ABI 9 + async native file dialogs and startup restore | 4 |
-| Emoji, tag manager, file transfer, cloud, advanced theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
+| Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
+| Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + ABI 10 + async Chinese details panel and cached-index search | 5 (connected) |
+| Emoji, tag manager, file transfer, cloud, advanced theme store, AI, updater | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -473,8 +478,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    priority (files, rich text, image, text), CRLF normalization without trim,
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
    worker that never reads the clipboard in WndProc. Configured privacy tagging
-   and protected persistence are connected; OCR generation and cloud
-   distribution remain later;
+   and protected persistence are connected; cloud distribution remains later;
 6. `ContentOpening` — **WinUI native shell connected**: the shared core rejects
    sensitive/unavailable payloads and dangerous URL protocols, normalizes web
    links, resolves existing files, and creates unique UTF-8/HTML/image temporary
@@ -482,9 +486,13 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    `ShellExecuteW` directly without `cmd` or PowerShell. Editing temporary files
    back into history remains a later parity item;
 7. `BackupRestore` — **shared core and WinUI surface connected**: Tauri command
-   wrappers and WinUI ABI 9 use one manifest/checksum implementation. Native
-   export and restore run off the UI thread; restore is staged, revalidated,
-   applied before SQLite opens, and retains a rollback directory.
+   wrappers and the current WinUI ABI use one manifest/checksum implementation.
+   Native export and restore run off the UI thread; restore is staged, revalidated,
+   applied before SQLite opens, and retains a rollback directory;
+8. `ImageAnalysis` — **shared core and WinUI surface connected**: Windows OCR
+   and QR decoding run off the UI thread, Tauri keeps its command contract,
+   cached text is searchable from native snapshots, and sensitive/encrypted
+   results are memory-only with a pre-write privacy recheck.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs release-critical sync/service parity plus manual Windows 10/11,

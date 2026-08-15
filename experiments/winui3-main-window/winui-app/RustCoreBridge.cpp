@@ -44,6 +44,8 @@ namespace tiez::probe
             m_destroy = Resolve<DestroyFn>("tiez_core_destroy");
             m_snapshot = Resolve<SnapshotFn>("tiez_core_get_snapshot_json");
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
+            m_imageAnalysis = Resolve<ContentFn>("tiez_core_get_image_analysis_json");
+            m_analyzeImage = Resolve<AnalyzeImageFn>("tiez_core_analyze_image_json");
             m_prepareOpenContent = Resolve<PrepareOpenContentFn>(
                 "tiez_core_prepare_open_content_json");
             m_createBackup = Resolve<PathJsonFn>("tiez_core_create_backup_json");
@@ -119,6 +121,28 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust content lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ImageAnalysis(std::int64_t entryId) const
+    {
+        auto* result = m_imageAnalysis(m_handle, entryId);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust image-analysis lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::AnalyzeImage(std::int64_t entryId, bool force) const
+    {
+        auto* result = m_analyzeImage(m_handle, entryId, force);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust image analysis failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

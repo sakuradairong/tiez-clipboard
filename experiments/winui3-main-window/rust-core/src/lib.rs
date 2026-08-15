@@ -24,6 +24,9 @@ use tiez_core::clipboard_history::{
 use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
+use tiez_core::image_analysis::{
+    analyze_image_entry_from_database, get_image_analysis_from_database, ImageAnalysisResult,
+};
 use tiez_core::native_settings::{NativeSettingMutation, NativeSettings, NativeSettingsSnapshot};
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
@@ -32,7 +35,7 @@ mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
-const ABI_VERSION: u32 = 9;
+const ABI_VERSION: u32 = 10;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -215,6 +218,12 @@ struct BackupResponse<'a> {
     info: &'a BackupInfo,
 }
 
+#[derive(Serialize)]
+struct ImageAnalysisResponse<'a> {
+    abi_version: u32,
+    analysis: Option<&'a ImageAnalysisResult>,
+}
+
 fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
     serde_json::to_string(&SnapshotResponse {
         abi_version: ABI_VERSION,
@@ -274,6 +283,14 @@ fn backup_json(info: &BackupInfo) -> Result<String, String> {
         info,
     })
     .map_err(|error| format!("failed to serialize backup information: {error}"))
+}
+
+fn image_analysis_json(analysis: Option<&ImageAnalysisResult>) -> Result<String, String> {
+    serde_json::to_string(&ImageAnalysisResponse {
+        abi_version: ABI_VERSION,
+        analysis,
+    })
+    .map_err(|error| format!("failed to serialize image analysis: {error}"))
 }
 
 fn owned_database_context(handle: &TiezCoreHandle) -> Result<(PathBuf, bool), String> {
@@ -725,6 +742,50 @@ pub unsafe extern "C" fn tiez_core_get_content_json(
 }
 
 #[no_mangle]
+/// Return cached OCR/QR analysis for a production image entry, if available.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_image_analysis_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let (database_path, _) = owned_database_context(handle)?;
+        let analysis = get_image_analysis_from_database(&database_path, entry_id)
+            .map_err(|error| error.to_string())?;
+        into_owned_c_string(image_analysis_json(analysis.as_ref())?)
+    })
+}
+
+#[no_mangle]
+/// Analyze one production image entry with Windows OCR and QR decoding.
+/// Read-only and sensitive entries are analyzed in memory without persisting
+/// recognized plaintext.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_analyze_image_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+    force: bool,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let (database_path, read_only) = owned_database_context(handle)?;
+        let analysis =
+            analyze_image_entry_from_database(&database_path, entry_id, force, read_only)
+                .map_err(|error| error.to_string())?;
+        into_owned_c_string(image_analysis_json(Some(&analysis))?)
+    })
+}
+
+#[no_mangle]
 /// Resolve one entry into a validated URL or local-file launch plan.
 ///
 /// The returned UTF-8 JSON string is newly allocated and must be released with
@@ -1021,6 +1082,7 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 ///
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
+/// `tiez_core_get_image_analysis_json`, `tiez_core_analyze_image_json`,
 /// `tiez_core_prepare_open_content_json`,
 /// `tiez_core_create_backup_json`, `tiez_core_inspect_backup_json`,
 /// `tiez_core_schedule_restore_json`, `tiez_core_apply_action_json`,
@@ -1108,7 +1170,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":9"));
+        assert!(json.contains("\"abi_version\":10"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -1144,6 +1206,30 @@ mod tests {
     }
 
     #[test]
+    fn image_analysis_export_keeps_abi_and_camel_case_contract() {
+        let analysis = ImageAnalysisResult {
+            text: "识别文字".to_owned(),
+            qr_codes: vec!["https://example.com/pay".to_owned()],
+            language: Some("zh-CN".to_owned()),
+            analyzed_at: 42,
+            cached: false,
+            persisted: true,
+            ocr_available: true,
+            ocr_error: None,
+        };
+
+        let json = image_analysis_json(Some(&analysis)).unwrap();
+        let empty = image_analysis_json(None).unwrap();
+
+        assert!(json.contains("\"abi_version\":10"));
+        assert!(json.contains("\"analysis\":{\"text\":\"识别文字\""));
+        assert!(json.contains("\"qrCodes\":[\"https://example.com/pay\"]"));
+        assert!(json.contains("\"analyzedAt\":42"));
+        assert!(json.contains("\"ocrAvailable\":true"));
+        assert!(empty.contains("\"analysis\":null"));
+    }
+
+    #[test]
     fn open_content_export_returns_a_validated_plan_and_rejects_sensitive_entries() {
         let handle = Box::into_raw(Box::new(
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
@@ -1153,7 +1239,7 @@ mod tests {
             let value = tiez_core_prepare_open_content_json(handle, 103);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":9"));
+            assert!(json.contains("\"abi_version\":10"));
             assert!(json.contains("\"kind\":\"url\""));
             assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
             assert!(json.contains("\"requires_confirmation\":false"));
@@ -1190,7 +1276,7 @@ mod tests {
             let created = tiez_core_create_backup_json(handle, destination.as_ptr());
             assert!(!created.is_null());
             let created_json = CStr::from_ptr(created).to_str().unwrap();
-            assert!(created_json.contains("\"abi_version\":9"));
+            assert!(created_json.contains("\"abi_version\":10"));
             assert!(created_json.contains("\"entryCount\":0"));
             tiez_core_string_free(created);
 
@@ -1242,7 +1328,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":9"));
+            assert!(pin_json.contains("\"abi_version\":10"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1274,7 +1360,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":9"));
+            assert!(json.contains("\"abi_version\":10"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1315,7 +1401,7 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":9"));
+            assert!(initial_json.contains("\"abi_version\":10"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
@@ -1374,7 +1460,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":9"));
+            assert!(json.contains("\"abi_version\":10"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));
