@@ -11,7 +11,9 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::{Arc, Mutex};
-use tiez_core::clipboard_capture::CaptureFilter;
+use tiez_core::clipboard_capture::{
+    classify_snapshot, CapturedPayload, CaptureFilter, ClipboardSnapshot,
+};
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
@@ -148,7 +150,9 @@ fn apply_history_action(
         }
         execute_os_paste(&plan)?;
         if let Ok(mut filter) = handle.inner.capture.lock() {
-            filter.note_self_write(&plan.payload.text);
+            if let Some(payload) = payload_written_to_clipboard(&plan) {
+                filter.note_payload(&payload);
+            }
         }
         let mut mutation = history
             .apply_action(entry_id, action)
@@ -167,17 +171,31 @@ fn apply_history_action(
         .map_err(|error| error.to_string())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn ingest_captured_text(
     inner: &TiezCoreInner,
     raw: &str,
+) -> Result<Option<u64>, String> {
+    ingest_captured_snapshot(
+        inner,
+        ClipboardSnapshot {
+            text: Some(raw.to_owned()),
+            ..ClipboardSnapshot::default()
+        },
+    )
+}
+
+pub(crate) fn ingest_captured_snapshot(
+    inner: &TiezCoreInner,
+    snapshot: ClipboardSnapshot,
 ) -> Result<Option<u64>, String> {
     let accepted = {
         let mut filter = inner
             .capture
             .lock()
             .map_err(|_| "CaptureFilter lock is poisoned".to_owned())?;
-        match filter.accept(raw) {
-            Ok(text) => text,
+        match filter.accept_payload(classify_snapshot(snapshot)) {
+            Ok(payload) => payload,
             Err(_) => return Ok(None),
         }
     };
@@ -187,11 +205,42 @@ pub(crate) fn ingest_captured_text(
             .lock()
             .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
         history
-            .ingest_text(accepted, "Clipboard")
+            .ingest(accepted, "Clipboard")
             .map_err(|error| error.to_string())?
     };
     notify_changed(inner, mutation.generation);
     Ok(Some(mutation.generation))
+}
+
+fn payload_written_to_clipboard(
+    plan: &tiez_core::paste_coordinator::PastePlan,
+) -> Option<CapturedPayload> {
+    #[cfg(all(windows, not(test)))]
+    if let Some(snapshot) = win32_capture::read_clipboard_snapshot() {
+        return classify_snapshot(snapshot);
+    }
+
+    payload_from_paste_plan(plan)
+}
+
+fn payload_from_paste_plan(
+    plan: &tiez_core::paste_coordinator::PastePlan,
+) -> Option<CapturedPayload> {
+    if !plan.payload.files.is_empty() {
+        return Some(CapturedPayload::Files {
+            paths: plan.payload.files.clone(),
+        });
+    }
+    if let Some(image) = &plan.payload.image {
+        return Some(CapturedPayload::Image {
+            content: image.clone(),
+        });
+    }
+    classify_snapshot(ClipboardSnapshot {
+        text: Some(plan.payload.text.clone()),
+        html: plan.payload.html.clone(),
+        ..ClipboardSnapshot::default()
+    })
 }
 
 fn notify_changed(inner: &TiezCoreInner, generation: u64) {
@@ -711,6 +760,46 @@ mod tests {
             let json = CStr::from_ptr(snapshot).to_str().unwrap();
             assert!(json.contains("hello from notepad"));
             tiez_core_string_free(snapshot);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn ingest_classifies_html_files_and_urls() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::in_memory(
+            vec![],
+        ))));
+        unsafe {
+            ingest_captured_snapshot(
+                &(*handle).inner,
+                ClipboardSnapshot {
+                    text: Some("hello".into()),
+                    html: Some("<!--StartFragment--><b>hello</b><!--EndFragment-->".into()),
+                    ..ClipboardSnapshot::default()
+                },
+            )
+            .unwrap();
+            ingest_captured_snapshot(
+                &(*handle).inner,
+                ClipboardSnapshot {
+                    files: vec![r"C:\tmp\notes.md".into()],
+                    ..ClipboardSnapshot::default()
+                },
+            )
+            .unwrap();
+            ingest_captured_text(&(*handle).inner, "https://example.com").unwrap();
+
+            let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
+            let json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(json.contains("\"content_type\":\"url\""));
+            assert!(json.contains("\"content_type\":\"files\""));
+            assert!(json.contains("\"content_type\":\"rich_text\""));
+            tiez_core_string_free(snapshot);
+
+            let content = tiez_core_get_content_json(handle, 1);
+            let content_json = CStr::from_ptr(content).to_str().unwrap();
+            assert!(content_json.contains("<b>hello</b>"));
+            tiez_core_string_free(content);
             tiez_core_destroy(handle);
         }
     }

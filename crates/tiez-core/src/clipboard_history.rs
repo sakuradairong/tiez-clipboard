@@ -1,4 +1,4 @@
-use crate::clipboard_capture::preview_from_content;
+use crate::clipboard_capture::{classify_snapshot, CapturedPayload, ClipboardSnapshot};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -208,10 +208,26 @@ impl ClipboardHistory {
         content: String,
         source_app: impl Into<String>,
     ) -> Result<HistoryMutationResult, HistoryError> {
+        let payload = classify_snapshot(ClipboardSnapshot {
+            text: Some(content.clone()),
+            ..ClipboardSnapshot::default()
+        })
+        .unwrap_or(CapturedPayload::Text {
+            content,
+            content_type: "text".to_owned(),
+        });
+        self.ingest(payload, source_app)
+    }
+
+    pub fn ingest(
+        &mut self,
+        payload: CapturedPayload,
+        source_app: impl Into<String>,
+    ) -> Result<HistoryMutationResult, HistoryError> {
         let source_app = source_app.into();
         match &mut self.adapter {
-            HistoryAdapter::Memory(adapter) => Ok(adapter.ingest_text(content, source_app)),
-            HistoryAdapter::Sqlite(adapter) => adapter.ingest_text(content, source_app),
+            HistoryAdapter::Memory(adapter) => Ok(adapter.ingest(payload, source_app)),
+            HistoryAdapter::Sqlite(adapter) => adapter.ingest(payload, source_app),
         }
     }
 }
@@ -287,15 +303,19 @@ impl MemoryHistory {
         })
     }
 
-    fn ingest_text(&mut self, content: String, source_app: String) -> HistoryMutationResult {
+    fn ingest(&mut self, payload: CapturedPayload, source_app: String) -> HistoryMutationResult {
         let next_id = self.items.iter().map(|item| item.id).max().unwrap_or(0) + 1;
-        let preview = preview_from_content(&content);
-        self.payloads.insert(next_id, content);
+        let preview = payload.preview();
+        let content_type = payload.content_type().to_owned();
+        if let Some(html) = payload.html() {
+            self.html_by_id.insert(next_id, html.to_owned());
+        }
+        self.payloads.insert(next_id, payload.content());
         self.items.insert(
             0,
             HistoryItem {
                 id: next_id,
-                content_type: "text".to_owned(),
+                content_type,
                 preview,
                 source_app: source_app.clone(),
                 captured_at: "Just now".to_owned(),
@@ -304,10 +324,10 @@ impl MemoryHistory {
             },
         );
         self.generation += 1;
-        self.last_action = format!("Captured text from {source_app}");
+        self.last_action = format!("Captured {} from {source_app}", payload.content_type());
         HistoryMutationResult {
             adapter: "memory",
-            action: "ingest-text".to_owned(),
+            action: format!("ingest-{}", payload.content_type()),
             requested_id: next_id,
             effective_id: Some(next_id),
             replacement_id: None,
@@ -535,35 +555,38 @@ impl SqliteHistory {
         })
     }
 
-    fn ingest_text(
+    fn ingest(
         &mut self,
-        content: String,
+        payload: CapturedPayload,
         source_app: String,
     ) -> Result<HistoryMutationResult, HistoryError> {
         if self.read_only {
             return Err(HistoryError::new(
                 HistoryErrorKind::ReadOnly,
-                "ingest-text is disabled for sqlite-read-only history",
+                "ingest is disabled for sqlite-read-only history",
             ));
         }
 
         let connection = open_sqlite_connection(&self.database_path, false)?;
         let timestamp = now_unix_ms();
-        let preview = preview_from_content(&content);
+        let preview = payload.preview();
+        let content = payload.content();
+        let content_type = payload.content_type();
+        let html = payload.html();
         connection
             .execute(
                 "INSERT INTO clipboard_history
                     (content_type, content, html_content, source_app, timestamp, preview, is_pinned, pinned_order, tags)
-                 VALUES ('text', ?1, NULL, ?2, ?3, ?4, 0, 0, '[]')",
-                rusqlite::params![content, source_app, timestamp, preview],
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, '[]')",
+                rusqlite::params![content_type, content, html, source_app, timestamp, preview],
             )
-            .map_err(|error| storage_error("failed to ingest clipboard text", error))?;
+            .map_err(|error| storage_error("failed to ingest clipboard payload", error))?;
         let entry_id = connection.last_insert_rowid();
         self.generation = self.generation.saturating_add(1);
-        self.last_action = format!("Captured text from {source_app}");
+        self.last_action = format!("Captured {content_type} from {source_app}");
         Ok(HistoryMutationResult {
             adapter: self.adapter_name(),
-            action: "ingest-text".to_owned(),
+            action: format!("ingest-{content_type}"),
             requested_id: entry_id,
             effective_id: Some(entry_id),
             replacement_id: None,
@@ -1180,6 +1203,36 @@ mod tests {
             history.content(1).unwrap().content,
             "  keep whitespace\nline two  "
         );
+        assert_eq!(history.snapshot("").unwrap().items[0].content_type, "text");
+
+        let url = history
+            .ingest_text("https://example.com/path".to_owned(), "Edge")
+            .unwrap();
+        assert_eq!(url.action, "ingest-url");
+        assert_eq!(
+            history
+                .snapshot("")
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == url.effective_id.unwrap())
+                .unwrap()
+                .content_type,
+            "url"
+        );
+
+        let rich = history
+            .ingest(
+                CapturedPayload::RichText {
+                    content: "hello".to_owned(),
+                    html: "<b>hello</b>".to_owned(),
+                },
+                "Word",
+            )
+            .unwrap();
+        let rich_content = history.content(rich.effective_id.unwrap()).unwrap();
+        assert_eq!(rich_content.content_type, "rich_text");
+        assert_eq!(rich_content.html_content.as_deref(), Some("<b>hello</b>"));
     }
 
     #[test]
@@ -1393,7 +1446,7 @@ mod tests {
             .ingest_text("live copy\r\nsecond".to_owned(), "Notepad")
             .unwrap();
         let id = ingested.effective_id.unwrap();
-        assert_eq!(history.content(id).unwrap().content, "live copy\r\nsecond");
+        assert_eq!(history.content(id).unwrap().content, "live copy\nsecond");
         assert!(history
             .snapshot("")
             .unwrap()

@@ -97,6 +97,98 @@ fn encode_hdrop(paths: &[String]) -> Vec<u8> {
     bytes
 }
 
+pub(crate) fn decode_cf_dib(dib: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    if dib.len() < 40 {
+        return Err("CF_DIB header is truncated".to_owned());
+    }
+    let header_size = u32::from_le_bytes(dib[0..4].try_into().unwrap());
+    if header_size < 40 || dib.len() < header_size as usize {
+        return Err("CF_DIB BITMAPINFOHEADER is truncated".to_owned());
+    }
+    let width = i32::from_le_bytes(dib[4..8].try_into().unwrap());
+    let height = i32::from_le_bytes(dib[8..12].try_into().unwrap());
+    let bit_count = u16::from_le_bytes(dib[14..16].try_into().unwrap());
+    let compression = u32::from_le_bytes(dib[16..20].try_into().unwrap());
+    if width <= 0 || height == 0 {
+        return Err("CF_DIB has an invalid size".to_owned());
+    }
+    if bit_count != 32 || compression != 0 {
+        return Err("only uncompressed 32-bit CF_DIB is supported".to_owned());
+    }
+    let width = width as u32;
+    let bottom_up = height > 0;
+    let height = height.unsigned_abs();
+    let pixels = &dib[header_size as usize..];
+    let row_bytes = (width as usize).saturating_mul(4);
+    let expected = row_bytes.saturating_mul(height as usize);
+    if pixels.len() < expected {
+        return Err("CF_DIB pixel buffer is truncated".to_owned());
+    }
+    let mut rgba = vec![0u8; expected];
+    for row in 0..height as usize {
+        let src_row = if bottom_up {
+            height as usize - 1 - row
+        } else {
+            row
+        };
+        let src = &pixels[src_row * row_bytes..src_row * row_bytes + row_bytes];
+        let dest = &mut rgba[row * row_bytes..row * row_bytes + row_bytes];
+        for (src_px, dest_px) in src.chunks_exact(4).zip(dest.chunks_exact_mut(4)) {
+            dest_px[0] = src_px[2];
+            dest_px[1] = src_px[1];
+            dest_px[2] = src_px[0];
+            dest_px[3] = src_px[3];
+        }
+    }
+    Ok((width, height, rgba))
+}
+
+pub(crate) fn decode_hdrop(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() < 20 {
+        return Err("CF_HDROP header is truncated".to_owned());
+    }
+    let offset = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    let wide = i32::from_le_bytes(bytes[16..20].try_into().unwrap()) != 0;
+    if offset > bytes.len() {
+        return Err("CF_HDROP path offset is invalid".to_owned());
+    }
+    let payload = &bytes[offset..];
+    let mut paths = Vec::new();
+    if wide {
+        let units: Vec<u16> = payload
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        let mut start = 0usize;
+        for (index, unit) in units.iter().copied().enumerate() {
+            if unit != 0 {
+                continue;
+            }
+            if index == start {
+                break;
+            }
+            paths.push(String::from_utf16_lossy(&units[start..index]));
+            start = index + 1;
+        }
+    } else {
+        let mut start = 0usize;
+        for (index, byte) in payload.iter().copied().enumerate() {
+            if byte != 0 {
+                continue;
+            }
+            if index == start {
+                break;
+            }
+            paths.push(String::from_utf8_lossy(&payload[start..index]).into_owned());
+            start = index + 1;
+        }
+    }
+    if paths.is_empty() {
+        return Err("CF_HDROP contained no paths".to_owned());
+    }
+    Ok(paths)
+}
+
 #[cfg(not(test))]
 pub(crate) fn execute(plan: &PastePlan) -> Result<(), String> {
     execute_paste(plan, &mut Win32PasteExecutor)
@@ -362,7 +454,9 @@ fn keyboard_input(virtual_key: VIRTUAL_KEY, key_up: bool) -> INPUT {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_cf_dib, encode_cf_html, encode_hdrop, normalize_file_path};
+    use super::{
+        decode_cf_dib, decode_hdrop, encode_cf_dib, encode_cf_html, encode_hdrop, normalize_file_path,
+    };
 
     #[test]
     fn encode_cf_html_wraps_a_fragment_and_keeps_fixed_width_offsets() {
@@ -382,18 +476,24 @@ mod tests {
 
     #[test]
     fn encode_cf_dib_converts_rgba_to_bottom_up_bgra() {
-        let dib = encode_cf_dib(1, 1, &[255, 0, 0, 255]).unwrap();
+        let rgba = [255, 0, 0, 255];
+        let dib = encode_cf_dib(1, 1, &rgba).unwrap();
         assert_eq!(&dib[0..4], 40u32.to_le_bytes());
         assert_eq!(&dib[40..], [0, 0, 255, 255]);
+        let (width, height, decoded) = decode_cf_dib(&dib).unwrap();
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(decoded, rgba);
     }
 
     #[test]
     fn encode_hdrop_includes_wide_paths() {
-        let encoded = encode_hdrop(&[r"C:\a.txt".to_owned()]);
+        let paths = vec![r"C:\a.txt".to_owned(), r"D:\b.png".to_owned()];
+        let encoded = encode_hdrop(&paths);
         let utf16: Vec<u8> = r"C:\a.txt".encode_utf16().flat_map(u16::to_le_bytes).collect();
         assert_eq!(&encoded[0..4], 20u32.to_le_bytes());
         assert_eq!(&encoded[16..20], 1i32.to_le_bytes());
         assert!(encoded.windows(utf16.len()).any(|window| window == utf16));
+        assert_eq!(decode_hdrop(&encoded).unwrap(), paths);
     }
 
     #[test]

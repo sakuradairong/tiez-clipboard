@@ -10,7 +10,13 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 #[cfg(all(windows, not(test)))]
-use crate::ingest_captured_text;
+use crate::ingest_captured_snapshot;
+#[cfg(all(windows, not(test)))]
+use crate::win32_paste::{decode_cf_dib, decode_hdrop};
+#[cfg(all(windows, not(test)))]
+use std::hash::{Hash, Hasher};
+#[cfg(all(windows, not(test)))]
+use std::io::Cursor;
 #[cfg(all(windows, not(test)))]
 use std::ptr;
 #[cfg(all(windows, not(test)))]
@@ -19,18 +25,20 @@ use std::sync::mpsc;
 use std::thread;
 #[cfg(all(windows, not(test)))]
 use std::time::Duration;
+#[cfg(all(windows, not(test)))]
+use tiez_core::clipboard_capture::{classify_snapshot, ClipboardSnapshot};
 
 #[cfg(all(windows, not(test)))]
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 #[cfg(all(windows, not(test)))]
 use windows_sys::Win32::System::DataExchange::{
-    AddClipboardFormatListener, CloseClipboard, GetClipboardData, OpenClipboard,
-    RemoveClipboardFormatListener,
+    AddClipboardFormatListener, CloseClipboard, GetClipboardData, IsClipboardFormatAvailable,
+    OpenClipboard, RegisterClipboardFormatW, RemoveClipboardFormatListener,
 };
 #[cfg(all(windows, not(test)))]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(all(windows, not(test)))]
-use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 #[cfg(all(windows, not(test)))]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
@@ -40,6 +48,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 #[cfg(all(windows, not(test)))]
 const CF_UNICODETEXT: u32 = 13;
+#[cfg(all(windows, not(test)))]
+const CF_DIB: u32 = 8;
+#[cfg(all(windows, not(test)))]
+const CF_HDROP: u32 = 15;
 
 pub struct Session {
     stop: Arc<AtomicBool>,
@@ -89,9 +101,11 @@ pub fn start(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
 
 #[cfg(all(windows, not(test)))]
 fn start_windows(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
-    if let Some(existing) = read_unicode_text() {
-        if let Ok(mut filter) = inner.capture.lock() {
-            filter.prime(&existing);
+    if let Some(existing) = read_clipboard_snapshot() {
+        if let Some(payload) = classify_snapshot(existing) {
+            if let Ok(mut filter) = inner.capture.lock() {
+                filter.prime_payload(&payload);
+            }
         }
     }
 
@@ -109,10 +123,10 @@ fn start_windows(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
                     break;
                 }
                 thread::sleep(Duration::from_millis(30));
-                let Some(raw) = read_unicode_text() else {
+                let Some(snapshot) = read_clipboard_snapshot() else {
                     continue;
                 };
-                let _ = ingest_captured_text(&worker_inner, &raw);
+                let _ = ingest_captured_snapshot(&worker_inner, snapshot);
             }
         })
         .map_err(|error| format!("failed to start clipboard worker: {error}"))?;
@@ -222,11 +236,10 @@ unsafe extern "system" fn wnd_proc(
 }
 
 #[cfg(all(windows, not(test)))]
-fn read_unicode_text() -> Option<String> {
+pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
     for _ in 0..5 {
-        let text = unsafe { try_read_unicode_text() };
-        if text.is_some() {
-            return text;
+        if let Some(snapshot) = unsafe { try_read_clipboard_snapshot() } {
+            return Some(snapshot);
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -234,18 +247,40 @@ fn read_unicode_text() -> Option<String> {
 }
 
 #[cfg(all(windows, not(test)))]
-unsafe fn try_read_unicode_text() -> Option<String> {
+unsafe fn try_read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
     if OpenClipboard(ptr::null_mut()) == 0 {
+        return None;
+    }
+    let files = read_hdrop();
+    let html = read_named_text("HTML Format");
+    let text = read_unicode_text();
+    let png = read_named_bytes("PNG");
+    let dib = read_format_bytes(CF_DIB);
+    CloseClipboard();
+
+    let image = persist_image(png, dib);
+    if files.is_empty() && html.is_none() && text.is_none() && image.is_none() {
+        return None;
+    }
+    Some(ClipboardSnapshot {
+        text,
+        html,
+        image,
+        files,
+    })
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe fn read_unicode_text() -> Option<String> {
+    if IsClipboardFormatAvailable(CF_UNICODETEXT) == 0 {
         return None;
     }
     let handle = GetClipboardData(CF_UNICODETEXT);
     if handle.is_null() {
-        CloseClipboard();
         return None;
     }
     let locked = GlobalLock(handle);
     if locked.is_null() {
-        CloseClipboard();
         return None;
     }
     let result = {
@@ -260,6 +295,103 @@ unsafe fn try_read_unicode_text() -> Option<String> {
         String::from_utf16(std::slice::from_raw_parts(ptr, len)).ok()
     };
     GlobalUnlock(handle);
-    CloseClipboard();
-    result
+    result.filter(|value| !value.is_empty())
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe fn read_hdrop() -> Vec<String> {
+    if IsClipboardFormatAvailable(CF_HDROP) == 0 {
+        return Vec::new();
+    }
+    let Some(bytes) = read_format_bytes(CF_HDROP) else {
+        return Vec::new();
+    };
+    decode_hdrop(&bytes).unwrap_or_default()
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe fn read_named_text(name: &str) -> Option<String> {
+    let bytes = read_named_bytes(name)?;
+    let text = if bytes.len() >= 2 && bytes[1] == 0 {
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe fn read_named_bytes(name: &str) -> Option<Vec<u8>> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let format = RegisterClipboardFormatW(wide.as_ptr());
+    if format == 0 || IsClipboardFormatAvailable(format) == 0 {
+        return None;
+    }
+    read_format_bytes(format)
+}
+
+#[cfg(all(windows, not(test)))]
+unsafe fn read_format_bytes(format: u32) -> Option<Vec<u8>> {
+    let handle = GetClipboardData(format);
+    if handle.is_null() {
+        return None;
+    }
+    let size = GlobalSize(handle);
+    if size == 0 {
+        return None;
+    }
+    let locked = GlobalLock(handle);
+    if locked.is_null() {
+        return None;
+    }
+    let bytes = std::slice::from_raw_parts(locked as *const u8, size).to_vec();
+    GlobalUnlock(handle);
+    Some(bytes)
+}
+
+#[cfg(all(windows, not(test)))]
+fn persist_image(png: Option<Vec<u8>>, dib: Option<Vec<u8>>) -> Option<String> {
+    let png = png
+        .filter(|bytes| bytes.starts_with(b"\x89PNG"))
+        .or_else(|| {
+            let dib = dib?;
+            let (width, height, rgba) = decode_cf_dib(&dib).ok()?;
+            encode_png(width, height, &rgba).ok()
+        })?;
+    persist_png(&png).ok()
+}
+
+#[cfg(all(windows, not(test)))]
+fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let buffer = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(width, height, rgba.to_vec())
+        .ok_or_else(|| "RGBA buffer does not match width and height".to_owned())?;
+    let image = image::DynamicImage::ImageRgba8(buffer);
+    let mut bytes = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .map_err(|error| format!("failed to encode captured PNG: {error}"))?;
+    Ok(bytes)
+}
+
+#[cfg(all(windows, not(test)))]
+fn persist_png(png: &[u8]) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("tiez-winui-capture");
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("failed to create capture directory: {error}"))?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    png.hash(&mut hasher);
+    let path = dir.join(format!("{:016x}.png", hasher.finish()));
+    std::fs::write(&path, png).map_err(|error| format!("failed to write captured PNG: {error}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }
