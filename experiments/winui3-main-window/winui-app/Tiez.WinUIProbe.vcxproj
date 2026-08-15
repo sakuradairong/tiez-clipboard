@@ -8,7 +8,9 @@
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.1.8.260709000\build\native\Microsoft.WindowsAppSDK.Foundation.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.1.8.260709000\build\native\Microsoft.WindowsAppSDK.Foundation.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.260708001\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.260708001\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.1.8.260709004\build\native\Microsoft.WindowsAppSDK.WinUI.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.1.8.260709004\build\native\Microsoft.WindowsAppSDK.WinUI.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.1.8.260710003\build\native\Microsoft.WindowsAppSDK.Runtime.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.1.8.260710003\build\native\Microsoft.WindowsAppSDK.Runtime.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.8249\build\Microsoft.Windows.SDK.BuildTools.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.8249\build\Microsoft.Windows.SDK.BuildTools.props')" />
+  <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.260610101\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.260610101\build\Microsoft.Windows.SDK.BuildTools.MSIX.props')" />
   <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props')" />
 
   <PropertyGroup Label="Globals">
@@ -79,7 +81,7 @@
       <WarningLevel>Level4</WarningLevel>
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\rust-core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalOptions>%(AdditionalOptions) /bigobj /permissive-</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) /bigobj /permissive- /utf-8</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -145,12 +147,14 @@
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.8249\build\Microsoft.Windows.SDK.BuildTools.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.8249\build\Microsoft.Windows.SDK.BuildTools.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.260610101\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.260610101\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.Web.WebView2.1.0.4129.50\build\native\Microsoft.Web.WebView2.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.Web.WebView2.1.0.4129.50\build\native\Microsoft.Web.WebView2.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260710003\build\native\Microsoft.WindowsAppSDK.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260710003\build\native\Microsoft.WindowsAppSDK.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.1.8.251216001\build\native\Microsoft.WindowsAppSDK.Base.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Base.1.8.251216001\build\native\Microsoft.WindowsAppSDK.Base.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.1.8.260709000\build\native\Microsoft.WindowsAppSDK.Foundation.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Foundation.1.8.260709000\build\native\Microsoft.WindowsAppSDK.Foundation.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.260708001\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.InteractiveExperiences.1.8.260708001\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets')" />
     <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.1.8.260709004\build\native\Microsoft.WindowsAppSDK.WinUI.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.1.8.260709004\build\native\Microsoft.WindowsAppSDK.WinUI.targets')" />
+    <Import Project="$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.1.8.260710003\build\native\Microsoft.WindowsAppSDK.Runtime.targets" Condition="Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.Runtime.1.8.260710003\build\native\Microsoft.WindowsAppSDK.Runtime.targets')" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
@@ -158,6 +162,7 @@
     </PropertyGroup>
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.Windows.CppWinRT.2.0.250303.1\build\native\Microsoft.Windows.CppWinRT.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.Windows.CppWinRT.props'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.10.0.26100.8249\build\Microsoft.Windows.SDK.BuildTools.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.Windows.SDK.BuildTools.props'))" />
+    <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.260610101\build\Microsoft.Windows.SDK.BuildTools.MSIX.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.Windows.SDK.BuildTools.MSIX.props'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.1.8.260710003\build\native\Microsoft.WindowsAppSDK.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.props'))" />
     <Error Condition="!Exists('$(NugetPackageDirectory)\Microsoft.WindowsAppSDK.WinUI.1.8.260709004\build\native\Microsoft.WindowsAppSDK.WinUI.props')" Text="$([System.String]::Format('$(ErrorText)', 'Microsoft.WindowsAppSDK.WinUI.props'))" />
   </Target>

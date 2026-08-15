@@ -16,6 +16,7 @@ Set-StrictMode -Version Latest
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Packages = Join-Path $Root "packages"
 $Artifacts = Join-Path $Root "artifacts\$Platform\$Configuration"
+$WinUIOutput = Join-Path $Root "$Platform\$Configuration\Tiez.WinUIProbe"
 $CoreManifest = Join-Path $Root "..\..\crates\tiez-core\Cargo.toml"
 $RustManifest = Join-Path $Root "rust-core\Cargo.toml"
 $Solution = Join-Path $Root "Tiez.WinUIProbe.sln"
@@ -83,7 +84,6 @@ $env:CARGO_TARGET_DIR = Join-Path $Root "rust-core\target"
 if ($LASTEXITCODE -ne 0) { throw "Rust core build failed." }
 
 New-Item -ItemType Directory -Force -Path $Artifacts | Out-Null
-Copy-Item (Join-Path $Root "rust-core\target\release\tiez_winui_core.dll") $Artifacts -Force
 
 if (-not $SkipWinUIBuild) {
     Ensure-NuGet
@@ -93,7 +93,15 @@ if (-not $SkipWinUIBuild) {
     $msbuild = Resolve-MSBuild
     & $msbuild $Solution /m /restore:false /p:Configuration=$Configuration /p:Platform=$Platform
     if ($LASTEXITCODE -ne 0) { throw "WinUI build failed." }
+
+    $winuiExecutable = Join-Path $WinUIOutput "Tiez.WinUIProbe.exe"
+    if (-not (Test-Path $winuiExecutable)) {
+        throw "WinUI build output was not found: $winuiExecutable"
+    }
+    Copy-Item (Join-Path $WinUIOutput "*") $Artifacts -Recurse -Force
 }
+
+Copy-Item (Join-Path $Root "rust-core\target\release\tiez_winui_core.dll") $Artifacts -Force
 
 Write-Host ""
 Write-Host "Build output: $Artifacts" -ForegroundColor Green
