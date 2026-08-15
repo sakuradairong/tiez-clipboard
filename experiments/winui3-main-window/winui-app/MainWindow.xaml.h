@@ -107,7 +107,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void EnsureSettingsDialog();
         void LoadSettings();
         void LoadCloudSyncSettings();
-        bool SaveCloudSyncSettings(bool clearPassword);
+        bool SaveCloudSyncSettings(bool clearPassword, bool reloadRunner = true);
+        void RequestCloudSyncNow();
+        void UpdateCloudSyncStatus();
         winrt::fire_and_forget ProbeCloudSyncAsync();
         void SetCloudSyncBusy(bool busy, winrt::hstring const& message);
         winrt::fire_and_forget ExportBackupAsync();
@@ -141,6 +143,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::unique_ptr<tiez::probe::RustCoreBridge> m_core;
         std::shared_ptr<HistoryRefreshSink> m_refreshSink;
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_showTimer{ nullptr };
+        Microsoft::UI::Dispatching::DispatcherQueueTimer m_cloudSyncStatusTimer{ nullptr };
         Microsoft::UI::Xaml::Controls::ContentDialog m_settingsDialog{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel m_settingsPanel{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox m_colorModeCombo{ nullptr };
@@ -167,6 +170,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncFileToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncEmojiToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_cloudSyncSaveButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_cloudSyncNowButton{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_cloudSyncProbeButton{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_cloudSyncClearPasswordButton{ nullptr };
         Microsoft::UI::Xaml::Controls::ProgressRing m_cloudSyncProgress{ nullptr };
@@ -202,6 +206,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_settingsLoading{};
         bool m_cloudSyncBusy{};
         bool m_cloudSyncPasswordConfigured{};
+        std::uint64_t m_cloudSyncSettingsRevision{};
         bool m_backupBusy{};
         bool m_updateBusy{};
         bool m_updateAvailable{};

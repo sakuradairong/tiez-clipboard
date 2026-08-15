@@ -17,6 +17,7 @@ serde_json = "1"
 tiez-core = { path = "../../../crates/tiez-core" }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

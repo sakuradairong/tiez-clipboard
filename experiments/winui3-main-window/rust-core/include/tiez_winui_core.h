@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 11,
+    TIEZ_CORE_ABI_VERSION = 12,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -125,6 +125,19 @@ TIEZ_CORE_API char* tiez_core_update_cloud_sync_settings_json(
 // not followed and no remote collection or clipboard payload is written.
 TIEZ_CORE_API char* tiez_core_probe_cloud_sync_json(
     TiezCoreHandle* handle);
+
+// Returns background runner state and transfer counts without credentials.
+TIEZ_CORE_API char* tiez_core_get_cloud_sync_status_json(
+    TiezCoreHandle* handle);
+
+// Starts the runner, or reloads its automatic schedule after settings change.
+TIEZ_CORE_API bool tiez_core_start_cloud_sync(TiezCoreHandle* handle);
+
+// Requests an immediate pass and forces a full snapshot publication.
+TIEZ_CORE_API bool tiez_core_request_cloud_sync(TiezCoreHandle* handle);
+
+// Cancels and joins the runner before the native host or DLL is unloaded.
+TIEZ_CORE_API void tiez_core_stop_cloud_sync(TiezCoreHandle* handle);
 
 // History-changed notifications may arrive on a background worker thread.
 TIEZ_CORE_API void tiez_core_set_changed_callback(

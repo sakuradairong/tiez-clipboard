@@ -25,6 +25,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v9 adds asynchronous Chinese backup export and restore controls backed by a shared `tiez-core` archive implementation. Both frontends now create and validate the same database/attachment archives, while WinUI applies scheduled restores before opening SQLite and retains a rollback copy.
 - WinUI ABI v10 adds shared OCR/QR image analysis, an asynchronous Chinese native details panel, result copying, and native history search over cached recognition text. The Tauri commands remain compatible wrappers over the same `tiez-core` implementation.
 - WinUI ABI v11 adds Tauri-compatible WebDAV settings, a write-only password field, and an asynchronous Chinese read-only connectivity test. Full background upload/download and conflict reconciliation remain on the native migration roadmap.
+- WinUI ABI v12 adds a Rust-owned WebDAV background service, automatic scheduling, immediate manual synchronization, sanitized status polling, and Chinese progress/error/result UI. Its SQLite host preserves sync revisions, tombstones, tags, sensitive DPAPI storage, settings, image attachments, and cross-device emoji images without exposing credentials through C++.
 - The Chinese WinUI settings dialog can check the current MSIX package's associated App Installer feed and hand available updates back to Windows for signed installation; unpackaged builds fail closed without contacting a hard-coded endpoint.
 - Native Windows CI now builds a versioned `TieZ.exe` and structurally validates a self-contained x64 MSIX. Release publishing requires a matching Publisher certificate, SHA256/RFC 3161 signing, package re-verification, and emits an App Installer update feed plus checksum.
 
@@ -33,7 +34,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WebDAV client construction, safe path encoding, retry policy, atomic publication, blob transfer, and remote listing parsers now live in Tauri-independent `tiez-core`, establishing the reusable transport contract for the native WinUI sync runner.
 - Cloud-sync item, snapshot, op-batch, head, content-preference, identity, digest, and revision-collapse rules now share one Tauri-independent protocol model while retaining the existing snake_case remote JSON format.
 - Defined the Tauri-independent cloud-sync host boundary for runtime state, SQLite items, payload materialization, settings, emoji, cancellation, and UI events, plus bounded deterministic remote-op and snapshot planning for the native runner.
-- Implemented the shared single-pass WebDAV sync runner with atomic head commit points, bounded incremental pull, snapshot/settings reconciliation, verified blob offload, cancellation persistence, and runtime-neutral status events; Tauri and WinUI host adapters remain the next integration step.
+- Implemented the shared single-pass WebDAV sync runner with atomic head commit points, bounded incremental pull, snapshot/settings reconciliation, verified blob offload, cancellation persistence, and runtime-neutral status events; both Tauri and the native WinUI lifecycle now run through shared host adapters.
 - Tauri WebDAV sync now runs through the shared runner and an atomic settings-backed host adapter while retaining the previous implementation behind the local-only `cloud_sync_webdav_use_legacy_runner=true` recovery switch.
 - Tauri and writable WinUI database startup now use the same `tiez-core` schema-v15 migration and 77-setting bootstrap; WinUI validates and applies a scheduled restore itself before opening the database instead of requiring the Tauri fallback.
 - Tauri and writable WinUI history mutations now share atomic row, normalized-tag, sync-revision, and deletion-tombstone semantics; native file captures use the production `file` content type.
@@ -48,6 +49,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Security
 
+- Cloud settings snapshots now share one fail-closed eligibility policy across Tauri and WinUI, excluding MQTT credentials, AI profiles, relay keys, WebDAV credentials, token/secret/password-style keys, and local synchronization state from upload and remote application.
 - Shared WebDAV transport refuses credential-bearing endpoints and cross-origin redirects, encodes path segments defensively, validates blob identities, and bounds remote error bodies before surfacing them.
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
 - WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.
@@ -59,6 +61,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- `emoji_sync` now uses the same stable text payload hash as the legacy Tauri runner, so native favorites are uploaded once and exact remote payloads can suppress echo uploads.
+- The WinUI build and MSIX packaging helpers now run release-version validation from the repository root, so their documented invocations also work from inside `experiments/winui3-main-window`.
 - Tauri and the native WinUI candidate now share a per-database Windows ownership mutex, preventing concurrent restore or write access to the same `clipboard.db`.
 - Writable WinUI history now copies captured images from its temporary capture area into the TieZ data directory before committing the database row, so system temp cleanup cannot break saved image entries.
 - WinUI history deletion and capacity eviction now remove attachment files only after the last live database reference is gone, and fail closed when a surviving encrypted path cannot be inspected.

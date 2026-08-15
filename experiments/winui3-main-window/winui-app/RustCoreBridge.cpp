@@ -64,6 +64,14 @@ namespace tiez::probe
                 "tiez_core_update_cloud_sync_settings_json");
             m_probeCloudSyncJson = Resolve<SettingsJsonFn>(
                 "tiez_core_probe_cloud_sync_json");
+            m_cloudSyncStatusJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_cloud_sync_status_json");
+            m_startCloudSync = Resolve<CloudSyncLifecycleFn>(
+                "tiez_core_start_cloud_sync");
+            m_requestCloudSync = Resolve<CloudSyncLifecycleFn>(
+                "tiez_core_request_cloud_sync");
+            m_stopCloudSync = Resolve<StopCloudSyncFn>(
+                "tiez_core_stop_cloud_sync");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -94,6 +102,11 @@ namespace tiez::probe
         if (m_handle != nullptr && m_setChangedCallback != nullptr)
         {
             m_setChangedCallback(m_handle, nullptr, nullptr);
+        }
+
+        if (m_handle != nullptr && m_stopCloudSync != nullptr)
+        {
+            m_stopCloudSync(m_handle);
         }
 
         if (m_handle != nullptr && m_destroy != nullptr)
@@ -303,6 +316,43 @@ namespace tiez::probe
         }
 
         return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::CloudSyncStatus() const
+    {
+        auto* result = m_cloudSyncStatusJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust cloud-sync status failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    bool RustCoreBridge::StartCloudSync() const
+    {
+        if (!m_startCloudSync(m_handle))
+        {
+            throw std::runtime_error("Rust cloud-sync start failed: " + TakeLastError());
+        }
+        return true;
+    }
+
+    bool RustCoreBridge::RequestCloudSync() const
+    {
+        if (!m_requestCloudSync(m_handle))
+        {
+            throw std::runtime_error("Rust cloud-sync request failed: " + TakeLastError());
+        }
+        return true;
+    }
+
+    void RustCoreBridge::StopCloudSync() const noexcept
+    {
+        if (m_handle != nullptr && m_stopCloudSync != nullptr)
+        {
+            m_stopCloudSync(m_handle);
+        }
     }
 
     void RustCoreBridge::SetChangedCallback(TiezChangedCallback callback, void* userData) const

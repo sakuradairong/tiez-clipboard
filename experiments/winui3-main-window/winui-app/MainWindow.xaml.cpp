@@ -346,6 +346,19 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_core = std::make_unique<tiez::probe::RustCoreBridge>();
             m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
             LoadSettings();
+            if (m_productionData && !m_settingsReadOnly)
+            {
+                m_core->StartCloudSync();
+                m_cloudSyncStatusTimer = DispatcherQueue().CreateTimer();
+                m_cloudSyncStatusTimer.Interval(std::chrono::seconds(1));
+                m_cloudSyncStatusTimer.IsRepeating(true);
+                m_cloudSyncStatusTimer.Tick([this](auto const&, auto const&)
+                {
+                    UpdateCloudSyncStatus();
+                });
+                m_cloudSyncStatusTimer.Start();
+                UpdateCloudSyncStatus();
+            }
             m_core->StartCapture();
             RefreshItems();
         }
@@ -359,6 +372,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     MainWindow::~MainWindow()
     {
+        if (m_cloudSyncStatusTimer)
+        {
+            m_cloudSyncStatusTimer.Stop();
+            m_cloudSyncStatusTimer = nullptr;
+        }
         HideHoverPreview();
         if (m_hoverPreviewWindow)
         {
@@ -2355,6 +2373,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (m_cloudSyncFileToggle) m_cloudSyncFileToggle.IsEnabled(editable);
         if (m_cloudSyncEmojiToggle) m_cloudSyncEmojiToggle.IsEnabled(editable);
         if (m_cloudSyncSaveButton) m_cloudSyncSaveButton.IsEnabled(editable);
+        if (m_cloudSyncNowButton)
+        {
+            m_cloudSyncNowButton.IsEnabled(
+                editable
+                && m_productionData
+                && m_cloudSyncEnabledToggle
+                && m_cloudSyncEnabledToggle.IsOn());
+        }
         if (m_cloudSyncProbeButton) m_cloudSyncProbeButton.IsEnabled(!busy);
         if (m_cloudSyncClearPasswordButton)
         {
@@ -2426,7 +2452,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         SetCloudSyncBusy(m_cloudSyncBusy, winrt::hstring{ status });
     }
 
-    bool MainWindow::SaveCloudSyncSettings(bool clearPassword)
+    bool MainWindow::SaveCloudSyncSettings(bool clearPassword, bool reloadRunner)
     {
         if (!m_core || m_settingsReadOnly || m_cloudSyncBusy)
         {
@@ -2502,6 +2528,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 L"password_configured",
                 false);
             m_cloudSyncPasswordBox.Password(L"");
+            if (m_productionData && reloadRunner)
+            {
+                m_core->StartCloudSync();
+            }
             auto const message = clearPassword
                 ? L"WebDAV 密码已从 TieZ 设置中清除。"
                 : m_cloudSyncPasswordConfigured
@@ -2522,6 +2552,150 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::RequestCloudSyncNow()
+    {
+        if (!m_core || !m_productionData || m_settingsReadOnly || m_cloudSyncBusy)
+        {
+            SetStatus(L"当前数据库不能执行云同步。");
+            return;
+        }
+        if (!SaveCloudSyncSettings(false, false))
+        {
+            return;
+        }
+
+        try
+        {
+            m_core->RequestCloudSync();
+            if (m_cloudSyncProgress)
+            {
+                m_cloudSyncProgress.IsActive(true);
+                m_cloudSyncProgress.Visibility(Visibility::Visible);
+            }
+            if (m_cloudSyncNowButton)
+            {
+                m_cloudSyncNowButton.IsEnabled(false);
+            }
+            m_cloudSyncStatus.Text(L"已提交立即同步请求，正在等待后台运行器处理……");
+            SetStatus(L"已提交立即同步请求。");
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"无法启动立即同步：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetCloudSyncBusy(false, message);
+            SetStatus(message);
+        }
+    }
+
+    void MainWindow::UpdateCloudSyncStatus()
+    {
+        if (!m_core || !m_cloudSyncStatus || m_cloudSyncBusy)
+        {
+            return;
+        }
+
+        try
+        {
+            auto const value = m_core->CloudSyncStatus();
+            auto const root = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            auto const state = root.GetNamedString(L"state", L"unavailable");
+            auto const syncing = root.GetNamedBoolean(L"syncing", false);
+            auto const automatic = root.GetNamedBoolean(L"automatic", false);
+            auto const settingsRevision = static_cast<std::uint64_t>(
+                root.GetNamedNumber(L"settings_revision", 0));
+            auto const uploaded = static_cast<std::uint64_t>(
+                root.GetNamedNumber(L"uploaded_items", 0));
+            auto const received = static_cast<std::uint64_t>(
+                root.GetNamedNumber(L"received_items", 0));
+            if (settingsRevision > m_cloudSyncSettingsRevision)
+            {
+                m_cloudSyncSettingsRevision = settingsRevision;
+                LoadSettings();
+            }
+
+            if (m_cloudSyncProgress)
+            {
+                m_cloudSyncProgress.IsActive(syncing);
+                m_cloudSyncProgress.Visibility(
+                    syncing ? Visibility::Visible : Visibility::Collapsed);
+            }
+            if (m_cloudSyncNowButton)
+            {
+                m_cloudSyncNowButton.IsEnabled(
+                    !syncing
+                    && m_productionData
+                    && !m_settingsReadOnly
+                    && m_cloudSyncEnabledToggle
+                    && m_cloudSyncEnabledToggle.IsOn());
+            }
+
+            std::wstring message;
+            if (state == L"syncing")
+            {
+                message = L"正在通过 WebDAV 同步剪贴板、设置和表情收藏……";
+            }
+            else if (state == L"idle")
+            {
+                message = L"同步完成：上传 ";
+                message.append(std::to_wstring(uploaded));
+                message.append(L" 项，接收 ");
+                message.append(std::to_wstring(received));
+                message.append(automatic
+                    ? L" 项。后台服务会按设置的间隔继续同步。"
+                    : L" 项。自动同步已关闭，可继续手动同步。");
+            }
+            else if (state == L"waiting")
+            {
+                message = L"云同步已启用，自动同步已关闭；可点击“立即同步”。";
+            }
+            else if (state == L"disabled")
+            {
+                message = L"云同步已停用；远端数据不会被读取或写入。";
+            }
+            else if (state == L"starting")
+            {
+                message = L"正在启动原生后台同步服务……";
+            }
+            else if (state == L"read_only")
+            {
+                message = L"当前数据库为只读，后台同步不会启动。";
+            }
+            else if (state == L"stopped")
+            {
+                message = L"原生后台同步服务尚未运行。";
+            }
+            else if (state == L"error")
+            {
+                message = L"云同步失败";
+                auto const errorValue = root.GetNamedValue(
+                    L"last_error",
+                    JsonValue::CreateNullValue());
+                if (errorValue.ValueType() == JsonValueType::String)
+                {
+                    message.append(L"：");
+                    message.append(errorValue.GetString());
+                }
+                message.append(automatic
+                    ? L"。后台服务会按同步间隔重试。"
+                    : L"。请检查设置后重试。");
+            }
+            else
+            {
+                message = L"云同步仅在可写的 WinUI 生产数据模式下可用。";
+            }
+            m_cloudSyncStatus.Text(winrt::hstring{ message });
+        }
+        catch (std::exception const& error)
+        {
+            m_cloudSyncStatus.Text(StatusMessage(
+                L"无法读取云同步状态：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
     winrt::fire_and_forget MainWindow::ProbeCloudSyncAsync()
     {
         auto lifetime = get_strong();
@@ -2529,16 +2703,21 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             co_return;
         }
-        if (!m_settingsReadOnly && !SaveCloudSyncSettings(false))
+        if (!m_settingsReadOnly && !SaveCloudSyncSettings(false, false))
         {
             co_return;
         }
 
         SetCloudSyncBusy(true, L"正在以只读 PROPFIND 测试 WebDAV 地址和凭据……");
         auto const uiThread = winrt::apartment_context{};
+        auto const restartRunner = m_productionData && !m_settingsReadOnly;
         std::string response;
         std::string failure;
         co_await winrt::resume_background();
+        if (restartRunner)
+        {
+            m_core->StopCloudSync();
+        }
         try
         {
             response = m_core->ProbeCloudSync();
@@ -2546,6 +2725,20 @@ namespace winrt::Tiez::WinUIProbe::implementation
         catch (std::exception const& error)
         {
             failure = error.what();
+        }
+        if (restartRunner)
+        {
+            try
+            {
+                m_core->StartCloudSync();
+            }
+            catch (std::exception const& error)
+            {
+                if (failure.empty())
+                {
+                    failure = error.what();
+                }
+            }
         }
         try
         {
@@ -2846,10 +3039,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         m_cloudSyncEnabledToggle = SettingToggle(
             L"启用云同步",
-            L"保存与旧版兼容的启用状态；完整后台同步运行器仍在迁移中。");
+            L"使用原生 Rust 后台服务同步剪贴板、设置和表情收藏，与旧版 WebDAV 数据保持兼容。");
         m_cloudSyncAutoToggle = SettingToggle(
             L"自动同步",
-            L"后台运行器接入后按下面的时间间隔自动同步。");
+            L"按下面的时间间隔在后台自动同步；关闭后仍可手动立即同步。");
         m_settingsPanel.Children().Append(m_cloudSyncEnabledToggle);
         m_settingsPanel.Children().Append(m_cloudSyncAutoToggle);
 
@@ -2919,6 +3112,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_cloudSyncSaveButton = Button();
         m_cloudSyncSaveButton.Content(winrt::box_value(L"保存云同步设置"));
         AutomationProperties::SetName(m_cloudSyncSaveButton, L"保存云同步设置");
+        m_cloudSyncNowButton = Button();
+        m_cloudSyncNowButton.Content(winrt::box_value(L"立即同步"));
+        m_cloudSyncNowButton.IsEnabled(false);
+        AutomationProperties::SetName(m_cloudSyncNowButton, L"立即执行 WebDAV 云同步");
         m_cloudSyncProbeButton = Button();
         m_cloudSyncProbeButton.Content(winrt::box_value(L"测试连接"));
         AutomationProperties::SetName(m_cloudSyncProbeButton, L"测试 WebDAV 连接");
@@ -2931,6 +3128,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_cloudSyncProgress.IsActive(false);
         m_cloudSyncProgress.Visibility(Visibility::Collapsed);
         cloudSyncActions.Children().Append(m_cloudSyncSaveButton);
+        cloudSyncActions.Children().Append(m_cloudSyncNowButton);
         cloudSyncActions.Children().Append(m_cloudSyncProbeButton);
         cloudSyncActions.Children().Append(m_cloudSyncClearPasswordButton);
         cloudSyncActions.Children().Append(m_cloudSyncProgress);
@@ -2947,6 +3145,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_cloudSyncSaveButton.Click([this](auto const&, auto const&)
         {
             (void)SaveCloudSyncSettings(false);
+        });
+        m_cloudSyncNowButton.Click([this](auto const&, auto const&)
+        {
+            RequestCloudSyncNow();
         });
         m_cloudSyncProbeButton.Click([this](auto const&, auto const&)
         {

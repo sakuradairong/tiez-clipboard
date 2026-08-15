@@ -135,8 +135,57 @@ pub fn is_cloud_clipboard_content_type(content_type: &str) -> bool {
     )
 }
 
+/// Return whether a database setting may cross the cloud-sync boundary.
+///
+/// This policy is shared by every desktop host so a new native adapter cannot
+/// accidentally upload local runtime state or a credential that another host
+/// already treats as sensitive.
+pub fn is_cloud_sync_setting_eligible(key: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    if key.is_empty()
+        || key.ends_with("_password")
+        || key.ends_with("_api_key")
+        || key.ends_with("_secret")
+        || key.ends_with("_token")
+    {
+        return false;
+    }
+    !matches!(
+        key.as_str(),
+        "mqtt_username"
+            | "ai_profiles"
+            | "app.anon_id"
+            | "clipboard_relay_shared_key"
+            | "app.emoji_favorites"
+            | "app.last_ping_date"
+            | "app.window_width"
+            | "app.window_height"
+            | "app.tag_manager_size"
+            | "cloud_sync_enabled"
+            | "cloud_sync_auto"
+            | "cloud_sync_provider"
+            | "cloud_sync_server"
+            | "cloud_sync_interval_sec"
+            | "cloud_sync_snapshot_interval_min"
+            | "cloud_sync_cursor"
+            | "cloud_sync_webdav_url"
+            | "cloud_sync_webdav_username"
+            | "cloud_sync_webdav_base_path"
+            | "cloud_sync_content_prefs"
+            | "cloud_sync_webdav_local_seq"
+            | "cloud_sync_webdav_op_cursor_map"
+            | "cloud_sync_webdav_blob_cache"
+            | "cloud_sync_webdav_last_snapshot_push_at"
+            | "cloud_sync_webdav_last_snapshot_pull_at"
+            | "cloud_sync_webdav_last_head_rebuild_at"
+            | "cloud_sync_settings_applied_at"
+            | "cloud_sync_webdav_last_emoji_hash"
+            | "cloud_sync_webdav_use_legacy_runner"
+    )
+}
+
 pub fn uses_text_sync_hash(content_type: &str) -> bool {
-    uses_text_content_hash(content_type)
+    uses_text_content_hash(content_type) || content_type == "emoji_sync"
 }
 
 pub fn compute_sync_content_hash(content_type: &str, content: &str) -> i64 {
@@ -280,6 +329,37 @@ mod tests {
             serde_json::to_value(&preferences).unwrap()["file_path"],
             true
         );
+    }
+
+    #[test]
+    fn emoji_sync_uses_the_existing_tauri_payload_hash() {
+        let payload = r#"["data:image/png;base64,AAAA"]"#;
+
+        assert!(uses_text_sync_hash("emoji_sync"));
+        assert_eq!(
+            compute_sync_content_hash("emoji_sync", payload),
+            calc_text_hash(payload) as i64
+        );
+        assert_ne!(compute_sync_content_hash("emoji_sync", payload), 0);
+    }
+
+    #[test]
+    fn cloud_setting_policy_rejects_credentials_and_local_runtime_state() {
+        for key in [
+            "mqtt_password",
+            "MQTT_USERNAME",
+            "ai_profiles",
+            "cloud_sync_api_key",
+            "cloud_sync_webdav_password",
+            "clipboard_relay_shared_key",
+            "future_access_token",
+            "future_client_secret",
+            "cloud_sync_webdav_last_emoji_hash",
+        ] {
+            assert!(!is_cloud_sync_setting_eligible(key), "{key}");
+        }
+        assert!(is_cloud_sync_setting_eligible("app.theme"));
+        assert!(is_cloud_sync_setting_eligible("app.compact_mode"));
     }
 
     #[test]

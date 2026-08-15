@@ -16,6 +16,9 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::cloud_sync_protocol::CloudSyncContentPrefs;
+use crate::cloud_sync_runner::CloudSyncRunnerConfig;
+
 pub const DEFAULT_INTERVAL_SECS: u64 = 120;
 pub const MIN_INTERVAL_SECS: u64 = 5;
 pub const MAX_INTERVAL_SECS: u64 = 3600;
@@ -229,6 +232,43 @@ impl CloudSyncSettings {
             self.generation,
             &resolved,
         ))
+    }
+
+    /// Build the secret-bearing runtime configuration for trusted Rust code.
+    ///
+    /// The returned type deliberately implements neither `Debug` nor
+    /// `Serialize`; passwords must never cross the C ABI or appear in logs.
+    pub fn runner_config(
+        &self,
+        device_id: impl Into<String>,
+    ) -> Result<Option<CloudSyncRunnerConfig>, CloudSyncSettingsError> {
+        let (_, read_only, values) = self.load_values()?;
+        let resolved = resolve_values(&values);
+        if !resolved.enabled {
+            return Ok(None);
+        }
+        if read_only {
+            return Err(CloudSyncSettingsError::new(
+                CloudSyncSettingsErrorKind::ReadOnly,
+                "cloud sync requires a writable database",
+            ));
+        }
+        validate_webdav_url(&resolved.webdav_url, true)?;
+        Ok(Some(CloudSyncRunnerConfig::new(
+            device_id,
+            resolved.webdav_url,
+            resolved.webdav_username,
+            resolved.webdav_password,
+            resolved.webdav_base_path,
+            resolved.interval_secs,
+            resolved.snapshot_interval_min.saturating_mul(60),
+            CloudSyncContentPrefs {
+                text: resolved.content_prefs.text,
+                image: resolved.content_prefs.image,
+                file_path: resolved.content_prefs.file_path,
+                emoji: resolved.content_prefs.emoji,
+            },
+        )))
     }
 
     pub fn update(
@@ -764,6 +804,22 @@ mod tests {
 
         drop(settings);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trusted_runner_config_keeps_password_inside_rust() {
+        let mut settings = CloudSyncSettings::in_memory();
+        let mutation = settings
+            .update(update_for("https://dav.example.test/runtime".to_owned()))
+            .unwrap();
+        let config = settings.runner_config("aaaaaaaa").unwrap().unwrap();
+
+        assert_eq!(config.device_id, "aaaaaaaa");
+        assert_eq!(config.webdav_password, "secret");
+        assert_eq!(config.snapshot_interval_secs, 43_200);
+        let boundary_json = serde_json::to_string(&mutation.snapshot).unwrap();
+        assert!(!boundary_json.contains("secret"));
+        assert!(!boundary_json.contains("webdav_password"));
     }
 
     #[test]

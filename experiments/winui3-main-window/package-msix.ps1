@@ -136,8 +136,16 @@ $node = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $node) {
     throw "node.exe was not found. Install Node.js LTS so release versions can be verified."
 }
-$Version = (& $node.Source $VersionScript --print).Trim()
-if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
+Push-Location -LiteralPath $RepositoryRoot
+try {
+    $Version = [string](& $node.Source $VersionScript --print)
+    $VersionExitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+$Version = $Version.Trim()
+if ($VersionExitCode -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "TieZ release version validation failed."
 }
 $VersionParts = $Version.Split('.') | ForEach-Object { [int]$_ }

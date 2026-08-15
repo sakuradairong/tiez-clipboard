@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v11
+        │ dynamic loading + C ABI v12
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · cloud_sync_settings · image_analysis · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · cloud_sync runner/SQLite host · image_analysis · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -53,6 +53,8 @@ The C ABI interface is deliberately small:
 - read and update a strict allowlist of non-secret daily-use settings;
 - read and transactionally update the existing WebDAV settings without returning
   its password, then run a read-only connectivity probe;
+- start, request, stop, and poll the Rust-owned background WebDAV runner without
+  returning its credentials or binding worker lifetime to a XAML object;
 - create, fully validate, and schedule restoration of the same `.tiez-backup`
   archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
@@ -94,7 +96,8 @@ versioned request/response structs or another explicitly versioned wire format.
   archive/checksum validation, next-startup restore, and seven-day rollback retention;
 - asynchronous OCR/QR recognition with cached native search and sensitive-result protection;
 - Chinese WebDAV setup with write-only password handling, compatible settings,
-  and a read-only `PROPFIND` connectivity test;
+  a read-only `PROPFIND` connectivity test, automatic background scheduling,
+  immediate synchronization, and live sanitized status;
 - a Chinese App Installer update check/install entry that uses the feed associated with the installed MSIX;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
@@ -333,9 +336,10 @@ the native capture settings; images remain supported by the format pipeline
 Do not point
 `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
 running. OCR/QR analysis and native search are connected through the shared
-core. WebDAV configuration, safe connectivity testing, and the redirect-free
-transport contract (retry, atomic publication, blobs, and remote listings) are
-shared; the native background database/conflict runner is still omitted.
+core. WebDAV configuration, safe connectivity testing, redirect-free transport
+(retry, atomic publication, blobs, and remote listings), conflict rules, and the
+single-pass runner are shared. ABI v12 owns the native scheduler and writable
+SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
 recognition. Record the active adapter with every result.
@@ -346,7 +350,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 11`.
+- [ ] Status shows `Rust ABI 12`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -394,6 +398,9 @@ recognition. Record the active adapter with every result.
 - [ ] The Chinese WebDAV section reads the existing Tauri-compatible URL, username, path, intervals, and content preferences without ever displaying the saved password.
 - [ ] Saving WebDAV settings is transactional; leaving the password blank preserves it, while the explicit confirmed clear action removes it.
 - [ ] The WebDAV connectivity action runs off the UI thread, sends only a read-only `PROPFIND`, accepts HTTPS (plus loopback HTTP for local testing), rejects embedded credentials and redirects, and reports Chinese success/authentication/error state.
+- [ ] Enabling automatic WebDAV sync starts the Rust-owned scheduler; “立即同步” works with automatic sync disabled and shows Chinese running/result/error state.
+- [ ] A second device receives text, image, file metadata, tags, settings, and emoji favorites; newer revisions win deterministically and deletions do not echo back.
+- [ ] Remote setting changes apply to the native window without restart, while MQTT/AI/WebDAV credentials, relay keys, and local runner state never appear in settings snapshots.
 - [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
 - [ ] An ordinary image can run OCR/QR recognition without blocking the UI, shows Chinese progress/error state, and copies the combined result.
 - [ ] Reopening an analyzed image uses the cache, “重新识别” forces a refresh, and searching recognized OCR text or a QR payload finds the image card without exposing that payload in its preview.
@@ -457,11 +464,11 @@ window should call, and which extraction phase owns it.
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
-| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 11 + write-only secret and read-only `PROPFIND` | 5 (connected) |
+| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 12 + write-only secret and read-only `PROPFIND` | 5 (connected) |
 | WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
 | Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
 | Cloud-sync runner host boundary | Tauri `AppHandle`, repositories, settings, emoji and events | shared `tiez-core::cloud_sync_runner::CloudSyncHost`; typed runtime state/events and bounded remote planning, with no window handle in the port | 5 (defined) |
-| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` owns bounded op/head/snapshot/settings/blob orchestration; Tauri now uses its host adapter with a local-only legacy escape hatch, while the WinUI adapter remains | 5 (Tauri connected) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; WinUI ABI v12 owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Emoji, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
@@ -512,16 +519,19 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    and QR decoding run off the UI thread, Tauri keeps its command contract,
    cached text is searchable from native snapshots, and sensitive/encrypted
    results are memory-only with a pre-write privacy recheck.
-9. `CloudSyncSettings` — **shared core and WinUI setup connected**: ABI v11
+9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: ABI v12
    reads and transactionally writes the existing WebDAV keys, keeps passwords
    write-only, validates HTTPS and safe remote paths, and runs a redirect-free
    read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the
    reusable retry, safe path/layout, atomic PUT/MOVE, blob, JSON, and listing
    transport contract, while `CloudSyncProtocol` owns the compatible item,
-   snapshot, op/head, digest, and deterministic revision-collapse model. The
-   Tauri service uses compatibility wrappers for both. The periodic scheduler,
-   database merge/mutation distribution, and remote conflict-reconciliation
-   runner still need extraction before default cutover.
+   snapshot, op/head, digest, and deterministic revision-collapse model.
+   `SqliteCloudSyncHost` applies remote revisions, tombstones, tags, sensitive
+   DPAPI storage, settings, attachments, and emoji materialization. The Rust ABI
+   owns the periodic/manual scheduler, cancellation, worker teardown, and
+   credential-free status; WinUI renders it in Chinese. Real-account endurance,
+   multi-device installer testing, rich-HTML local-resource parity, and orphaned
+   remote-attachment cleanup remain required before default cutover.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs release-critical sync/service parity plus manual Windows 10/11,

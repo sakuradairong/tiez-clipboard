@@ -19,6 +19,7 @@ use tiez_core::cloud_sync_protocol::{
     collapse_items_by_sync_key as shared_collapse_items_by_sync_key,
     compute_legacy_sync_content_hash as shared_compute_legacy_sync_content_hash,
     compute_sync_content_hash as shared_compute_sync_content_hash,
+    is_cloud_sync_setting_eligible as shared_is_setting_sync_eligible,
     item_revision as shared_item_revision, item_updated_at as shared_item_updated_at,
     resolved_content_hash as shared_resolved_content_hash,
     sync_digest_for_item as shared_sync_digest_for_item,
@@ -629,37 +630,7 @@ fn is_cloud_clipboard_content_type(content_type: &str) -> bool {
 }
 
 fn is_setting_sync_eligible(key: &str) -> bool {
-    !matches!(
-        key,
-        "app.anon_id"
-            | "clipboard_relay_shared_key"
-            | "app.emoji_favorites"
-            | "app.last_ping_date"
-            | "app.window_width"
-            | "app.window_height"
-            | "app.tag_manager_size"
-            | "cloud_sync_enabled"
-            | "cloud_sync_auto"
-            | "cloud_sync_provider"
-            | "cloud_sync_server"
-            | "cloud_sync_api_key"
-            | "cloud_sync_interval_sec"
-            | "cloud_sync_snapshot_interval_min"
-            | "cloud_sync_cursor"
-            | "cloud_sync_webdav_url"
-            | "cloud_sync_webdav_username"
-            | "cloud_sync_webdav_password"
-            | "cloud_sync_webdav_base_path"
-            | "cloud_sync_content_prefs"
-            | "cloud_sync_webdav_local_seq"
-            | "cloud_sync_webdav_op_cursor_map"
-            | "cloud_sync_webdav_blob_cache"
-            | "cloud_sync_webdav_last_snapshot_push_at"
-            | "cloud_sync_webdav_last_snapshot_pull_at"
-            | "cloud_sync_webdav_last_head_rebuild_at"
-            | "cloud_sync_settings_applied_at"
-            | "cloud_sync_webdav_use_legacy_runner"
-    )
+    shared_is_setting_sync_eligible(key)
 }
 
 fn to_data_url_from_path(path: &str) -> Option<String> {
@@ -4069,6 +4040,19 @@ mod tests {
         assert!(!is_setting_sync_eligible(
             CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY
         ));
+    }
+
+    #[test]
+    fn cloud_setting_sync_rejects_all_database_sensitive_keys() {
+        for key in [
+            "mqtt_password",
+            "mqtt_username",
+            "ai_profiles",
+            "cloud_sync_api_key",
+            "cloud_sync_webdav_password",
+        ] {
+            assert!(!is_setting_sync_eligible(key), "{key}");
+        }
     }
 
     #[test]

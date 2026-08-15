@@ -35,11 +35,14 @@ use tiez_core::native_settings::{NativeSettingMutation, NativeSettings, NativeSe
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
+mod cloud_sync_service;
 mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
-const ABI_VERSION: u32 = 11;
+use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
+
+const ABI_VERSION: u32 = 12;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -70,6 +73,7 @@ pub(crate) struct TiezCoreInner {
 pub struct TiezCoreHandle {
     inner: Arc<TiezCoreInner>,
     cloud_settings: Mutex<CloudSyncSettings>,
+    cloud_sync: NativeCloudSyncService,
     session: Mutex<Option<win32_capture::Session>>,
 }
 
@@ -96,6 +100,7 @@ impl TiezCoreHandle {
                 changed: Mutex::new(None),
             }),
             cloud_settings: Mutex::new(cloud_settings),
+            cloud_sync: NativeCloudSyncService::unavailable(),
             session: Mutex::new(None),
         }
     }
@@ -108,9 +113,9 @@ impl TiezCoreHandle {
             _ if use_production_data => Some(production_database_path()?),
             _ => None,
         };
-        let (history, settings, cloud_settings) = match configured_database {
+        let read_only = configured_database.is_some() && env_flag(DATABASE_READ_ONLY_ENV);
+        let (history, settings, cloud_settings) = match configured_database.as_ref() {
             Some(value) => {
-                let read_only = env_flag(DATABASE_READ_ONLY_ENV);
                 ensure_database_instance_guard(&value)?;
                 if !read_only {
                     prepare_writable_database(&value)?;
@@ -130,7 +135,27 @@ impl TiezCoreHandle {
             ),
         };
 
-        Ok(Self::wrap_with_adapters(history, settings, cloud_settings))
+        let mut handle = Self::wrap_with_adapters(history, settings, cloud_settings);
+        if let Some(database_path) = configured_database {
+            let data_dir = database_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default();
+            let inner = Arc::clone(&handle.inner);
+            handle.cloud_sync =
+                NativeCloudSyncService::new(&database_path, data_dir, read_only, move || {
+                    let generation = inner
+                        .history
+                        .lock()
+                        .ok()
+                        .and_then(|history| history.snapshot("").ok())
+                        .map(|snapshot| snapshot.generation);
+                    if let Some(generation) = generation {
+                        notify_changed(&inner, generation);
+                    }
+                });
+        }
+        Ok(handle)
     }
 }
 
@@ -246,6 +271,13 @@ struct CloudSyncProbeResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct CloudSyncStatusResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    status: &'a NativeCloudSyncStatus,
+}
+
+#[derive(Serialize)]
 struct OpenContentResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -334,6 +366,14 @@ fn cloud_sync_probe_json(result: &CloudSyncProbeResult) -> Result<String, String
         result,
     })
     .map_err(|error| format!("failed to serialize cloud-sync probe result: {error}"))
+}
+
+fn cloud_sync_status_json(status: &NativeCloudSyncStatus) -> Result<String, String> {
+    serde_json::to_string(&CloudSyncStatusResponse {
+        abi_version: ABI_VERSION,
+        status,
+    })
+    .map_err(|error| format!("failed to serialize cloud-sync status: {error}"))
 }
 
 fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
@@ -782,8 +822,9 @@ pub unsafe extern "C" fn tiez_core_destroy(handle: *mut TiezCoreHandle) {
 
         // SAFETY: handles are produced by tiez_core_create and ownership is
         // transferred back exactly once by this function. Drop the listener
-        // before the inner Arc so the worker can finish using it.
+        // and cloud worker before the inner Arc or DLL can be unloaded.
         let boxed = unsafe { Box::from_raw(handle) };
+        boxed.cloud_sync.stop();
         if let Ok(mut session) = boxed.session.lock() {
             session.take();
         }
@@ -1167,6 +1208,69 @@ pub unsafe extern "C" fn tiez_core_probe_cloud_sync_json(
 }
 
 #[no_mangle]
+/// Return sanitized background synchronization status as allocated JSON.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_cloud_sync_status_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        into_owned_c_string(cloud_sync_status_json(&handle.cloud_sync.status())?)
+    })
+}
+
+#[no_mangle]
+/// Start the WinUI-owned background synchronization worker or reload its
+/// schedule after settings change.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_start_cloud_sync(handle: *mut TiezCoreHandle) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        handle.cloud_sync.start()?;
+        Ok(true)
+    })
+}
+
+#[no_mangle]
+/// Request an immediate pass and force publication of a full snapshot.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_request_cloud_sync(handle: *mut TiezCoreHandle) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        handle.cloud_sync.request_now()?;
+        Ok(true)
+    })
+}
+
+#[no_mangle]
+/// Stop and join the background synchronization worker.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_stop_cloud_sync(handle: *mut TiezCoreHandle) {
+    catch_ffi((), || {
+        if let Some(handle) = unsafe { handle.as_ref() } {
+            handle.cloud_sync.stop();
+        } else {
+            set_last_error("handle must not be null");
+        }
+    });
+}
+
+#[no_mangle]
 /// Register a history-changed callback. Pass a null callback to clear it.
 ///
 /// The callback may run on a background clipboard worker thread. The C++
@@ -1245,7 +1349,8 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
 /// `tiez_core_update_setting_json`, `tiez_core_get_cloud_sync_settings_json`,
 /// `tiez_core_update_cloud_sync_settings_json`,
-/// `tiez_core_probe_cloud_sync_json`, or `tiez_core_take_last_error`. A
+/// `tiez_core_probe_cloud_sync_json`, `tiez_core_get_cloud_sync_status_json`,
+/// or `tiez_core_take_last_error`. A
 /// non-null pointer must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
@@ -1327,7 +1432,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":11"));
+        assert!(json.contains("\"abi_version\":12"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -1378,7 +1483,7 @@ mod tests {
         let json = image_analysis_json(Some(&analysis)).unwrap();
         let empty = image_analysis_json(None).unwrap();
 
-        assert!(json.contains("\"abi_version\":11"));
+        assert!(json.contains("\"abi_version\":12"));
         assert!(json.contains("\"analysis\":{\"text\":\"识别文字\""));
         assert!(json.contains("\"qrCodes\":[\"https://example.com/pay\"]"));
         assert!(json.contains("\"analyzedAt\":42"));
@@ -1396,7 +1501,7 @@ mod tests {
             let value = tiez_core_prepare_open_content_json(handle, 103);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":11"));
+            assert!(json.contains("\"abi_version\":12"));
             assert!(json.contains("\"kind\":\"url\""));
             assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
             assert!(json.contains("\"requires_confirmation\":false"));
@@ -1433,7 +1538,7 @@ mod tests {
             let created = tiez_core_create_backup_json(handle, destination.as_ptr());
             assert!(!created.is_null());
             let created_json = CStr::from_ptr(created).to_str().unwrap();
-            assert!(created_json.contains("\"abi_version\":11"));
+            assert!(created_json.contains("\"abi_version\":12"));
             assert!(created_json.contains("\"entryCount\":0"));
             tiez_core_string_free(created);
 
@@ -1485,7 +1590,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":11"));
+            assert!(pin_json.contains("\"abi_version\":12"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1517,7 +1622,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":11"));
+            assert!(json.contains("\"abi_version\":12"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1558,7 +1663,7 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":11"));
+            assert!(initial_json.contains("\"abi_version\":12"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
@@ -1623,7 +1728,7 @@ mod tests {
             let initial = tiez_core_get_cloud_sync_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":11"));
+            assert!(initial_json.contains("\"abi_version\":12"));
             assert!(initial_json.contains("\"password_configured\":false"));
             assert!(!initial_json.contains("webdav_password"));
             tiez_core_string_free(initial);
@@ -1672,6 +1777,35 @@ mod tests {
     }
 
     #[test]
+    fn cloud_sync_status_export_is_sanitized_and_reports_unavailable_mode() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+
+        unsafe {
+            let value = tiez_core_get_cloud_sync_status_json(handle);
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains("\"state\":\"unavailable\""));
+            assert!(json.contains("\"service_started\":false"));
+            assert!(json.contains("\"settings_revision\":0"));
+            assert!(!json.contains("password"));
+            tiez_core_string_free(value);
+
+            assert!(!tiez_core_start_cloud_sync(handle));
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("生产数据模式"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn pinned_order_export_requires_all_pinned_ids_and_preserves_requested_order() {
         let handle = Box::into_raw(Box::new(
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
@@ -1690,7 +1824,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":11"));
+            assert!(json.contains("\"abi_version\":12"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));
