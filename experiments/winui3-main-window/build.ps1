@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $Root "..\.."))
 $Packages = Join-Path $Root "packages"
 $Artifacts = Join-Path $Root "artifacts\$Platform\$Configuration"
 $WinUIOutput = Join-Path $Root "$Platform\$Configuration\Tiez.WinUIProbe"
@@ -21,6 +22,7 @@ $CoreManifest = Join-Path $Root "..\..\crates\tiez-core\Cargo.toml"
 $RustManifest = Join-Path $Root "rust-core\Cargo.toml"
 $Solution = Join-Path $Root "Tiez.WinUIProbe.sln"
 $Nuget = Join-Path $Root ".tools\nuget.exe"
+$VersionScript = Join-Path $RepositoryRoot "scripts\verify-release-versions.mjs"
 
 function Resolve-MSBuild {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -60,6 +62,19 @@ if ($env:OS -ne "Windows_NT") {
     throw "This script must run on Windows."
 }
 
+$node = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $node) {
+    throw "node.exe was not found. Install Node.js LTS so release versions can be verified."
+}
+$Version = (& $node.Source $VersionScript --print).Trim()
+if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "TieZ release version validation failed."
+}
+$VersionParts = $Version.Split('.') | ForEach-Object { [int]$_ }
+if ($VersionParts.Count -ne 3 -or ($VersionParts | Where-Object { $_ -gt 65535 })) {
+    throw "TieZ version cannot be represented by Windows resources: $Version"
+}
+
 $cargo = Get-Command cargo.exe -ErrorAction SilentlyContinue
 if (-not $cargo) {
     throw "cargo.exe was not found. Install the stable MSVC Rust toolchain with rustup."
@@ -80,7 +95,11 @@ if (-not $SkipRustTests) {
 }
 
 $env:CARGO_TARGET_DIR = Join-Path $Root "rust-core\target"
-& $cargo.Source build --manifest-path $RustManifest --release --locked
+$rustBuildArguments = @("build", "--manifest-path", $RustManifest, "--release", "--locked")
+if ($Configuration -eq "Release") {
+    $rustBuildArguments += @("--features", "production-default")
+}
+& $cargo.Source @rustBuildArguments
 if ($LASTEXITCODE -ne 0) { throw "Rust core build failed." }
 
 if (-not $SkipWinUIBuild) {
@@ -105,10 +124,10 @@ if (-not $SkipWinUIBuild) {
     if ($LASTEXITCODE -ne 0) { throw "NuGet restore failed." }
 
     $msbuild = Resolve-MSBuild
-    & $msbuild $Solution /m /restore:false /p:Configuration=$Configuration /p:Platform=$Platform
+    & $msbuild $Solution /m /restore:false /p:Configuration=$Configuration /p:Platform=$Platform /p:TiezVersionMajor=$($VersionParts[0]) /p:TiezVersionMinor=$($VersionParts[1]) /p:TiezVersionPatch=$($VersionParts[2])
     if ($LASTEXITCODE -ne 0) { throw "WinUI build failed." }
 
-    $winuiExecutable = Join-Path $WinUIOutput "Tiez.WinUIProbe.exe"
+    $winuiExecutable = Join-Path $WinUIOutput "TieZ.exe"
     if (-not (Test-Path $winuiExecutable)) {
         throw "WinUI build output was not found: $winuiExecutable"
     }
@@ -118,7 +137,7 @@ if (-not $SkipWinUIBuild) {
 Copy-Item (Join-Path $Root "rust-core\target\release\tiez_winui_core.dll") $Artifacts -Force
 
 Write-Host ""
-Write-Host "Build output: $Artifacts" -ForegroundColor Green
+Write-Host "Build output: $Artifacts (TieZ $Version)" -ForegroundColor Green
 if (-not $SkipWinUIBuild) {
-    Write-Host "Run: $(Join-Path $Artifacts 'Tiez.WinUIProbe.exe')" -ForegroundColor Green
+    Write-Host "Run: $(Join-Path $Artifacts 'TieZ.exe')" -ForegroundColor Green
 }

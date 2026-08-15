@@ -12,9 +12,9 @@ This experiment tests one question:
 The executable does **not yet** replace the Tauri window. It now starts a native
 Windows clipboard listener for Unicode, HTML, image, and file payloads. The
 reusable history, paste, privacy, and window-lifecycle policies
-now live in the standalone, Tauri-independent `tiez-core` crate. By default the
-probe uses synthetic in-memory data. An opt-in adapter can open a TieZ
-`clipboard.db` for read or write. **Do not run this executable at the same time
+now live in the standalone, Tauri-independent `tiez-core` crate. Release builds
+open the production TieZ data directory by default; Debug/test builds keep the
+synthetic in-memory adapter. **Do not run this executable at the same time
 as Tauri** against the live database. Both runtimes now acquire the same
 per-database Windows ownership mutex before restore or SQLite open, so the
 second process fails with a visible startup error instead of becoming a
@@ -26,7 +26,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ## Shape
 
 ```text
-Tiez.WinUIProbe.exe
+TieZ.exe
   WinUI 3 / XAML / C++/WinRT
         │ dynamic loading + C ABI v9
         ▼
@@ -36,8 +36,8 @@ tiez_winui_core.dll
         ▼
 tiez-core
   backup · clipboard_history · content_opening · paste_coordinator · ui_lifecycle
-    - synthetic in-memory data (default)
-    - production-schema SQLite history (opt-in, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
+    - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
+    - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
 
 The C ABI interface is deliberately small:
@@ -154,7 +154,7 @@ artifacts/x64/Release/tiez_winui_core.dll
 ```
 
 Use `./build-linux.sh --skip-windows-target` for a native-test-only pass. The
-complete `Tiez.WinUIProbe.exe` still requires `build.ps1` on Windows; the
+complete `TieZ.exe` still requires `build.ps1` on Windows; the
 `winui3-probe` GitHub Actions workflow provides the reproducible remote build.
 
 ## Build and run
@@ -165,7 +165,7 @@ From this directory in PowerShell:
 rustup toolchain install 1.88.0-x86_64-pc-windows-msvc
 Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1 -Configuration Release
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 `build.ps1` performs these steps:
@@ -175,7 +175,54 @@ Set-ExecutionPolicy -Scope Process Bypass
 3. restores the native NuGet packages into the experiment directory;
 4. resolves Visual Studio's MSBuild with `vswhere`;
 5. builds the unpackaged, self-contained WinUI executable and current app PRI;
-6. places the executable and Rust DLL in the same artifact directory.
+6. stamps `TieZ.exe` with the synchronized product version and places it beside
+   the Rust DLL. Release builds enable the production-data adapter by default.
+
+### Package, sign, install, and upgrade
+
+Create and re-open an unsigned MSIX for local/CI structural validation:
+
+```powershell
+.\package-msix.ps1 -SkipBuild
+```
+
+Unsigned packages are never accepted by the release job. A distributable build
+must use a code-signing certificate whose subject exactly matches `Publisher`,
+plus an RFC 3161 timestamp service:
+
+```powershell
+.\package-msix.ps1 `
+  -SkipBuild `
+  -Publisher "CN=Your Publisher" `
+  -CertificatePath "C:\secure\tiez-release.pfx" `
+  -CertificatePassword $env:TIEZ_CERT_PASSWORD `
+  -TimestampUrl "https://your-controlled-timestamp-service.example" `
+  -AppInstallerBaseUri "https://github.com/OWNER/REPO/releases/latest/download" `
+  -RequireSigning
+```
+
+The package script reads the product version from the repository-wide version
+gate, generates `TieZ_<version>.0_x64.msix`, re-opens it with `MakeAppx`, checks
+the package identity and required runtime files, rejects WebView2 payloads, and
+writes SHA256. The manifest deliberately disables AppData write virtualization,
+and the package validator requires that declaration plus the corresponding
+`unvirtualizedResources` capability. This keeps the installed WinUI app and the
+unpackaged Tauri fallback on the same `%APPDATA%\com.tiez` database instead of
+silently creating package-private history. When a base URI is supplied it also creates
+`TieZ-x64.appinstaller`; Windows checks that stable file on launch and in the
+background, and only accepts a package with the same identity/publisher and a
+higher four-part version.
+
+`unvirtualizedResources` is a restricted capability. A signed package may be
+sideloaded without Microsoft approval, but a future Microsoft Store submission
+must justify the capability and pass Store review. Keep the GitHub release in
+draft until `TieZ-x64.appinstaller` has been installed and upgraded on both
+Windows 10 and Windows 11 with the release certificate.
+
+The release workflow requires `WINUI_MSIX_CERTIFICATE_BASE64`,
+`WINUI_MSIX_CERTIFICATE_PASSWORD`, and `WINUI_MSIX_PUBLISHER` secrets plus a
+`WINUI_MSIX_TIMESTAMP_URL` repository variable. The decoded PFX exists only in
+the runner temporary directory and is removed in an `always()` cleanup step.
 
 Override the Rust DLL path for debugging with:
 
@@ -185,9 +232,9 @@ $env:TIEZ_WINUI_CORE_DLL = "C:\path\to\tiez_winui_core.dll"
 
 ### Read or write TieZ history
 
-The default remains the mutable synthetic adapter. To use a real database,
-**stop Tauri first**. Point the probe at `clipboard.db` (copy WAL/SHM beside it
-if they exist). The installed Windows database is normally under TieZ's
+Release uses the real writable database by default, so **stop Tauri first**.
+Debug and Rust test builds remain synthetic. The installed Windows database is
+normally under TieZ's
 app-data directory; portable mode stores it under `data\clipboard.db` beside
 the executable, and `datapath.txt` may redirect the directory.
 
@@ -195,7 +242,7 @@ Writable (WinUI as the only process — pin/delete/tag/order changes persist):
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 To exercise the same production data-directory selection as Tauri without
@@ -203,13 +250,14 @@ copying a path, explicitly enable production data mode:
 
 ```powershell
 $env:TIEZ_WINUI_USE_PRODUCTION_DATA = "1"
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 This resolves `%APPDATA%\com.tiez`, honors a valid `datapath.txt`, and lets an
 existing `data` directory beside the WinUI executable take precedence. The
-shared ownership mutex still requires Tauri to be fully stopped. Leave this
-flag unset to keep the safe synthetic default while migration work continues.
+shared ownership mutex still requires Tauri to be fully stopped. Release already
+enables this policy; the flag remains useful for Debug builds. For an isolated
+Release demonstration, set `TIEZ_WINUI_USE_SYNTHETIC_DATA=1` before launch.
 In writable mode the shared Rust bootstrap creates or upgrades schema version
 15 and seeds the same defaults as Tauri. If a scheduled restore is pending,
 WinUI now validates and applies it itself before opening SQLite. Invalid pending
@@ -229,7 +277,7 @@ Read-only inspection of a copied database (byte-identical check):
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
 $env:TIEZ_WINUI_DB_READ_ONLY = "1"
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 The header and status should show `sqlite-read-only`. The adapter reads at
@@ -252,6 +300,7 @@ Unset the variables to return to synthetic mode:
 Remove-Item Env:TIEZ_WINUI_DB_PATH -ErrorAction SilentlyContinue
 Remove-Item Env:TIEZ_WINUI_DB_READ_ONLY -ErrorAction SilentlyContinue
 Remove-Item Env:TIEZ_WINUI_USE_PRODUCTION_DATA -ErrorAction SilentlyContinue
+Remove-Item Env:TIEZ_WINUI_USE_SYNTHETIC_DATA -ErrorAction SilentlyContinue
 ```
 
 ## Measurement
@@ -289,6 +338,11 @@ adapter with every result.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
 - [ ] Status shows `Rust ABI 9`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
+- [ ] `TieZ.exe` file/product version matches all eight release-version sources.
+- [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
+- [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
+- [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
+- [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
@@ -433,7 +487,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    applied before SQLite opens, and retains a rollback directory.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs release-critical sync/update surfaces plus manual Windows 10/11,
+needs release-critical sync/service parity plus manual Windows 10/11,
 DPI, IME, accessibility, and long-run lifecycle acceptance.
 
 ## Primary references

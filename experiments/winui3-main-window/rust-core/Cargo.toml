@@ -1,8 +1,12 @@
 [package]
 name = "tiez-winui-core"
-version = "0.1.0"
+version = "0.3.8"
 edition = "2021"
 publish = false
+
+[features]
+default = []
+production-default = []
 
 [lib]
 crate-type = ["cdylib", "rlib"]

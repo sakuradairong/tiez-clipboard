@@ -13,7 +13,7 @@ Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ArtifactDir = Join-Path $Root "artifacts\x64\$Configuration"
-$Executable = Join-Path $ArtifactDir "Tiez.WinUIProbe.exe"
+$Executable = Join-Path $ArtifactDir "TieZ.exe"
 $CoreDll = Join-Path $ArtifactDir "tiez_winui_core.dll"
 $ReadyFile = Join-Path $ArtifactDir "ready.txt"
 $OutputFile = Join-Path $ArtifactDir "measurement.json"

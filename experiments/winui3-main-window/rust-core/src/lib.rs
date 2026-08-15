@@ -36,6 +36,7 @@ const ABI_VERSION: u32 = 9;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
+const SYNTHETIC_DATA_ENV: &str = "TIEZ_WINUI_USE_SYNTHETIC_DATA";
 static DATABASE_INSTANCE_GUARD: Mutex<Option<DatabaseInstanceGuard>> = Mutex::new(None);
 
 thread_local! {
@@ -83,9 +84,11 @@ impl TiezCoreHandle {
     }
 
     fn new_from_environment() -> Result<Self, String> {
+        let use_production_data = env_flag(PRODUCTION_DATA_ENV)
+            || (cfg!(feature = "production-default") && !env_flag(SYNTHETIC_DATA_ENV));
         let configured_database = match env::var_os(DATABASE_ENV) {
             Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
-            _ if env_flag(PRODUCTION_DATA_ENV) => Some(production_database_path()?),
+            _ if use_production_data => Some(production_database_path()?),
             _ => None,
         };
         let (history, settings) = match configured_database {

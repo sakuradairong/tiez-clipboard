@@ -57,7 +57,7 @@ the copied files before launch, then run:
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 Verify the badge says `sqlite-read-only`, newest persisted entries match TieZ,

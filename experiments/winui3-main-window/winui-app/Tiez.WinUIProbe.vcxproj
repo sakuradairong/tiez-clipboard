@@ -20,8 +20,8 @@
     <ProjectGuid>{5DC5BF3A-10B5-49D8-B3CE-E6298C263868}</ProjectGuid>
     <ProjectName>Tiez.WinUIProbe</ProjectName>
     <RootNamespace>Tiez.WinUIProbe</RootNamespace>
-    <TargetName>$(RootNamespace)</TargetName>
-    <DefaultLanguage>en-US</DefaultLanguage>
+    <TargetName>TieZ</TargetName>
+    <DefaultLanguage>zh-CN</DefaultLanguage>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <AppContainerApplication>false</AppContainerApplication>
     <AppxPackage>false</AppxPackage>
@@ -55,6 +55,9 @@
     <DesktopCompatible>true</DesktopCompatible>
     <OutDir>$(MSBuildProjectDirectory)\..\artifacts\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildProjectDirectory)\..\artifacts\obj\$(Platform)\$(Configuration)\</IntDir>
+    <TiezVersionMajor Condition="'$(TiezVersionMajor)'==''">0</TiezVersionMajor>
+    <TiezVersionMinor Condition="'$(TiezVersionMinor)'==''">0</TiezVersionMinor>
+    <TiezVersionPatch Condition="'$(TiezVersionPatch)'==''">0</TiezVersionPatch>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
     <UseDebugLibraries>true</UseDebugLibraries>
@@ -87,6 +90,9 @@
       <SubSystem>Windows</SubSystem>
       <AdditionalDependencies>comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <ResourceCompile>
+      <PreprocessorDefinitions>TIEZ_VERSION_MAJOR=$(TiezVersionMajor);TIEZ_VERSION_MINOR=$(TiezVersionMinor);TIEZ_VERSION_PATCH=$(TiezVersionPatch);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
