@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 4,
+    TIEZ_CORE_ABI_VERSION = 5,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -52,6 +52,13 @@ TIEZ_CORE_API char* tiez_core_apply_action_json(
     TiezCoreHandle* handle,
     int64_t entry_id,
     const char* action_utf8);
+
+// Replaces an entry's tags from a UTF-8 JSON string array. Session-only
+// entries receive a positive replacement ID when the tag update persists them.
+TIEZ_CORE_API char* tiez_core_update_tags_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id,
+    const char* tags_json_utf8);
 
 // History-changed notifications may arrive on a background worker thread.
 TIEZ_CORE_API void tiez_core_set_changed_callback(

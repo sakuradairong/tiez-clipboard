@@ -31,6 +31,7 @@ pub struct HistoryItem {
     pub source_app: String,
     pub captured_at: String,
     pub is_pinned: bool,
+    pub tags: Vec<String>,
     pub is_sensitive: bool,
 }
 
@@ -232,6 +233,17 @@ impl ClipboardHistory {
         }
     }
 
+    pub fn update_tags(
+        &mut self,
+        entry_id: i64,
+        tags: Vec<String>,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        match &mut self.adapter {
+            HistoryAdapter::Memory(adapter) => adapter.update_tags(entry_id, tags),
+            HistoryAdapter::Sqlite(adapter) => adapter.update_tags(entry_id, tags),
+        }
+    }
+
     pub fn ingest_text(
         &mut self,
         content: String,
@@ -349,6 +361,7 @@ impl MemoryHistory {
                 source_app: source_app.clone(),
                 captured_at: "Just now".to_owned(),
                 is_pinned: false,
+                tags: Vec::new(),
                 is_sensitive: false,
             },
         );
@@ -364,6 +377,33 @@ impl MemoryHistory {
             generation: self.generation,
             message: self.last_action.clone(),
         }
+    }
+
+    fn update_tags(
+        &mut self,
+        entry_id: i64,
+        tags: Vec<String>,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        let tags = clean_history_tags(tags);
+        let item = self
+            .items
+            .iter_mut()
+            .find(|item| item.id == entry_id)
+            .ok_or_else(|| entry_not_found(entry_id))?;
+        item.is_sensitive = tags_are_sensitive(&tags);
+        item.tags = tags;
+        self.generation = self.generation.saturating_add(1);
+        self.last_action = format!("Tags updated for entry {entry_id}");
+        Ok(HistoryMutationResult {
+            adapter: "memory",
+            action: "update-tags".to_owned(),
+            requested_id: entry_id,
+            effective_id: Some(entry_id),
+            replacement_id: None,
+            removed: false,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
     }
 
     fn content(&self, entry_id: i64) -> Result<HistoryContent, HistoryError> {
@@ -630,6 +670,55 @@ impl SqliteHistory {
             effective_id,
             replacement_id,
             removed,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
+    }
+
+    fn update_tags(
+        &mut self,
+        entry_id: i64,
+        tags: Vec<String>,
+    ) -> Result<HistoryMutationResult, HistoryError> {
+        if self.read_only {
+            return Err(HistoryError::new(
+                HistoryErrorKind::ReadOnly,
+                "tag updates are disabled for sqlite-read-only history",
+            ));
+        }
+
+        let connection = open_sqlite_connection(&self.database_path, false)?;
+        let cleaned_tags = clean_history_tags(tags);
+        let replacement_id = if entry_id < 0 {
+            let mut entry = self
+                .session
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .cloned()
+                .ok_or_else(|| entry_not_found(entry_id))?;
+            entry.tags = cleaned_tags;
+            let replacement_id = self.persist_entry(&connection, &entry, 0)?;
+            self.session.retain(|entry| entry.id != entry_id);
+            Some(replacement_id)
+        } else {
+            update_persisted_tags(&connection, entry_id, &cleaned_tags)?;
+            None
+        };
+
+        let effective_id = replacement_id.unwrap_or(entry_id);
+        self.generation = self.generation.saturating_add(1);
+        self.last_action = if let Some(replacement_id) = replacement_id {
+            format!("Entry {entry_id} tagged and persisted as {replacement_id}")
+        } else {
+            format!("Tags updated for entry {entry_id}")
+        };
+        Ok(HistoryMutationResult {
+            adapter: self.adapter_name(),
+            action: "update-tags".to_owned(),
+            requested_id: entry_id,
+            effective_id: Some(effective_id),
+            replacement_id,
+            removed: false,
             generation: self.generation,
             message: self.last_action.clone(),
         })
@@ -1031,6 +1120,7 @@ impl SessionHistoryEntry {
             source_app: self.source_app.clone(),
             captured_at: format_timestamp(self.timestamp),
             is_pinned: self.is_pinned,
+            tags: self.tags.clone(),
             is_sensitive: self.is_sensitive(),
         }
     }
@@ -1387,6 +1477,183 @@ fn encrypt_sensitive_value(value: &str) -> Result<String, HistoryError> {
     })
 }
 
+fn update_persisted_tags(
+    connection: &Connection,
+    entry_id: i64,
+    tags: &[String],
+) -> Result<(), HistoryError> {
+    let row = connection.query_row(
+        "SELECT content_type, content, preview, html_content, content_hash,
+                content_hash_version
+         FROM clipboard_history WHERE id = ?1",
+        [entry_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        },
+    );
+    let (content_type, content, preview, html_content, old_hash, old_hash_version) = match row {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Err(entry_not_found(entry_id)),
+        Err(error) => return Err(storage_error("failed to read entry before tagging", error)),
+    };
+
+    let plaintext_content = decrypt_storage_value(&content).ok_or_else(|| {
+        HistoryError::new(
+            HistoryErrorKind::Storage,
+            "encrypted clipboard content could not be decrypted before updating tags",
+        )
+    })?;
+    let plaintext_preview = decrypt_storage_value(&preview).ok_or_else(|| {
+        HistoryError::new(
+            HistoryErrorKind::Storage,
+            "encrypted clipboard preview could not be decrypted before updating tags",
+        )
+    })?;
+    let plaintext_html = html_content
+        .as_deref()
+        .map(|value| {
+            decrypt_storage_value(value).ok_or_else(|| {
+                HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    "encrypted HTML could not be decrypted before updating tags",
+                )
+            })
+        })
+        .transpose()?;
+    let sensitive = tags_are_sensitive(tags);
+    let stored_content = if sensitive {
+        if content.starts_with(ENCRYPT_PREFIX) {
+            content
+        } else {
+            encrypt_sensitive_value(&plaintext_content)?
+        }
+    } else {
+        plaintext_content.clone()
+    };
+    let stored_preview = if sensitive {
+        if preview.starts_with(ENCRYPT_PREFIX) {
+            preview
+        } else {
+            encrypt_sensitive_value(&plaintext_preview)?
+        }
+    } else {
+        plaintext_preview
+    };
+    let stored_html = match (sensitive, html_content, plaintext_html) {
+        (true, Some(stored), _) if stored.starts_with(ENCRYPT_PREFIX) => Some(stored),
+        (true, _, Some(plaintext)) => Some(encrypt_sensitive_value(&plaintext)?),
+        (false, _, plaintext) => plaintext,
+        _ => None,
+    };
+    let (content_hash, content_hash_version) = if uses_text_content_hash(&content_type) {
+        (calc_text_hash(&plaintext_content) as i64, 2)
+    } else if content_type == "image" {
+        (
+            calc_image_hash(&plaintext_content).unwrap_or(old_hash),
+            old_hash_version,
+        )
+    } else {
+        (old_hash, old_hash_version)
+    };
+    let tags_json = serde_json::to_string(tags)
+        .map_err(|error| storage_error("failed to serialize entry tags", error))?;
+
+    connection
+        .execute_batch("SAVEPOINT tiez_winui_update_tags")
+        .map_err(|error| storage_error("failed to start tag update", error))?;
+    let result = (|| {
+        let updated = connection
+            .execute(
+                "UPDATE clipboard_history
+                 SET content = ?1,
+                     preview = ?2,
+                     html_content = ?3,
+                     tags = ?4,
+                     content_hash = ?5,
+                     content_hash_version = ?6,
+                     sync_updated_at = ?7,
+                     sync_updated_by = COALESCE(
+                         (SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                 WHERE id = ?8",
+                rusqlite::params![
+                    stored_content,
+                    stored_preview,
+                    stored_html,
+                    tags_json,
+                    content_hash,
+                    content_hash_version,
+                    now_unix_ms(),
+                    entry_id,
+                ],
+            )
+            .map_err(|error| storage_error("failed to update entry tags", error))?;
+        if updated != 1 {
+            return Err(entry_not_found(entry_id));
+        }
+
+        connection
+            .execute("DELETE FROM entry_tags WHERE entry_id = ?1", [entry_id])
+            .map_err(|error| storage_error("failed to replace normalized entry tags", error))?;
+        for tag in tags {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?1, ?2)",
+                    rusqlite::params![entry_id, tag],
+                )
+                .map_err(|error| storage_error("failed to store normalized entry tag", error))?;
+        }
+        if sensitive {
+            connection
+                .execute(
+                    "DELETE FROM clipboard_image_analysis WHERE entry_id = ?1",
+                    [entry_id],
+                )
+                .map_err(|error| storage_error("failed to remove sensitive OCR index", error))?;
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => connection
+            .execute_batch("RELEASE SAVEPOINT tiez_winui_update_tags")
+            .map_err(|error| storage_error("failed to commit tag update", error)),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK TO SAVEPOINT tiez_winui_update_tags");
+            let _ = connection.execute_batch("RELEASE SAVEPOINT tiez_winui_update_tags");
+            Err(error)
+        }
+    }
+}
+
+fn clean_history_tags(tags: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    tags.into_iter()
+        .filter_map(|tag| {
+            let tag = tag.trim();
+            if tag.is_empty() || !seen.insert(tag.to_owned()) {
+                None
+            } else {
+                Some(tag.to_owned())
+            }
+        })
+        .collect()
+}
+
+fn tags_are_sensitive(tags: &[String]) -> bool {
+    tags.iter().any(|tag| {
+        SENSITIVE_TAGS
+            .iter()
+            .any(|sensitive| sensitive.eq_ignore_ascii_case(tag))
+    })
+}
+
 #[derive(Debug)]
 struct PersistedImageAttachment {
     content: String,
@@ -1548,6 +1815,7 @@ fn load_snapshot_items(
                AND (
                     instr(lower(source_app), lower(?2)) > 0
                     OR instr(lower(preview), lower(?2)) > 0
+                    OR instr(lower(tags), lower(?2)) > 0
                )
              ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
              LIMIT ?3",
@@ -1573,6 +1841,7 @@ fn search_latest_history(
          WHERE instr(lower(content_type), lower(?1)) > 0
             OR instr(lower(source_app), lower(?1)) > 0
             OR instr(lower(preview), lower(?1)) > 0
+            OR instr(lower(tags), lower(?1)) > 0
          ORDER BY is_pinned DESC, pinned_order DESC, timestamp DESC, id DESC
          LIMIT ?2",
         QueryArgs::Search { query, limit },
@@ -1652,7 +1921,7 @@ fn query_history(
 
     let map_row = |row: &rusqlite::Row<'_>| {
         let timestamp = row.get::<_, i64>(4)?;
-        let tags = row.get::<_, String>(6)?;
+        let tags = parse_tags_json(&row.get::<_, String>(6)?);
         Ok(HistoryItem {
             id: row.get(0)?,
             content_type: row.get(1)?,
@@ -1660,7 +1929,8 @@ fn query_history(
             source_app: row.get(3)?,
             captured_at: format_timestamp(timestamp),
             is_pinned: row.get::<_, i32>(5)? == 1,
-            is_sensitive: has_sensitive_tag(&tags),
+            is_sensitive: tags_are_sensitive(&tags),
+            tags,
         })
     };
 
@@ -1694,14 +1964,11 @@ fn query_history(
 }
 
 fn has_sensitive_tag(tags_json: &str) -> bool {
-    serde_json::from_str::<Vec<String>>(tags_json)
-        .unwrap_or_default()
-        .iter()
-        .any(|tag| {
-            SENSITIVE_TAGS
-                .iter()
-                .any(|sensitive| sensitive.eq_ignore_ascii_case(tag))
-        })
+    tags_are_sensitive(&parse_tags_json(tags_json))
+}
+
+fn parse_tags_json(tags_json: &str) -> Vec<String> {
+    serde_json::from_str(tags_json).unwrap_or_default()
 }
 
 fn now_unix_ms() -> i64 {
@@ -1755,6 +2022,10 @@ fn item_matches_text(item: &HistoryItem, query: &str) -> bool {
     item.preview.to_lowercase().contains(&normalized_query)
         || item.source_app.to_lowercase().contains(&normalized_query)
         || item.content_type.to_lowercase().contains(&normalized_query)
+        || item
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(&normalized_query))
 }
 
 fn ensure_item_exists(items: &[HistoryItem], entry_id: i64) -> Result<(), HistoryError> {
@@ -1801,6 +2072,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "Visual Studio".to_owned(),
             captured_at: "Just now".to_owned(),
             is_pinned: true,
+            tags: vec!["迁移".to_owned()],
             is_sensitive: false,
         },
         HistoryItem {
@@ -1810,6 +2082,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "Windows Terminal".to_owned(),
             captured_at: "1 minute ago".to_owned(),
             is_pinned: false,
+            tags: vec!["代码".to_owned()],
             is_sensitive: false,
         },
         HistoryItem {
@@ -1819,6 +2092,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "Microsoft Edge".to_owned(),
             captured_at: "3 minutes ago".to_owned(),
             is_pinned: false,
+            tags: Vec::new(),
             is_sensitive: false,
         },
         HistoryItem {
@@ -1828,6 +2102,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "TieZ".to_owned(),
             captured_at: "5 minutes ago".to_owned(),
             is_pinned: false,
+            tags: vec!["中文".to_owned()],
             is_sensitive: false,
         },
         HistoryItem {
@@ -1837,6 +2112,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "Snipping Tool".to_owned(),
             captured_at: "8 minutes ago".to_owned(),
             is_pinned: false,
+            tags: Vec::new(),
             is_sensitive: false,
         },
         HistoryItem {
@@ -1846,6 +2122,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "File Explorer".to_owned(),
             captured_at: "12 minutes ago".to_owned(),
             is_pinned: false,
+            tags: Vec::new(),
             is_sensitive: false,
         },
         HistoryItem {
@@ -1855,6 +2132,7 @@ fn sample_items() -> Vec<HistoryItem> {
             source_app: "Password Manager".to_owned(),
             captured_at: "15 minutes ago".to_owned(),
             is_pinned: false,
+            tags: vec!["password".to_owned()],
             is_sensitive: true,
         },
     ]
@@ -2065,6 +2343,50 @@ mod tests {
     }
 
     #[test]
+    fn memory_tag_updates_are_normalized_searchable_and_private() {
+        let mut history = ClipboardHistory::synthetic();
+
+        let tagged = history
+            .update_tags(
+                102,
+                vec![
+                    "  发布  ".to_owned(),
+                    "发布".to_owned(),
+                    "密码".to_owned(),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(tagged.action, "update-tags");
+        assert_eq!(tagged.effective_id, Some(102));
+        assert_eq!(tagged.replacement_id, None);
+        let item = history
+            .snapshot("发布")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == 102)
+            .unwrap();
+        assert_eq!(item.tags, vec!["发布", "密码"]);
+        assert!(item.is_sensitive);
+        assert_eq!(item.preview, SENSITIVE_PREVIEW);
+        assert!(!history.content(102).unwrap().available);
+
+        history
+            .update_tags(102, vec!["发布".to_owned()])
+            .unwrap();
+        let item = history
+            .snapshot("发布")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == 102)
+            .unwrap();
+        assert!(!item.is_sensitive);
+        assert!(history.content(102).unwrap().available);
+    }
+
+    #[test]
     fn sqlite_history_reads_production_schema_without_writing() {
         let path = temporary_database("read-only");
         create_test_database(&path);
@@ -2150,6 +2472,160 @@ mod tests {
         assert!(protected.is_sensitive);
         assert!(protected.content.is_empty());
         drop(read_only);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sqlite_tag_updates_atomically_apply_privacy_and_remove_plaintext_ocr() {
+        let path = temporary_database("secure-tags");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_image_analysis
+                    (entry_id, content_hash, ocr_text, qr_codes, analyzed_at)
+                 VALUES (1, 7, 'plain OCR', '[]', 1)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let tagged = history
+            .update_tags(
+                1,
+                vec![" 工作 ".to_owned(), "密码".to_owned(), "工作".to_owned()],
+            )
+            .unwrap();
+
+        assert_eq!(tagged.effective_id, Some(1));
+        let connection = Connection::open(&path).unwrap();
+        let stored = connection
+            .query_row(
+                "SELECT content, preview, tags, content_hash, content_hash_version,
+                        sync_updated_by
+                 FROM clipboard_history WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(stored.0.starts_with(ENCRYPT_PREFIX));
+        assert!(stored.1.starts_with(ENCRYPT_PREFIX));
+        assert_eq!(stored.2, "[\"工作\",\"密码\"]");
+        assert_eq!(stored.3, calc_text_hash("hello\nfull content") as i64);
+        assert_eq!(stored.4, 2);
+        assert_eq!(stored.5, "winui-test");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_image_analysis WHERE entry_id = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let tags = connection
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = 1 ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(tags, vec!["工作", "密码"]);
+        drop(connection);
+
+        let snapshot = history.snapshot("工作").unwrap();
+        let item = snapshot.items.iter().find(|item| item.id == 1).unwrap();
+        assert_eq!(item.tags, vec!["工作", "密码"]);
+        assert!(item.is_sensitive);
+        assert_eq!(history.content(1).unwrap().content, "hello\nfull content");
+
+        history.update_tags(1, vec!["工作".to_owned()]).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let decrypted = connection
+            .query_row(
+                "SELECT content, preview, tags FROM clipboard_history WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(decrypted.0, "hello\nfull content");
+        assert_eq!(decrypted.1, "hello world");
+        assert_eq!(decrypted.2, "[\"工作\"]");
+        assert!(!history
+            .snapshot("")
+            .unwrap()
+            .items
+            .iter()
+            .find(|item| item.id == 1)
+            .unwrap()
+            .is_sensitive);
+
+        drop(connection);
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_tag_update_rolls_back_metadata_when_normalized_tag_write_fails() {
+        let path = temporary_database("tag-rollback");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_winui_tag BEFORE INSERT ON entry_tags
+                 BEGIN SELECT RAISE(ABORT, 'reject tag'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let error = history
+            .update_tags(1, vec!["blocked".to_owned()])
+            .unwrap_err();
+
+        assert_eq!(error.kind(), HistoryErrorKind::Storage);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT tags FROM clipboard_history WHERE id = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "[]"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+
+        drop(connection);
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 
@@ -2719,6 +3195,67 @@ mod tests {
         assert!(stored.1.starts_with(ENCRYPT_PREFIX));
         assert_eq!(stored.2, "[\"sensitive\"]");
 
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tagging_a_session_entry_persists_a_secure_positive_replacement() {
+        let path = temporary_database("tagged-session");
+        create_test_database(&path);
+        set_test_setting(&path, "app.persistent", "false");
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let session_id = history
+            .ingest_text("daily secret".to_owned(), "记事本")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        assert!(session_id < 0);
+
+        let tagged = history
+            .update_tags(
+                session_id,
+                vec!["工作".to_owned(), "sensitive".to_owned()],
+            )
+            .unwrap();
+
+        let replacement_id = tagged.replacement_id.unwrap();
+        assert!(replacement_id > 0);
+        assert_eq!(tagged.effective_id, Some(replacement_id));
+        assert_eq!(sqlite_session_len(&history), 0);
+        assert_eq!(
+            history.content(session_id).unwrap_err().kind(),
+            HistoryErrorKind::NotFound
+        );
+        let connection = Connection::open(&path).unwrap();
+        let stored = connection
+            .query_row(
+                "SELECT content, preview, tags FROM clipboard_history WHERE id = ?1",
+                [replacement_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(stored.0.starts_with(ENCRYPT_PREFIX));
+        assert!(stored.1.starts_with(ENCRYPT_PREFIX));
+        assert_eq!(stored.2, "[\"工作\",\"sensitive\"]");
+        let item = history
+            .snapshot("工作")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == replacement_id)
+            .unwrap();
+        assert!(item.is_sensitive);
+        assert_eq!(item.tags, vec!["工作", "sensitive"]);
+
+        drop(connection);
         drop(history);
         fs::remove_file(path).unwrap();
     }

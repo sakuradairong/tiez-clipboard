@@ -27,7 +27,7 @@ use tiez_core::runtime_instance::DatabaseInstanceGuard;
 mod win32_paste;
 mod win32_capture;
 
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -235,6 +235,25 @@ fn apply_history_action(
     history
         .apply_action(entry_id, action)
         .map_err(|error| error.to_string())
+}
+
+fn update_history_tags(
+    handle: &TiezCoreHandle,
+    entry_id: i64,
+    tags: Vec<String>,
+) -> Result<HistoryMutationResult, String> {
+    let mutation = {
+        let mut history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .update_tags(entry_id, tags)
+            .map_err(|error| error.to_string())?
+    };
+    notify_changed(&handle.inner, mutation.generation);
+    Ok(mutation)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -555,6 +574,30 @@ pub unsafe extern "C" fn tiez_core_apply_action_json(
 }
 
 #[no_mangle]
+/// Replace an entry's tags and return its structured mutation outcome as JSON.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `tags_json_utf8` must be a readable, NUL-terminated UTF-8 JSON string
+/// containing an array of strings for the duration of this call.
+pub unsafe extern "C" fn tiez_core_update_tags_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+    tags_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let tags_json = required_utf8(tags_json_utf8, "tags_json_utf8")?;
+        let tags = serde_json::from_str::<Vec<String>>(&tags_json)
+            .map_err(|error| format!("tags_json_utf8 must be a JSON string array: {error}"))?;
+        let mutation = update_history_tags(handle, entry_id, tags)?;
+        into_owned_c_string(mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Register a history-changed callback. Pass a null callback to clear it.
 ///
 /// The callback may run on a background clipboard worker thread. The C++
@@ -625,8 +668,9 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 ///
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
-/// `tiez_core_apply_action_json`, or `tiez_core_take_last_error`. A non-null
-/// pointer must be transferred to this function exactly once.
+/// `tiez_core_apply_action_json`, `tiez_core_update_tags_json`, or
+/// `tiez_core_take_last_error`. A non-null pointer must be transferred to this
+/// function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
         if value.is_null() {
@@ -689,13 +733,14 @@ mod tests {
             source_app: "TieZ".to_owned(),
             captured_at: "now".to_owned(),
             is_pinned: false,
+            tags: vec!["中文".to_owned()],
             is_sensitive: false,
         }]);
         let snapshot = history.snapshot("中文").unwrap();
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":4"));
+        assert!(json.contains("\"abi_version\":5"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -713,6 +758,7 @@ mod tests {
                 source_app: "TieZ".to_owned(),
                 captured_at: "now".to_owned(),
                 is_pinned: false,
+                tags: Vec::new(),
                 is_sensitive: false,
             }],
         ))));
@@ -739,7 +785,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":4"));
+            assert!(pin_json.contains("\"abi_version\":5"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -756,6 +802,44 @@ mod tests {
             assert!(delete_json.contains("\"removed\":true"));
             assert!(delete_json.contains("\"generation\":3"));
             tiez_core_string_free(delete_value);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn tag_export_accepts_utf8_json_and_returns_structured_mutation() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let tags = CString::new("[\"工作\",\"密码\",\"工作\"]").unwrap();
+
+        unsafe {
+            let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"abi_version\":5"));
+            assert!(json.contains("\"action\":\"update-tags\""));
+            assert!(json.contains("\"requested_id\":102"));
+            assert!(json.contains("\"effective_id\":102"));
+            assert!(json.contains("\"replacement_id\":null"));
+            assert!(json.contains("\"generation\":2"));
+            tiez_core_string_free(value);
+
+            let query = CString::new("工作").unwrap();
+            let snapshot = tiez_core_get_snapshot_json(handle, query.as_ptr());
+            assert!(!snapshot.is_null());
+            let snapshot_json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(snapshot_json.contains("\"tags\":[\"工作\",\"密码\"]"));
+            assert!(snapshot_json.contains("\"is_sensitive\":true"));
+            tiez_core_string_free(snapshot);
+
+            let invalid = CString::new("{\"tag\":\"工作\"}").unwrap();
+            assert!(tiez_core_update_tags_json(handle, 102, invalid.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("JSON string array"));
+            tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }
     }
