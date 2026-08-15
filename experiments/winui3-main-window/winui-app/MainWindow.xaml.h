@@ -75,6 +75,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetInitialWindowSize();
         void SetupLifecycle();
         void TeardownLifecycle();
+        bool ApplyToggleHotkey(winrt::hstring const& configuredHotkey);
         void SetupTrayIcon();
         void AddTrayIcon();
         void RemoveTrayIcon();
@@ -202,11 +203,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         HWND m_hotkeyHwnd{};
         HWND m_lastHwnd{};
         HICON m_trayIcon{};
+        UINT m_hotkeyModifiers{};
+        UINT m_hotkeyVirtualKey{};
         UINT m_taskbarCreatedMessage{};
         bool m_readyMarkerWritten{};
         bool m_pinned{};
         bool m_suspendLifecycle{};
         bool m_trayAdded{};
+        bool m_hotkeyRegistered{};
         bool m_exitRequested{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
@@ -229,6 +233,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_trayVisible{ true };
         bool m_canReorderPinned{};
         std::string m_typeFilter;
+        winrt::hstring m_registeredHotkey;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;

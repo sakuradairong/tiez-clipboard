@@ -123,6 +123,11 @@ jobs:
         shell: pwsh
         run: ./experiments/winui3-main-window/test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
 
+      - name: Test configured native WinUI global hotkey
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./experiments/winui3-main-window/test-hotkey.ps1 -Configuration Release
+
       - name: Validate unsigned native WinUI MSIX
         if: runner.os == 'Windows'
         shell: pwsh

@@ -51,6 +51,7 @@ cd experiments\winui3-main-window
 rustup toolchain install 1.88.0-x86_64-pc-windows-msvc
 Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1 -Configuration Release
+.\test-hotkey.ps1 -Configuration Release
 .\test-single-instance.ps1 -Configuration Release -LifecycleCycles 100
 .\measure.ps1 -Configuration Release -SampleSeconds 30 -KeepOpen
 ```
@@ -95,8 +96,9 @@ Required negative tests:
    clear requires confirmation, non-loopback HTTP is rejected, and the test
    action reports a Chinese result without blocking the UI or writing remotely.
 10. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
-    sign out/in and confirm TieZ remains tray-only until Alt+C or the tray icon
-    is used. Disable it in Windows settings and verify the native UI explains
+    sign out/in and confirm TieZ remains tray-only until the configured global
+    shortcut (Alt+C by default) or the tray icon is used. Disable it in Windows
+    settings and verify the native UI explains
     that only Windows can re-enable a user-disabled startup task.
 11. with no TieZ process running, execute `test-single-instance.ps1` for 100
     lifecycle cycles; verify every real WM_CLOSE returns the same primary PID to
@@ -109,6 +111,12 @@ Required negative tests:
     open details without pasting, the next Tab must reach the card's action
     buttons, Shift+F10 must open the Chinese card menu, and a sensitive item must
     announce “预览已隐藏” without exposing its preview value.
+13. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
+    Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
+    the hidden native window, and WM_CLOSE returns the same process to the tray.
+    Then verify an invalid or conflicting `app.hotkey` keeps the previous working
+    shortcut and that the Chinese shell reports the active shortcut without
+    exposing any secret setting.
 
 Evidence to save under:
 

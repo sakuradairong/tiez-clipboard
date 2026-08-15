@@ -28,6 +28,229 @@ namespace
     constexpr wchar_t kRunRegistryPath[] =
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
+    struct HotkeySpec
+    {
+        UINT modifiers{};
+        UINT virtualKey{};
+        std::wstring display;
+    };
+
+    bool IsHotkeyWhitespace(wchar_t value)
+    {
+        return value == L' ' || value == L'\t' || value == L'\r' || value == L'\n';
+    }
+
+    std::wstring TrimHotkeyText(std::wstring_view value)
+    {
+        auto first = std::size_t{};
+        while (first < value.size() && IsHotkeyWhitespace(value[first]))
+        {
+            ++first;
+        }
+        auto last = value.size();
+        while (last > first && IsHotkeyWhitespace(value[last - 1]))
+        {
+            --last;
+        }
+        return std::wstring{ value.substr(first, last - first) };
+    }
+
+    std::wstring UpperAscii(std::wstring value)
+    {
+        for (auto& character : value)
+        {
+            if (character >= L'a' && character <= L'z')
+            {
+                character -= L'a' - L'A';
+            }
+        }
+        return value;
+    }
+
+    std::optional<UINT> NamedVirtualKey(std::wstring const& key)
+    {
+        static constexpr std::pair<std::wstring_view, UINT> mappings[] = {
+            { L"SPACE", VK_SPACE },
+            { L"SPACEBAR", VK_SPACE },
+            { L"TAB", VK_TAB },
+            { L"ENTER", VK_RETURN },
+            { L"RETURN", VK_RETURN },
+            { L"ESC", VK_ESCAPE },
+            { L"ESCAPE", VK_ESCAPE },
+            { L"BACKSPACE", VK_BACK },
+            { L"DELETE", VK_DELETE },
+            { L"DEL", VK_DELETE },
+            { L"INSERT", VK_INSERT },
+            { L"HOME", VK_HOME },
+            { L"END", VK_END },
+            { L"PAGEUP", VK_PRIOR },
+            { L"PAGEDOWN", VK_NEXT },
+            { L"UP", VK_UP },
+            { L"ARROWUP", VK_UP },
+            { L"DOWN", VK_DOWN },
+            { L"ARROWDOWN", VK_DOWN },
+            { L"LEFT", VK_LEFT },
+            { L"ARROWLEFT", VK_LEFT },
+            { L"RIGHT", VK_RIGHT },
+            { L"ARROWRIGHT", VK_RIGHT },
+            { L"PRINTSCREEN", VK_SNAPSHOT },
+            { L"PAUSE", VK_PAUSE },
+            { L"CAPSLOCK", VK_CAPITAL },
+            { L"NUMLOCK", VK_NUMLOCK },
+            { L"SCROLLLOCK", VK_SCROLL },
+            { L"PLUS", VK_OEM_PLUS },
+            { L"COMMA", VK_OEM_COMMA },
+            { L"MINUS", VK_OEM_MINUS },
+            { L"PERIOD", VK_OEM_PERIOD },
+            { L"SLASH", VK_OEM_2 },
+            { L"TILDE", VK_OEM_3 },
+            { L"GRAVE", VK_OEM_3 },
+            { L"SEMICOLON", VK_OEM_1 },
+            { L"LBRACKET", VK_OEM_4 },
+            { L"BACKSLASH", VK_OEM_5 },
+            { L"RBRACKET", VK_OEM_6 },
+            { L"QUOTE", VK_OEM_7 },
+        };
+        for (auto const& [name, virtualKey] : mappings)
+        {
+            if (key == name)
+            {
+                return virtualKey;
+            }
+        }
+        if (key.size() >= 2 && key[0] == L'F')
+        {
+            UINT functionKey{};
+            for (std::size_t index = 1; index < key.size(); ++index)
+            {
+                if (key[index] < L'0' || key[index] > L'9')
+                {
+                    return std::nullopt;
+                }
+                functionKey = functionKey * 10 + static_cast<UINT>(key[index] - L'0');
+            }
+            if (functionKey >= 1 && functionKey <= 24)
+            {
+                return VK_F1 + functionKey - 1;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<HotkeySpec> ParseHotkey(std::wstring_view configured)
+    {
+        auto const display = TrimHotkeyText(configured);
+        if (display.empty())
+        {
+            return HotkeySpec{ MOD_NOREPEAT, 0, display };
+        }
+
+        UINT modifiers = MOD_NOREPEAT;
+        std::wstring keyToken;
+        std::size_t start{};
+        while (start <= display.size())
+        {
+            auto const end = display.find(L'+', start);
+            auto const length = end == std::wstring::npos ? display.size() - start : end - start;
+            auto token = UpperAscii(TrimHotkeyText(
+                std::wstring_view{ display }.substr(start, length)));
+            if (token.empty())
+            {
+                return std::nullopt;
+            }
+            if (token == L"CTRL" || token == L"CONTROL")
+            {
+                modifiers |= MOD_CONTROL;
+            }
+            else if (token == L"SHIFT")
+            {
+                modifiers |= MOD_SHIFT;
+            }
+            else if (token == L"ALT" || token == L"OPTION" || token == L"MENU")
+            {
+                modifiers |= MOD_ALT;
+            }
+            else if (token == L"WIN" || token == L"WINDOWS" || token == L"SUPER"
+                || token == L"COMMAND" || token == L"CMD" || token == L"META")
+            {
+                modifiers |= MOD_WIN;
+            }
+            else
+            {
+                if (!keyToken.empty())
+                {
+                    return std::nullopt;
+                }
+                keyToken = std::move(token);
+            }
+            if (end == std::wstring::npos)
+            {
+                break;
+            }
+            start = end + 1;
+        }
+        if (keyToken.empty())
+        {
+            return std::nullopt;
+        }
+
+        UINT virtualKey{};
+        if (keyToken.size() == 1
+            && ((keyToken[0] >= L'A' && keyToken[0] <= L'Z')
+                || (keyToken[0] >= L'0' && keyToken[0] <= L'9')))
+        {
+            virtualKey = static_cast<UINT>(keyToken[0]);
+        }
+        else if (auto const named = NamedVirtualKey(keyToken))
+        {
+            virtualKey = *named;
+        }
+        else if (keyToken.size() == 1)
+        {
+            auto const translated = VkKeyScanW(keyToken[0]);
+            if (translated == -1)
+            {
+                return std::nullopt;
+            }
+            virtualKey = LOBYTE(translated);
+            auto const impliedModifiers = HIBYTE(translated);
+            if ((impliedModifiers & 1) != 0) modifiers |= MOD_SHIFT;
+            if ((impliedModifiers & 2) != 0) modifiers |= MOD_CONTROL;
+            if ((impliedModifiers & 4) != 0) modifiers |= MOD_ALT;
+        }
+        else
+        {
+            return std::nullopt;
+        }
+        return HotkeySpec{ modifiers, virtualKey, display };
+    }
+
+    std::optional<winrt::hstring> ReadEnvironmentText(wchar_t const* name)
+    {
+        auto const length = GetEnvironmentVariableW(name, nullptr, 0);
+        if (length == 0)
+        {
+            return std::nullopt;
+        }
+        std::vector<wchar_t> value(length);
+        auto const written = GetEnvironmentVariableW(
+            name,
+            value.data(),
+            static_cast<DWORD>(value.size()));
+        if (written == 0 || written >= value.size())
+        {
+            return std::nullopt;
+        }
+        return winrt::hstring{ value.data(), written };
+    }
+
+    winrt::hstring HotkeyLabel(winrt::hstring const& display)
+    {
+        std::wstring label{ L"呼出快捷键：" };
+        label.append(display.c_str(), display.size());
+        return winrt::hstring{ label };
+    }
+
     bool HasPackageIdentity()
     {
         UINT32 length{};
@@ -1739,11 +1962,137 @@ namespace winrt::Tiez::WinUIProbe::implementation
             HotkeySubclassProc,
             kMainWindowSubclassId,
             reinterpret_cast<DWORD_PTR>(this));
-        if (!RegisterHotKey(m_hotkeyHwnd, kToggleHotkeyId, MOD_ALT | MOD_NOREPEAT, 0x43))
-        {
-            SetStatus(L"Alt+C 已被其他程序占用，可通过系统托盘重新显示 TieZ。");
-        }
+        ApplyToggleHotkey(L"Alt+C");
         SetupTrayIcon();
+    }
+
+    bool MainWindow::ApplyToggleHotkey(winrt::hstring const& configuredHotkey)
+    {
+        if (m_hotkeyHwnd == nullptr)
+        {
+            HotkeyText().Text(L"呼出快捷键：消息窗口不可用");
+            return false;
+        }
+
+        auto const normalized = UpperAscii(TrimHotkeyText(configuredHotkey.c_str()));
+        if (normalized == L"MOUSEMIDDLE" || normalized == L"MBUTTON")
+        {
+            std::wstring message{ L"鼠标中键呼出尚未迁移" };
+            if (m_hotkeyRegistered)
+            {
+                message.append(L"；已继续使用 ");
+                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+                HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
+            }
+            else
+            {
+                message.append(L"；可通过系统托盘显示 TieZ。");
+                HotkeyText().Text(L"呼出快捷键：鼠标中键尚未支持");
+            }
+            SetStatus(winrt::hstring{ message });
+            return false;
+        }
+
+        auto const parsed = ParseHotkey(configuredHotkey.c_str());
+        if (!parsed)
+        {
+            std::wstring message{ L"快捷键格式无效：" };
+            message.append(configuredHotkey.c_str(), configuredHotkey.size());
+            if (m_hotkeyRegistered)
+            {
+                message.append(L"；已继续使用 ");
+                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+                HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
+            }
+            else
+            {
+                message.append(L"；可通过系统托盘显示 TieZ。");
+                HotkeyText().Text(L"呼出快捷键：配置格式无效");
+            }
+            SetStatus(winrt::hstring{ message });
+            return false;
+        }
+
+        if (parsed->virtualKey == 0)
+        {
+            if (m_hotkeyRegistered
+                && !UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId))
+            {
+                SetStatus(L"无法停用全局呼出快捷键；原快捷键保持不变。");
+                return false;
+            }
+            m_hotkeyRegistered = false;
+            m_hotkeyModifiers = 0;
+            m_hotkeyVirtualKey = 0;
+            m_registeredHotkey = L"";
+            HotkeyText().Text(L"呼出快捷键：未设置（可使用系统托盘）");
+            return true;
+        }
+
+        if (m_hotkeyRegistered
+            && m_hotkeyModifiers == parsed->modifiers
+            && m_hotkeyVirtualKey == parsed->virtualKey)
+        {
+            m_registeredHotkey = winrt::hstring{ parsed->display };
+            HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
+            return true;
+        }
+
+        auto const previousRegistered = m_hotkeyRegistered;
+        auto const previousModifiers = m_hotkeyModifiers;
+        auto const previousVirtualKey = m_hotkeyVirtualKey;
+        auto const previousDisplay = m_registeredHotkey;
+        if (previousRegistered
+            && !UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId))
+        {
+            SetStatus(L"无法更新全局呼出快捷键；原快捷键保持不变。");
+            return false;
+        }
+
+        m_hotkeyRegistered = false;
+        if (RegisterHotKey(
+                m_hotkeyHwnd,
+                kToggleHotkeyId,
+                parsed->modifiers,
+                parsed->virtualKey))
+        {
+            m_hotkeyRegistered = true;
+            m_hotkeyModifiers = parsed->modifiers;
+            m_hotkeyVirtualKey = parsed->virtualKey;
+            m_registeredHotkey = winrt::hstring{ parsed->display };
+            HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
+            return true;
+        }
+
+        auto restored = false;
+        if (previousRegistered)
+        {
+            restored = RegisterHotKey(
+                m_hotkeyHwnd,
+                kToggleHotkeyId,
+                previousModifiers,
+                previousVirtualKey);
+        }
+        m_hotkeyRegistered = restored;
+        m_hotkeyModifiers = restored ? previousModifiers : 0;
+        m_hotkeyVirtualKey = restored ? previousVirtualKey : 0;
+        m_registeredHotkey = restored ? previousDisplay : winrt::hstring{};
+
+        std::wstring message{ L"无法注册全局快捷键 " };
+        message.append(parsed->display);
+        if (restored)
+        {
+            message.append(L"；已继续使用 ");
+            message.append(previousDisplay.c_str(), previousDisplay.size());
+            HotkeyText().Text(HotkeyLabel(previousDisplay));
+        }
+        else
+        {
+            message.append(L"；可通过系统托盘显示 TieZ。");
+            HotkeyText().Text(L"呼出快捷键：不可用（可使用系统托盘）");
+        }
+        SetStatus(winrt::hstring{ message });
+        return false;
     }
 
     void MainWindow::TeardownLifecycle()
@@ -1755,7 +2104,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
         if (m_hotkeyHwnd != nullptr)
         {
-            UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
+            if (m_hotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
+                m_hotkeyRegistered = false;
+            }
             RemoveWindowSubclass(
                 m_hotkeyHwnd,
                 HotkeySubclassProc,
@@ -1794,7 +2147,18 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
         if (m_hotkeyHwnd == nullptr || m_trayIcon == nullptr)
         {
-            SetStatus(L"无法创建系统托盘图标；仍可使用 Alt+C 显示 TieZ。");
+            std::wstring message{ L"无法创建系统托盘图标" };
+            if (m_hotkeyRegistered)
+            {
+                message.append(L"；仍可使用 ");
+                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+                message.append(L" 显示 TieZ。");
+            }
+            else
+            {
+                message.append(L"，且当前没有可用的全局呼出快捷键。");
+            }
+            SetStatus(winrt::hstring{ message });
             return;
         }
 
@@ -1809,7 +2173,18 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (!Shell_NotifyIconW(NIM_ADD, &data))
         {
             m_trayAdded = false;
-            SetStatus(L"无法创建系统托盘图标；仍可使用 Alt+C 显示 TieZ。");
+            std::wstring message{ L"无法创建系统托盘图标" };
+            if (m_hotkeyRegistered)
+            {
+                message.append(L"；仍可使用 ");
+                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+                message.append(L" 显示 TieZ。");
+            }
+            else
+            {
+                message.append(L"，且当前没有可用的全局呼出快捷键。");
+            }
+            SetStatus(winrt::hstring{ message });
             return;
         }
 
@@ -1971,9 +2346,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ShowWindow(GetWindowHandle(), SW_SHOW);
         Activate();
         SearchBox().Focus(FocusState::Programmatic);
-        SetStatus(captureForeground
-            ? L"已通过 Alt+C 显示窗口，并记录粘贴目标窗口。"
-            : L"已通过系统托盘显示主界面。");
+        if (captureForeground)
+        {
+            std::wstring message{ L"已通过 " };
+            message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+            message.append(L" 显示窗口，并记录粘贴目标窗口。");
+            SetStatus(winrt::hstring{ message });
+        }
+        else
+        {
+            SetStatus(L"已通过系统托盘显示主界面。");
+        }
     }
 
     void MainWindow::PreparePasteTarget()
@@ -3242,7 +3625,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             L"让主窗口保持置顶，并在失去焦点时继续显示。");
         m_trayVisibleToggle = SettingToggle(
             L"显示系统托盘图标",
-            L"关闭后仍可使用 Alt+C 显示 TieZ。");
+            L"关闭后仍可使用已配置的全局快捷键显示 TieZ。");
         m_autostartToggle = SettingToggle(
             L"开机启动 TieZ",
             L"登录 Windows 后只在系统托盘后台运行，不弹出主窗口。");
@@ -3727,6 +4110,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         };
 
         auto const colorMode = getValue(L"app.color_mode", L"system");
+        auto hotkey = getValue(L"app.hotkey", L"Alt+C");
+        if (auto const diagnosticHotkey = ReadEnvironmentText(L"TIEZ_WINUI_HOTKEY"))
+        {
+            hotkey = *diagnosticHotkey;
+        }
         auto const compactMode = getBool(L"app.compact_mode", false);
         auto const persistent = getBool(L"app.persistent", false);
         auto const limitEnabled = getBool(L"app.persistent_limit_enabled", true);
@@ -3808,6 +4196,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         ApplyColorMode(winrt::to_string(colorMode));
         ApplyPinnedWindow(pinned);
+        ApplyToggleHotkey(hotkey);
         SetTrayVisible(trayVisible);
         if (compactChanged && m_core)
         {

@@ -33,8 +33,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native Windows validation and signed-release jobs now run the single-instance activation smoke test before packaging; the dedicated WinUI workflow follows `master` instead of the retired exploration branch.
 - The native lifecycle smoke test now repeats real activation and `WM_CLOSE`-to-tray cycles while asserting one persistent PID/Rust owner; CI runs ten cycles and release acceptance can run one hundred.
 - Native WinUI clipboard cards now expose focusable list-item semantics with Chinese Narrator names and help text; Enter/Space opens details, Shift+F10 opens the existing card menu, child action buttons remain keyboard reachable, and status surfaces are live regions.
+- Native Windows CI now runs an isolated OS-level global-hotkey smoke test before packaging, proving registration ownership, keyboard activation, and close-to-tray survival without touching the user's TieZ data or shortcut.
 
 ### Changed
+
+- The native WinUI main window now inherits existing keyboard `app.hotkey` settings instead of hard-coding Alt+C. Common modifier/key aliases are accepted, the active shortcut is shown in Chinese, an empty value disables registration, and invalid or conflicting changes preserve the previously working shortcut. The legacy middle-mouse hook remains an explicit migration item rather than silently changing the saved setting.
 
 - WebDAV client construction, safe path encoding, retry policy, atomic publication, blob transfer, and remote listing parsers now live in Tauri-independent `tiez-core`, establishing the reusable transport contract for the native WinUI sync runner.
 - Cloud-sync item, snapshot, op-batch, head, content-preference, identity, digest, and revision-collapse rules now share one Tauri-independent protocol model while retaining the existing snake_case remote JSON format.

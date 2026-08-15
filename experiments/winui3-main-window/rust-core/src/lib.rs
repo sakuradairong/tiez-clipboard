@@ -1665,6 +1665,7 @@ mod tests {
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
             assert!(initial_json.contains("\"abi_version\":12"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
+            assert!(initial_json.contains("\"app.hotkey\":\"Alt+C\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
 

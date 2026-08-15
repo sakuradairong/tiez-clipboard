@@ -40,6 +40,11 @@
                         VerticalAlignment="Center"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
+                <TextBlock
+                    x:Name="HotkeyText"
+                    AutomationProperties.Name="当前全局呼出快捷键"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    Text="呼出快捷键：正在加载" />
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">

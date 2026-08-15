@@ -96,6 +96,10 @@ const NATIVE_SETTINGS: &[SettingDefinition] = &[
     },
 ];
 
+// These non-secret compatibility values are visible to native frontends but
+// remain read-only until the native UI owns their complete update semantics.
+const READ_ONLY_NATIVE_SETTINGS: &[(&str, &str, usize)] = &[("app.hotkey", "Alt+C", 64)];
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeSettingsSnapshot {
     pub adapter: &'static str,
@@ -226,6 +230,32 @@ impl NativeSettings {
                         values.insert(definition.key.to_owned(), value);
                     }
                 }
+                for &(key, default_value, max_length) in READ_ONLY_NATIVE_SETTINGS {
+                    let value = connection
+                        .query_row(
+                            "SELECT value FROM settings WHERE key = ?1",
+                            [key],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()
+                        .map_err(|error| {
+                            storage_error(
+                                &format!("failed to read native compatibility setting {key}"),
+                                error,
+                            )
+                        })?;
+                    if let Some(value) = value {
+                        let normalized = value.trim();
+                        values.insert(
+                            key.to_owned(),
+                            if normalized.len() <= max_length {
+                                normalized.to_owned()
+                            } else {
+                                default_value.to_owned()
+                            },
+                        );
+                    }
+                }
                 (
                     if *read_only {
                         "sqlite-read-only"
@@ -322,6 +352,9 @@ fn default_values() -> BTreeMap<String, String> {
                 definition.default_value.to_owned(),
             )
         })
+        .chain(READ_ONLY_NATIVE_SETTINGS.iter().map(
+            |(key, default_value, _)| ((*key).to_owned(), (*default_value).to_owned()),
+        ))
         .collect()
 }
 
@@ -492,6 +525,35 @@ mod tests {
 
         let mutation = settings.update("app.autostart", "false").unwrap();
         assert_eq!(mutation.value, "false");
+    }
+
+    #[test]
+    fn existing_hotkey_is_visible_but_not_mutable_through_native_settings() {
+        let path = temporary_database("hotkey");
+        create_settings_database(&path);
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('app.hotkey', 'Ctrl+Alt+F24')",
+                [],
+            )
+            .unwrap();
+        let mut settings = NativeSettings::open_sqlite(path.clone(), false).unwrap();
+
+        assert_eq!(
+            settings.snapshot().unwrap().values.get("app.hotkey"),
+            Some(&"Ctrl+Alt+F24".to_owned())
+        );
+        assert_eq!(
+            settings
+                .update("app.hotkey", "Alt+C")
+                .unwrap_err()
+                .kind(),
+            NativeSettingsErrorKind::Validation
+        );
+
+        drop(settings);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

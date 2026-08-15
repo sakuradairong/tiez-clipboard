@@ -46,6 +46,11 @@ jobs:
         shell: pwsh
         run: ./test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
 
+      - name: Test configured native global hotkey
+        working-directory: experiments/winui3-main-window
+        shell: pwsh
+        run: ./test-hotkey.ps1 -Configuration Release
+
       - name: Validate unsigned MSIX
         working-directory: experiments/winui3-main-window
         shell: pwsh
