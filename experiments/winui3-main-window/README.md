@@ -86,6 +86,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - copy without paste (clipboard write only);
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
 - card context menu and double-click paste;
+- focusable clipboard list items with Chinese Narrator summaries, keyboard help, live status announcements, and protected sensitive-preview names;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
@@ -388,7 +389,10 @@ recognition. Record the active adapter with every result.
 - [ ] Restarting Explorer restores the tray icon.
 - [ ] Sensitive cards show a redacted preview and a sensitive label.
 - [ ] Open details displays full UTF-8 content without WebView2.
-- [ ] Keyboard Tab traversal and text selection work.
+- [ ] Tab reaches each clipboard record as a focusable list item, then reaches its visible action buttons; the focused record has a visible focus indicator.
+- [ ] Narrator announces each record's pinned/sensitive state, type, source, time, and non-sensitive preview; sensitive records announce only “预览已隐藏”.
+- [ ] Enter or Space on a focused record opens its details without pasting, and Shift+F10 opens the same Chinese card menu as right-click.
+- [ ] Text selection still works inside card previews and the details pane.
 - [ ] Copying text in another app prepends a new card without restarting the probe.
 - [ ] Copying formatted HTML, an image, or Explorer files prepends the matching card type.
 - [ ] The clipboard already present at startup is not ingested.
@@ -439,7 +443,7 @@ recognition. Record the active adapter with every result.
 - [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` completes 100 show/WM_CLOSE-to-tray cycles without changing the primary PID or exiting the Rust owner.
 - [ ] Median requested-to-ready no more than 750 ms.
 - [ ] Worst five requested-to-ready samples no more than 1500 ms.
-- [ ] Narrator announces search, buttons, list content, and status changes.
+- [ ] Narrator announces the Chinese search, buttons, focusable clipboard list items, help text, empty state, image-analysis status, and global status changes.
 - [ ] Per-monitor DPI, IME, multiple monitors, and Windows 10/11 startup pass.
 
 ## Main-window parity matrix

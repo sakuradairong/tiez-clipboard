@@ -977,6 +977,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const entryId = static_cast<std::int64_t>(item.GetNamedNumber(L"id"));
         auto const isPinned = item.GetNamedBoolean(L"is_pinned");
         auto const isSensitive = item.GetNamedBoolean(L"is_sensitive");
+        auto const typeLabel = ContentTypeLabel(item.GetNamedString(L"content_type"));
+        auto const sourceLabel = item.GetNamedString(L"source_app");
+        auto const capturedAtLabel = CapturedAtLabel(item.GetNamedString(L"captured_at"));
+        auto const previewLabel = item.GetNamedString(L"preview");
 
         Border card;
         card.Style(Application::Current().Resources()
@@ -1008,7 +1012,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 ApplyAction(entryId, "paste-plain");
             }
         });
-        AutomationProperties::SetName(card, item.GetNamedString(L"preview"));
+        AutomationProperties::SetName(
+            card,
+            isSensitive ? L"敏感内容，预览已隐藏" : previewLabel);
         AttachCardCommands(card, entryId, readOnly, isSensitive);
         AttachPinnedReorder(card, entryId, isPinned && m_canReorderPinned);
         m_cards.push_back(card);
@@ -1029,16 +1035,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
         metadata.ColumnDefinitions().Append(timeColumn);
 
         TextBlock type;
-        type.Text(ContentTypeLabel(item.GetNamedString(L"content_type")));
+        type.Text(typeLabel);
         type.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
 
         TextBlock source;
-        source.Text(item.GetNamedString(L"source_app"));
+        source.Text(sourceLabel);
         source.Opacity(0.72);
         Grid::SetColumn(source, 1);
 
         TextBlock capturedAt;
-        capturedAt.Text(CapturedAtLabel(item.GetNamedString(L"captured_at")));
+        capturedAt.Text(capturedAtLabel);
         capturedAt.Opacity(0.72);
         Grid::SetColumn(capturedAt, 2);
 
@@ -1081,7 +1087,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
 
         TextBlock preview;
-        preview.Text(item.GetNamedString(L"preview"));
+        preview.Text(previewLabel);
+        AutomationProperties::SetName(
+            preview,
+            isSensitive ? L"敏感内容预览已隐藏" : previewLabel);
         preview.TextWrapping(TextWrapping::WrapWholeWords);
         preview.IsTextSelectionEnabled(true);
         preview.MaxHeight(m_compactMode ? 48 : 112);
@@ -1156,7 +1165,52 @@ namespace winrt::Tiez::WinUIProbe::implementation
             content.Children().Append(actions);
         }
         card.Child(content);
-        return card;
+
+        ListViewItem cardHost;
+        cardHost.Padding(ThicknessHelper::FromUniformLength(0));
+        cardHost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        cardHost.IsTabStop(true);
+        cardHost.Content(card);
+        cardHost.ContextFlyout(card.ContextFlyout());
+
+        std::wstring automationName{ isPinned ? L"已置顶" : L"未置顶" };
+        if (isSensitive)
+        {
+            automationName.append(L"，敏感内容");
+        }
+        automationName.append(L"剪贴板记录，类型：");
+        automationName.append(typeLabel.c_str(), typeLabel.size());
+        automationName.append(L"，来源：");
+        automationName.append(sourceLabel.c_str(), sourceLabel.size());
+        automationName.append(L"，时间：");
+        automationName.append(capturedAtLabel.c_str(), capturedAtLabel.size());
+        if (isSensitive)
+        {
+            automationName.append(L"，预览：已隐藏");
+        }
+        else
+        {
+            automationName.append(L"，预览：");
+            automationName.append(previewLabel.c_str(), previewLabel.size());
+        }
+        AutomationProperties::SetName(cardHost, winrt::hstring{ automationName });
+        AutomationProperties::SetHelpText(
+            cardHost,
+            readOnly
+                ? L"按 Enter 或空格查看详情；按 Shift+F10 打开只读操作菜单。"
+                : L"按 Enter 或空格查看详情；双击执行纯文本粘贴；按 Shift+F10 打开更多操作。");
+        cardHost.KeyDown([this, entryId, index](auto const&, KeyRoutedEventArgs const& args)
+        {
+            if (args.Key() != VirtualKey::Enter && args.Key() != VirtualKey::Space)
+            {
+                return;
+            }
+            m_selectedIndex = static_cast<int>(index);
+            UpdateSelectionVisuals();
+            ShowContent(entryId);
+            args.Handled(true);
+        });
+        return cardHost;
     }
 
     void MainWindow::ShowContent(std::int64_t entryId)

@@ -32,6 +32,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native WinUI launches now register one AppLifecycle main instance before XAML and Rust/SQLite startup. Duplicate startup activations remain hidden, while ordinary duplicate launches exit and reveal the existing tray process; an isolated PowerShell smoke test covers both paths.
 - Native Windows validation and signed-release jobs now run the single-instance activation smoke test before packaging; the dedicated WinUI workflow follows `master` instead of the retired exploration branch.
 - The native lifecycle smoke test now repeats real activation and `WM_CLOSE`-to-tray cycles while asserting one persistent PID/Rust owner; CI runs ten cycles and release acceptance can run one hundred.
+- Native WinUI clipboard cards now expose focusable list-item semantics with Chinese Narrator names and help text; Enter/Space opens details, Shift+F10 opens the existing card menu, child action buttons remain keyboard reachable, and status surfaces are live regions.
 
 ### Changed
 
@@ -63,6 +64,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native update checks accept only the HTTPS App Installer URI associated with the installed package; Windows remains responsible for publisher-signature verification and applying the upgrade.
 - Native WebDAV setup never returns saved passwords through the ABI, commits compatible settings transactionally, requires HTTPS except for loopback tests, rejects credential-bearing URLs and redirects, and uses a read-only `PROPFIND` without writing remote data.
 - Native MSIX packaging disables AppData write virtualization and verifies the required capability so installed WinUI builds continue using the Tauri-compatible data directory instead of package-private clipboard history.
+- Sensitive WinUI cards suppress their preview value from all newly assigned UI Automation names and announce only that the preview is hidden.
 
 ### Fixed
 

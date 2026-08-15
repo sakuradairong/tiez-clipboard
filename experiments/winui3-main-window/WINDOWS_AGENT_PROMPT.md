@@ -103,6 +103,12 @@ Required negative tests:
     the tray, the hidden duplicate exits without revealing the primary, the
     ordinary duplicate reveals the same primary PID, and both secondary exit
     codes are zero.
+12. enable Narrator, Tab from the type filters into a clipboard record, and
+    verify it is announced as a Chinese list item with pinned/sensitive state,
+    type, source, time, and only a non-sensitive preview. Enter or Space must
+    open details without pasting, the next Tab must reach the card's action
+    buttons, Shift+F10 must open the Chinese card menu, and a sensitive item must
+    announce “预览已隐藏” without exposing its preview value.
 
 Evidence to save under:
 

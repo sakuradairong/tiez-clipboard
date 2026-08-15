@@ -29,10 +29,14 @@
                         Padding="8,3"
                         Background="{ThemeResource AccentFillColorSecondaryBrush}"
                         CornerRadius="10">
-                        <TextBlock x:Name="AdapterText" Text="加载中" />
+                        <TextBlock
+                            x:Name="AdapterText"
+                            AutomationProperties.Name="当前数据适配器"
+                            Text="加载中" />
                     </Border>
                     <TextBlock
                         x:Name="ReadOnlyText"
+                        AutomationProperties.Name="数据访问模式"
                         VerticalAlignment="Center"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 </StackPanel>
@@ -41,12 +45,22 @@
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <CheckBox
                     x:Name="PinWindowCheck"
+                    AutomationProperties.Name="固定 TieZ 主窗口"
+                    AutomationProperties.HelpText="启用后，切换到其他应用时仍保持主窗口可见。"
                     Content="固定窗口"
                     Checked="PinWindowCheck_Changed"
                     Unchecked="PinWindowCheck_Changed" />
                 <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />
-                <Button Click="RefreshButton_Click" Content="刷新" />
-                <Button Click="HideButton_Click" Content="隐藏 5 秒" />
+                <Button
+                    AutomationProperties.Name="刷新剪贴板历史"
+                    AutomationProperties.HelpText="重新从 Rust 核心读取当前剪贴板记录。"
+                    Click="RefreshButton_Click"
+                    Content="刷新" />
+                <Button
+                    AutomationProperties.Name="暂时隐藏 TieZ 主窗口"
+                    AutomationProperties.HelpText="隐藏主窗口 5 秒，然后自动重新显示。"
+                    Click="HideButton_Click"
+                    Content="隐藏 5 秒" />
             </StackPanel>
         </Grid>
 
@@ -78,11 +92,16 @@
             </Grid.ColumnDefinitions>
 
             <Grid>
-                <ScrollViewer x:Name="ItemsScroller" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer
+                    x:Name="ItemsScroller"
+                    AutomationProperties.Name="剪贴板历史记录列表"
+                    VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="ItemsPanel" Spacing="12" />
                 </ScrollViewer>
                 <TextBlock
                     x:Name="EmptyState"
+                    AutomationProperties.LiveSetting="Polite"
+                    AutomationProperties.Name="剪贴板历史为空"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
                     Text="没有符合当前条件的剪贴板记录。"
@@ -104,6 +123,7 @@
 
                     <TextBlock
                         x:Name="DetailsTitleText"
+                        AutomationProperties.Name="剪贴板详情标题"
                         Text="剪贴板详情"
                         Style="{ThemeResource SubtitleTextBlockStyle}" />
                     <Grid Grid.Row="1" ColumnSpacing="8">
@@ -113,6 +133,7 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock
                             x:Name="DetailsMetadataText"
+                            AutomationProperties.Name="所选记录的类型、来源和时间"
                             VerticalAlignment="Center"
                             Text="请选择记录并点击“查看详情”"
                             Foreground="{ThemeResource TextFillColorSecondaryBrush}"
@@ -196,11 +217,14 @@
                                     </Grid>
                                     <TextBlock
                                         x:Name="ImageAnalysisStatusText"
+                                        AutomationProperties.LiveSetting="Polite"
+                                        AutomationProperties.Name="图片识别状态"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                         Text="尚未识别。结果只会在非敏感可写记录中建立搜索索引。"
                                         TextWrapping="Wrap" />
                                     <TextBlock
                                         x:Name="ImageAnalysisResultText"
+                                        AutomationProperties.Name="图片识别结果"
                                         FontFamily="Consolas"
                                         IsTextSelectionEnabled="True"
                                         TextWrapping="Wrap" />
@@ -215,6 +239,7 @@
                             </Border>
                             <TextBlock
                                 x:Name="DetailsContentText"
+                                AutomationProperties.Name="所选剪贴板记录的完整内容"
                                 FontFamily="Consolas"
                                 IsTextSelectionEnabled="True"
                                 Text="完整剪贴板内容将在此显示，无需 WebView2。"
@@ -230,7 +255,12 @@
             Padding="12"
             Background="{ThemeResource LayerFillColorAltBrush}"
             CornerRadius="8">
-            <TextBlock x:Name="StatusText" AutomationProperties.LiveSetting="Assertive" Text="正在加载 Rust 核心…" TextWrapping="Wrap" />
+            <TextBlock
+                x:Name="StatusText"
+                AutomationProperties.LiveSetting="Assertive"
+                AutomationProperties.Name="TieZ 状态"
+                Text="正在加载 Rust 核心…"
+                TextWrapping="Wrap" />
         </Border>
     </Grid>
 </Window>
