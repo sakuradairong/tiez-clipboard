@@ -20,6 +20,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Tauri and writable WinUI database startup now use the same `tiez-core` schema-v15 migration and 77-setting bootstrap; WinUI refuses to open a data directory with a scheduled restore pending.
 - Tauri and writable WinUI history mutations now share atomic row, normalized-tag, sync-revision, and deletion-tombstone semantics; native file captures use the production `file` content type.
+- Writable WinUI capture now follows the production persistence and deduplication settings: session-only entries use replaceable negative IDs with a 500-item cap, while persisted captures reuse matching rows and enforce the configured unprotected-history limit.
 - Tauri and the WinUI candidate now share the same default, redirected, and portable data-directory selection policy; WinUI can opt into the production directory with `TIEZ_WINUI_USE_PRODUCTION_DATA=1` while synthetic data remains the safe default.
 - WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
 
@@ -33,6 +34,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Tauri and the native WinUI candidate now share a per-database Windows ownership mutex, preventing concurrent restore or write access to the same `clipboard.db`.
 - Writable WinUI history now copies captured images from its temporary capture area into the TieZ data directory before committing the database row, so system temp cleanup cannot break saved image entries.
+- WinUI history deletion and capacity eviction now remove attachment files only after the last live database reference is gone, and fail closed when a surviving encrypted path cannot be inspected.
 - WinUI probe now restores WASDK 1.8 split packages, imports the Runtime and MSIX/MRT build assets required by self-contained XAML windows, generates the current app PRI, compiles native sources as UTF-8, finds MSBuild on Visual Studio Build Tools, compiles the Windows paste helper against `windows-sys` 0.59, and assembles the current native EXE with the matching Rust DLL.
 
 ## [0.3.8] - 2026-07-27

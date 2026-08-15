@@ -4,21 +4,24 @@ use crate::content_identity::{
 };
 use crate::database_mutation::{
     delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
-    PreparedClipboardRecord,
+    PreparedClipboardRecord, StoredClipboardRecord,
 };
 use crate::encryption::{decrypt_value, encrypt_value, ENCRYPT_PREFIX};
 use crate::privacy::contains_sensitive_info;
 use base64::Engine;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_HISTORY_LIMIT: i64 = 200;
+const SESSION_HISTORY_LIMIT: usize = 500;
 const SENSITIVE_PREVIEW: &str = "Sensitive entry — open in the production TieZ UI";
 const SENSITIVE_TAGS: &[&str] = &["sensitive", "密码", "password"];
+const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--TIEZ_RICH_IMAGE:";
+const RICH_IMAGE_FALLBACK_SUFFIX: &str = "-->";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HistoryItem {
@@ -126,6 +129,23 @@ struct SqliteHistory {
     read_only: bool,
     generation: u64,
     last_action: String,
+    session: VecDeque<SessionHistoryEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct SessionHistoryEntry {
+    id: i64,
+    content_type: String,
+    content: String,
+    html_content: Option<String>,
+    source_app: String,
+    timestamp: i64,
+    preview: String,
+    is_pinned: bool,
+    tags: Vec<String>,
+    is_external: bool,
+    pinned_order: i64,
+    use_count: i64,
 }
 
 #[derive(Debug)]
@@ -418,6 +438,7 @@ impl SqliteHistory {
             read_only,
             generation: 1,
             last_action,
+            session: VecDeque::new(),
         })
     }
 
@@ -432,6 +453,9 @@ impl SqliteHistory {
     fn snapshot(&self, query: &str) -> Result<HistorySnapshot, HistoryError> {
         let connection = open_sqlite_connection(&self.database_path, self.read_only)?;
         let mut items = load_snapshot_items(&connection, query, DEFAULT_HISTORY_LIMIT)?;
+        if !self.read_only && !self.session.is_empty() {
+            merge_session_snapshot(&mut items, &self.session, query, DEFAULT_HISTORY_LIMIT);
+        }
         redact_sensitive_previews(&mut items);
 
         let generation = if self.read_only {
@@ -457,6 +481,15 @@ impl SqliteHistory {
     }
 
     fn content(&self, entry_id: i64) -> Result<HistoryContent, HistoryError> {
+        if entry_id < 0 {
+            let entry = self
+                .session
+                .iter()
+                .find(|entry| entry.id == entry_id)
+                .ok_or_else(|| entry_not_found(entry_id))?;
+            return Ok(entry.history_content());
+        }
+
         let connection = open_sqlite_connection(&self.database_path, self.read_only)?;
         let mut statement = connection
             .prepare(
@@ -549,16 +582,35 @@ impl SqliteHistory {
         let connection = open_sqlite_connection(&self.database_path, false)?;
         let (effective_id, removed, replacement_id) = match action {
             "pin" => {
-                self.toggle_pin(&connection, entry_id)?;
-                (Some(entry_id), false, None)
+                if entry_id < 0 {
+                    let replacement_id = self.persist_pinned_session(&connection, entry_id)?;
+                    (Some(replacement_id), false, Some(replacement_id))
+                } else {
+                    self.toggle_pin(&connection, entry_id)?;
+                    (Some(entry_id), false, None)
+                }
             }
             "delete" => {
-                self.delete(&connection, entry_id)?;
+                if entry_id < 0 {
+                    let previous_len = self.session.len();
+                    self.session.retain(|entry| entry.id != entry_id);
+                    if previous_len == self.session.len() {
+                        return Err(entry_not_found(entry_id));
+                    }
+                } else {
+                    self.delete(&connection, entry_id)?;
+                }
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true, None)
             }
             "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
-                ensure_sqlite_entry(&connection, entry_id)?;
+                if entry_id < 0 {
+                    if !self.session.iter().any(|entry| entry.id == entry_id) {
+                        return Err(entry_not_found(entry_id));
+                    }
+                } else {
+                    ensure_sqlite_entry(&connection, entry_id)?;
+                }
                 self.last_action = format!("{action} requested for entry {entry_id}");
                 (Some(entry_id), false, None)
             }
@@ -597,74 +649,43 @@ impl SqliteHistory {
 
         let connection = open_sqlite_connection(&self.database_path, false)?;
         let timestamp = now_unix_ms();
-        let preview = payload.preview();
-        let mut content = payload.content();
-        let content_type = payload.content_type();
-        let html = payload.html();
-        let should_protect = load_privacy_policy(&connection)?
-            .should_protect(content_type, &content);
-        let attachment = if content_type == "image" {
-            let attachment = persist_image_attachment(&self.database_path, &content)?;
-            content = attachment.content.clone();
-            Some(attachment)
-        } else {
-            None
-        };
-        let content_hash = if content_type == "image" {
-            calc_image_hash(&content).unwrap_or(0)
-        } else {
-            calc_text_hash(&content) as i64
-        };
-        let is_external = match content_type {
-            "file" | "video" => true,
-            "image" => !content.trim_start().starts_with("data:"),
-            _ => false,
-        };
-        let mut tags = Vec::new();
-        let (stored_content, stored_preview, stored_html) = if should_protect {
-            tags.push("sensitive".to_owned());
-            (
-                encrypt_sensitive_value(&content)?,
-                encrypt_sensitive_value(&preview)?,
-                html.map(encrypt_sensitive_value).transpose()?,
-            )
-        } else {
-            (
-                content.clone(),
-                preview.clone(),
-                html.map(str::to_owned),
-            )
-        };
-        let saved = save_prepared_record(
-            &connection,
-            &PreparedClipboardRecord {
-                id: 0,
-                content_type,
-                content: &stored_content,
-                identity_content: &content,
-                html_content: stored_html.as_deref(),
-                source_app: &source_app,
-                source_app_path: None,
-                timestamp,
-                preview: &stored_preview,
-                is_pinned: false,
-                content_hash,
-                tags: &tags,
-                is_external,
-                pinned_order: 0,
-            },
+        let mut entry = SessionHistoryEntry::from_payload(
+            payload,
+            source_app.clone(),
+            timestamp,
+            &load_privacy_policy(&connection)?,
         );
-        let entry_id = match saved {
-            Ok(entry_id) => entry_id,
-            Err(error) => {
-                if let Some(attachment) = attachment.filter(|value| value.created) {
-                    let _ = std::fs::remove_file(attachment.content);
-                }
-                return Err(HistoryError::new(
-                    HistoryErrorKind::Storage,
-                    format!("failed to ingest clipboard payload: {error}"),
-                ));
+        let persistent = load_bool_setting(&connection, "app.persistent", false)?;
+        let deduplicate = load_bool_setting(&connection, "app.deduplicate", true)?;
+        let content_type = entry.content_type.clone();
+
+        let entry_id = if persistent {
+            let existing_id = if deduplicate {
+                find_persisted_duplicate(&connection, &entry)?
+            } else {
+                None
+            };
+            let entry_id = self.persist_entry(&connection, &entry, existing_id.unwrap_or(0))?;
+            if deduplicate {
+                self.session
+                    .retain(|candidate| !candidate.same_content_as(&entry));
             }
+            let _ = self.enforce_persistent_limit(&connection);
+            entry_id
+        } else if deduplicate {
+            if let Some(existing_id) = self.refresh_session_duplicate(&entry) {
+                existing_id
+            } else {
+                entry.id = next_session_id(&self.session, timestamp);
+                let entry_id = entry.id;
+                self.push_session(entry);
+                entry_id
+            }
+        } else {
+            entry.id = next_session_id(&self.session, timestamp);
+            let entry_id = entry.id;
+            self.push_session(entry);
+            entry_id
         };
         self.generation = self.generation.saturating_add(1);
         self.last_action = format!("Captured {content_type} from {source_app}");
@@ -678,6 +699,185 @@ impl SqliteHistory {
             generation: self.generation,
             message: self.last_action.clone(),
         })
+    }
+
+    fn push_session(&mut self, entry: SessionHistoryEntry) {
+        self.session.push_back(entry);
+        while self.session.len() > SESSION_HISTORY_LIMIT {
+            self.session.pop_front();
+        }
+    }
+
+    fn refresh_session_duplicate(&mut self, incoming: &SessionHistoryEntry) -> Option<i64> {
+        let reuse_id = self
+            .session
+            .iter()
+            .rev()
+            .find(|candidate| candidate.same_content_as(incoming))?
+            .id;
+        let existing = self
+            .session
+            .iter()
+            .find(|candidate| candidate.id == reuse_id)?
+            .clone();
+        let mut updated = incoming.clone();
+        updated.id = reuse_id;
+        updated.is_pinned = existing.is_pinned;
+        updated.pinned_order = existing.pinned_order;
+        updated.use_count = existing.use_count.saturating_add(1);
+        if updated.tags.is_empty() {
+            updated.tags = existing.tags;
+        }
+
+        self.session
+            .retain(|candidate| candidate.id == reuse_id || !candidate.same_content_as(incoming));
+        if let Some(candidate) = self
+            .session
+            .iter_mut()
+            .find(|candidate| candidate.id == reuse_id)
+        {
+            *candidate = updated;
+        }
+        Some(reuse_id)
+    }
+
+    fn persist_entry(
+        &self,
+        connection: &Connection,
+        entry: &SessionHistoryEntry,
+        stable_id: i64,
+    ) -> Result<i64, HistoryError> {
+        let mut content = entry.content.clone();
+        let attachment = if entry.content_type == "image" {
+            let attachment = persist_image_attachment(&self.database_path, &content)?;
+            content = attachment.content.clone();
+            Some(attachment)
+        } else {
+            None
+        };
+        let content_hash = if entry.content_type == "image" {
+            calc_image_hash(&content).unwrap_or(0)
+        } else {
+            calc_text_hash(&content) as i64
+        };
+        let should_encrypt = entry.is_sensitive();
+        let stored_content = if should_encrypt {
+            encrypt_sensitive_value(&content)?
+        } else {
+            content.clone()
+        };
+        let stored_preview = if should_encrypt {
+            encrypt_sensitive_value(&entry.preview)?
+        } else {
+            entry.preview.clone()
+        };
+        let stored_html = if should_encrypt {
+            entry
+                .html_content
+                .as_deref()
+                .map(encrypt_sensitive_value)
+                .transpose()?
+        } else {
+            entry.html_content.clone()
+        };
+        let saved = save_prepared_record(
+            connection,
+            &PreparedClipboardRecord {
+                id: stable_id,
+                content_type: &entry.content_type,
+                content: &stored_content,
+                identity_content: &content,
+                html_content: stored_html.as_deref(),
+                source_app: &entry.source_app,
+                source_app_path: None,
+                timestamp: entry.timestamp,
+                preview: &stored_preview,
+                is_pinned: entry.is_pinned,
+                content_hash,
+                tags: &entry.tags,
+                is_external: entry.is_external || entry.content_type == "image",
+                pinned_order: entry.pinned_order,
+            },
+        );
+        match saved {
+            Ok(entry_id) => Ok(entry_id),
+            Err(error) => {
+                if let Some(attachment) = attachment.filter(|value| value.created) {
+                    let _ = std::fs::remove_file(attachment.content);
+                }
+                Err(HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to ingest clipboard payload: {error}"),
+                ))
+            }
+        }
+    }
+
+    fn persist_pinned_session(
+        &mut self,
+        connection: &Connection,
+        session_id: i64,
+    ) -> Result<i64, HistoryError> {
+        let mut entry = self
+            .session
+            .iter()
+            .find(|entry| entry.id == session_id)
+            .cloned()
+            .ok_or_else(|| entry_not_found(session_id))?;
+        entry.is_pinned = true;
+        let replacement_id = self.persist_entry(connection, &entry, 0)?;
+        let pinned = set_pinned(connection, replacement_id, true, now_unix_ms()).map_err(|error| {
+            HistoryError::new(
+                HistoryErrorKind::Storage,
+                format!("failed to finalize persisted pin state: {error}"),
+            )
+        })?;
+        if !pinned {
+            return Err(entry_not_found(replacement_id));
+        }
+        self.session.retain(|entry| entry.id != session_id);
+        let _ = self.enforce_persistent_limit(connection);
+        self.last_action = format!("Entry {session_id} pinned as {replacement_id}");
+        Ok(replacement_id)
+    }
+
+    fn enforce_persistent_limit(&self, connection: &Connection) -> Result<Vec<i64>, HistoryError> {
+        if !load_bool_setting(connection, "app.persistent_limit_enabled", true)? {
+            return Ok(Vec::new());
+        }
+        let limit = load_i64_setting(connection, "app.persistent_limit", 500)?.max(0);
+        let count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM clipboard_history
+                 WHERE is_pinned = 0 AND (tags = '[]' OR tags IS NULL)",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| storage_error("failed to count persistent history", error))?;
+        if count <= limit {
+            return Ok(Vec::new());
+        }
+
+        let deleted_ids = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id FROM clipboard_history
+                     WHERE is_pinned = 0 AND (tags = '[]' OR tags IS NULL)
+                     ORDER BY timestamp ASC, id ASC
+                     LIMIT ?1",
+                )
+                .map_err(|error| storage_error("failed to prepare history limit query", error))?;
+            let rows = statement
+                .query_map([count - limit], |row| row.get::<_, i64>(0))
+                .map_err(|error| storage_error("failed to query history limit", error))?;
+            rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| storage_error("failed to read history limit row", error))?
+        };
+        for entry_id in &deleted_ids {
+            self.delete(connection, *entry_id)?;
+        }
+        Ok(deleted_ids)
     }
 
     fn toggle_pin(&mut self, connection: &Connection, entry_id: i64) -> Result<(), HistoryError> {
@@ -721,6 +921,12 @@ impl SqliteHistory {
                 )
             })?
             .ok_or_else(|| entry_not_found(entry_id))?;
+        let attachments_dir = self
+            .database_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("attachments");
+        let cleanup_paths = collect_attachment_paths(&entry, &attachments_dir);
         let (content_hash, content_hash_version) = if uses_text_content_hash(&entry.content_type)
             && !entry.content.starts_with(ENCRYPT_PREFIX)
         {
@@ -748,7 +954,97 @@ impl SqliteHistory {
         if !deleted {
             return Err(entry_not_found(entry_id));
         }
+        cleanup_unreferenced_attachment_paths(connection, cleanup_paths, &attachments_dir);
         Ok(())
+    }
+}
+
+impl SessionHistoryEntry {
+    fn from_payload(
+        payload: CapturedPayload,
+        source_app: String,
+        timestamp: i64,
+        privacy_policy: &PrivacyPolicy,
+    ) -> Self {
+        let content_type = payload.content_type().to_owned();
+        let content = payload.content();
+        let preview = payload.preview();
+        let html_content = payload.html().map(str::to_owned);
+        let tags = if privacy_policy.should_protect(&content_type, &content) {
+            vec!["sensitive".to_owned()]
+        } else {
+            Vec::new()
+        };
+        let is_external = matches!(content_type.as_str(), "file" | "video")
+            || (content_type == "image" && !content.trim_start().starts_with("data:"));
+        Self {
+            id: 0,
+            content_type,
+            content,
+            html_content,
+            source_app,
+            timestamp,
+            preview,
+            is_pinned: false,
+            tags,
+            is_external,
+            pinned_order: 0,
+            use_count: 0,
+        }
+    }
+
+    fn is_sensitive(&self) -> bool {
+        self.tags.iter().any(|tag| {
+            SENSITIVE_TAGS
+                .iter()
+                .any(|sensitive| sensitive.eq_ignore_ascii_case(tag))
+        })
+    }
+
+    fn same_content_as(&self, other: &Self) -> bool {
+        if self.content_type == "image" || other.content_type == "image" {
+            return self.content_type == "image"
+                && other.content_type == "image"
+                && calc_image_hash(&self.content).is_some()
+                && calc_image_hash(&self.content) == calc_image_hash(&other.content);
+        }
+        if self.content_type == "rich_text" && other.content_type == "rich_text" {
+            let normalized_html = |value: &str| value.trim().replace("\r\n", "\n");
+            let html_matches = match (self.html_content.as_deref(), other.html_content.as_deref()) {
+                (None, None) => true,
+                (Some(left), Some(right)) => normalized_html(left) == normalized_html(right),
+                _ => false,
+            };
+            if !html_matches {
+                return false;
+            }
+        }
+        self.content == other.content
+            || calc_text_hash(&self.content) == calc_text_hash(&other.content)
+    }
+
+    fn history_item(&self) -> HistoryItem {
+        HistoryItem {
+            id: self.id,
+            content_type: self.content_type.clone(),
+            preview: self.preview.clone(),
+            source_app: self.source_app.clone(),
+            captured_at: format_timestamp(self.timestamp),
+            is_pinned: self.is_pinned,
+            is_sensitive: self.is_sensitive(),
+        }
+    }
+
+    fn history_content(&self) -> HistoryContent {
+        HistoryContent {
+            id: self.id,
+            content_type: self.content_type.clone(),
+            content: self.content.clone(),
+            html_content: self.html_content.clone(),
+            available: true,
+            is_sensitive: self.is_sensitive(),
+            unavailable_reason: None,
+        }
     }
 }
 
@@ -808,6 +1104,278 @@ fn load_setting(
         .optional()
         .map(|value| value.unwrap_or_else(|| default_value.to_owned()))
         .map_err(|error| storage_error(&format!("failed to read setting {key}"), error))
+}
+
+fn load_bool_setting(
+    connection: &Connection,
+    key: &str,
+    default_value: bool,
+) -> Result<bool, HistoryError> {
+    let value = load_setting(
+        connection,
+        key,
+        if default_value { "true" } else { "false" },
+    )?;
+    Ok(value.eq_ignore_ascii_case("true") || value == "1")
+}
+
+fn load_i64_setting(
+    connection: &Connection,
+    key: &str,
+    default_value: i64,
+) -> Result<i64, HistoryError> {
+    let value = load_setting(connection, key, &default_value.to_string())?;
+    value.parse::<i64>().map_err(|error| {
+        HistoryError::new(
+            HistoryErrorKind::Storage,
+            format!("setting {key} is not a valid integer: {error}"),
+        )
+    })
+}
+
+fn next_session_id(session: &VecDeque<SessionHistoryEntry>, timestamp: i64) -> i64 {
+    let mut candidate = -timestamp.max(1);
+    while session.iter().any(|entry| entry.id == candidate) {
+        candidate = candidate.saturating_sub(1);
+    }
+    candidate
+}
+
+fn merge_session_snapshot(
+    persisted: &mut Vec<HistoryItem>,
+    session: &VecDeque<SessionHistoryEntry>,
+    query: &str,
+    limit: i64,
+) {
+    let mut session_items: Vec<HistoryItem> = session
+        .iter()
+        .rev()
+        .filter(|entry| session_entry_matches_query(entry, query))
+        .map(SessionHistoryEntry::history_item)
+        .collect();
+    if session_items.is_empty() {
+        return;
+    }
+    let insertion_index = persisted
+        .iter()
+        .position(|item| !item.is_pinned)
+        .unwrap_or(persisted.len());
+    persisted.splice(insertion_index..insertion_index, session_items.drain(..));
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    if persisted.len() > limit {
+        persisted.truncate(limit);
+    }
+}
+
+fn session_entry_matches_query(entry: &SessionHistoryEntry, query: &str) -> bool {
+    let matches_text = |text: &str| {
+        let normalized = text.trim().to_lowercase();
+        normalized.is_empty()
+            || entry.content.to_lowercase().contains(&normalized)
+            || entry.source_app.to_lowercase().contains(&normalized)
+            || entry.content_type.to_lowercase().contains(&normalized)
+            || entry
+                .tags
+                .iter()
+                .any(|tag| tag.to_lowercase().contains(&normalized))
+    };
+    match parse_snapshot_query(query) {
+        SnapshotQuery::Latest => true,
+        SnapshotQuery::Type { content_type, text } => {
+            entry.content_type.eq_ignore_ascii_case(content_type) && matches_text(text)
+        }
+        SnapshotQuery::Text(text) => matches_text(text),
+    }
+}
+
+fn find_persisted_duplicate(
+    connection: &Connection,
+    entry: &SessionHistoryEntry,
+) -> Result<Option<i64>, HistoryError> {
+    let content_hash = if entry.content_type == "image" {
+        calc_image_hash(&entry.content).unwrap_or(0)
+    } else {
+        calc_text_hash(&entry.content) as i64
+    };
+    let content_types: &[&str] = if entry.content_type == "rich_text" {
+        &["rich_text", "text", "code", "url"]
+    } else {
+        &[entry.content_type.as_str()]
+    };
+
+    for content_type in content_types {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, html_content FROM clipboard_history
+                 WHERE content_type = ?1 AND (content_hash = ?2 OR content = ?3)
+                 ORDER BY timestamp DESC, id DESC",
+            )
+            .map_err(|error| storage_error("failed to prepare deduplication query", error))?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![content_type, content_hash, entry.content.as_str()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .map_err(|error| storage_error("failed to query duplicate history", error))?;
+        for row in rows {
+            let (id, stored_html) =
+                row.map_err(|error| storage_error("failed to read duplicate row", error))?;
+            if entry.content_type == "rich_text" && *content_type == "rich_text" {
+                let stored_html = match stored_html {
+                    Some(value) if value.starts_with(ENCRYPT_PREFIX) => decrypt_value(&value),
+                    value => value,
+                };
+                let normalize = |value: &str| value.trim().replace("\r\n", "\n");
+                let matches = match (entry.html_content.as_deref(), stored_html.as_deref()) {
+                    (None, None) => true,
+                    (Some(left), Some(right)) => normalize(left) == normalize(right),
+                    _ => false,
+                };
+                if !matches {
+                    continue;
+                }
+            }
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn collect_attachment_paths(entry: &StoredClipboardRecord, attachments_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = HashSet::new();
+    if entry.is_external {
+        if let Some(content) = decrypt_storage_value(&entry.content) {
+            let path = PathBuf::from(content);
+            if path_is_within(&path, attachments_dir) {
+                paths.insert(path);
+            }
+        }
+    }
+    if let Some(html) = entry
+        .html_content
+        .as_deref()
+        .and_then(decrypt_storage_value)
+    {
+        if let Some(path) = rich_image_fallback_path(&html) {
+            if path_is_within(&path, attachments_dir) {
+                paths.insert(path);
+            }
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn cleanup_unreferenced_attachment_paths(
+    connection: &Connection,
+    cleanup_paths: impl IntoIterator<Item = PathBuf>,
+    attachments_dir: &Path,
+) {
+    let candidates: HashSet<PathBuf> = cleanup_paths
+        .into_iter()
+        .filter(|path| path_is_within(path, attachments_dir))
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+
+    let mut statement = match connection
+        .prepare("SELECT content, html_content, is_external FROM clipboard_history")
+    {
+        Ok(statement) => statement,
+        Err(_) => return,
+    };
+    let rows = match statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, i32>(2)? == 1,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+
+    let mut referenced = HashSet::new();
+    for row in rows {
+        let Ok((content_raw, html_raw, is_external)) = row else {
+            return;
+        };
+        if is_external {
+            let Some(content) = decrypt_storage_value(&content_raw) else {
+                return;
+            };
+            referenced.insert(path_identity(Path::new(&content)));
+        }
+        if let Some(html_raw) = html_raw {
+            let Some(html) = decrypt_storage_value(&html_raw) else {
+                return;
+            };
+            if let Some(path) = rich_image_fallback_path(&html) {
+                referenced.insert(path_identity(&path));
+            }
+        }
+    }
+
+    for path in candidates {
+        if path.exists() && !referenced.contains(&path_identity(&path)) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn decrypt_storage_value(value: &str) -> Option<String> {
+    if value.starts_with(ENCRYPT_PREFIX) {
+        decrypt_value(value)
+    } else {
+        Some(value.to_owned())
+    }
+}
+
+fn rich_image_fallback_path(html: &str) -> Option<PathBuf> {
+    let start = html.rfind(RICH_IMAGE_FALLBACK_PREFIX)? + RICH_IMAGE_FALLBACK_PREFIX.len();
+    let end = start + html[start..].find(RICH_IMAGE_FALLBACK_SUFFIX)?;
+    let payload = html[start..end].trim();
+    if payload.is_empty() || payload.starts_with("data:image/") {
+        return None;
+    }
+    let raw = payload.strip_prefix("file://").unwrap_or(payload);
+    let raw = if raw.starts_with('/') && raw.chars().nth(2) == Some(':') {
+        &raw[1..]
+    } else {
+        raw
+    };
+    Some(PathBuf::from(percent_decode(raw)))
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let high = (bytes[index + 1] as char).to_digit(16);
+            let low = (bytes[index + 2] as char).to_digit(16);
+            if let (Some(high), Some(low)) = (high, low) {
+                decoded.push(((high << 4) | low) as u8);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn path_identity(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn path_is_within(path: &Path, directory: &Path) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    path_identity(path).starts_with(path_identity(directory))
 }
 
 fn encrypt_sensitive_value(value: &str) -> Result<String, HistoryError> {
@@ -1318,6 +1886,13 @@ mod tests {
             .unwrap();
         connection
             .execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 VALUES ('app.persistent', 'true')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
                 "INSERT INTO clipboard_history
                     (id, content_type, content, html_content, source_app, timestamp, preview, is_pinned, pinned_order, tags)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -1373,6 +1948,23 @@ mod tests {
                 ],
             )
             .unwrap();
+    }
+
+    fn set_test_setting(path: &Path, key: &str, value: &str) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .unwrap();
+    }
+
+    fn sqlite_session_len(history: &ClipboardHistory) -> usize {
+        match &history.adapter {
+            HistoryAdapter::Sqlite(adapter) => adapter.session.len(),
+            HistoryAdapter::Memory(_) => panic!("expected sqlite adapter"),
+        }
     }
 
     #[test]
@@ -2006,6 +2598,337 @@ mod tests {
             3
         );
         drop(connection);
+        drop(history);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sqlite_session_mode_reuses_negative_ids_and_persists_only_when_pinned() {
+        let path = temporary_database("session-mode");
+        create_test_database(&path);
+        set_test_setting(&path, "app.persistent", "false");
+        set_test_setting(&path, "app.deduplicate", "true");
+        let initial_count = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let first = history
+            .ingest_text("session value".to_owned(), "Notepad")
+            .unwrap();
+        let session_id = first.effective_id.unwrap();
+        assert!(session_id < 0);
+        assert_eq!(sqlite_session_len(&history), 1);
+        assert_eq!(history.content(session_id).unwrap().content, "session value");
+
+        let duplicate = history
+            .ingest_text("session value".to_owned(), "Terminal")
+            .unwrap();
+        assert_eq!(duplicate.effective_id, Some(session_id));
+        assert_eq!(sqlite_session_len(&history), 1);
+        let session_item = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == session_id)
+            .unwrap();
+        assert_eq!(session_item.source_app, "Terminal");
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            initial_count
+        );
+
+        let pinned = history.apply_action(session_id, "pin").unwrap();
+        let stable_id = pinned.replacement_id.unwrap();
+        assert!(stable_id > 0);
+        assert_eq!(pinned.effective_id, Some(stable_id));
+        assert_eq!(sqlite_session_len(&history), 0);
+        let persisted_pin = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT is_pinned, pinned_order FROM clipboard_history WHERE id = ?1",
+                [stable_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted_pin.0, 1);
+        assert!(persisted_pin.1 > 0);
+
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sensitive_session_entry_stays_in_memory_until_pin_encrypts_it() {
+        let path = temporary_database("sensitive-session");
+        create_test_database(&path);
+        set_test_setting(&path, "app.persistent", "false");
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let plain = "token=abcdefghijklmnop1234";
+
+        let session_id = history
+            .ingest_text(plain.to_owned(), "终端")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        assert!(session_id < 0);
+        let snapshot = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == session_id)
+            .unwrap();
+        assert!(snapshot.is_sensitive);
+        assert_eq!(snapshot.preview, SENSITIVE_PREVIEW);
+        let content = history.content(session_id).unwrap();
+        assert!(content.available);
+        assert!(content.is_sensitive);
+        assert_eq!(content.content, plain);
+
+        let stable_id = history
+            .apply_action(session_id, "pin")
+            .unwrap()
+            .replacement_id
+            .unwrap();
+        let stored = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT content, preview, tags FROM clipboard_history WHERE id = ?1",
+                [stable_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(stored.0.starts_with(ENCRYPT_PREFIX));
+        assert!(stored.1.starts_with(ENCRYPT_PREFIX));
+        assert_eq!(stored.2, "[\"sensitive\"]");
+
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_session_mode_caps_history_at_five_hundred_entries() {
+        let path = temporary_database("session-cap");
+        create_test_database(&path);
+        set_test_setting(&path, "app.persistent", "false");
+        set_test_setting(&path, "app.deduplicate", "false");
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let first_id = history
+            .ingest_text("session 0".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        for index in 1..=500 {
+            history
+                .ingest_text(format!("session {index}"), "Notepad")
+                .unwrap();
+        }
+
+        assert_eq!(sqlite_session_len(&history), SESSION_HISTORY_LIMIT);
+        assert_eq!(
+            history.content(first_id).unwrap_err().kind(),
+            HistoryErrorKind::NotFound
+        );
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_persistent_mode_reuses_existing_rows_and_enforces_unprotected_limit() {
+        let path = temporary_database("persistent-dedup-limit");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let duplicate = history
+            .ingest_text("hello\nfull content".to_owned(), "Terminal")
+            .unwrap();
+        assert_eq!(duplicate.effective_id, Some(1));
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+
+        let connection = Connection::open(&path).unwrap();
+        connection.execute("DELETE FROM entry_tags", []).unwrap();
+        connection
+            .execute("DELETE FROM clipboard_history", [])
+            .unwrap();
+        drop(connection);
+        set_test_setting(&path, "app.deduplicate", "false");
+        set_test_setting(&path, "app.persistent_limit", "2");
+        let pinned_id = history
+            .ingest_text("pinned".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        history.apply_action(pinned_id, "pin").unwrap();
+        let oldest_unprotected = history
+            .ingest_text("oldest".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        let retained = history
+            .ingest_text("retained".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        let newest = history
+            .ingest_text("newest".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+
+        assert_eq!(
+            history.content(oldest_unprotected).unwrap_err().kind(),
+            HistoryErrorKind::NotFound
+        );
+        assert_eq!(history.content(pinned_id).unwrap().content, "pinned");
+        assert_eq!(history.content(retained).unwrap().content, "retained");
+        assert_eq!(history.content(newest).unwrap().content, "newest");
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_delete_removes_only_the_last_reference_to_an_attachment() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tiez-core-attachment-cleanup-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("clipboard.db");
+        let source = root.join("captured.png");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lW2ZAAAAAElFTkSuQmCC";
+        fs::write(
+            &source,
+            base64::engine::general_purpose::STANDARD
+                .decode(png)
+                .unwrap(),
+        )
+        .unwrap();
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let original_id = history
+            .ingest(
+                CapturedPayload::Image {
+                    content: source.to_string_lossy().into_owned(),
+                },
+                "截图工具",
+            )
+            .unwrap()
+            .effective_id
+            .unwrap();
+        let attachment = history.content(original_id).unwrap().content;
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (content_type, content, source_app, timestamp, preview, is_external,
+                     content_hash, content_hash_version, tags)
+                 VALUES ('image', ?1, '共享引用', 1, 'shared', 1, ?2, 2, '[]')",
+                params![attachment.as_str(), calc_image_hash(&attachment).unwrap()],
+            )
+            .unwrap();
+        let shared_id = connection.last_insert_rowid();
+        drop(connection);
+
+        history.apply_action(original_id, "delete").unwrap();
+        assert!(Path::new(&attachment).is_file());
+        history.apply_action(shared_id, "delete").unwrap();
+        assert!(!Path::new(&attachment).exists());
+
+        drop(history);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn attachment_cleanup_fails_closed_when_a_surviving_path_cannot_be_decrypted() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tiez-core-attachment-fail-closed-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("clipboard.db");
+        let source = root.join("captured.png");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lW2ZAAAAAElFTkSuQmCC";
+        fs::write(
+            &source,
+            base64::engine::general_purpose::STANDARD
+                .decode(png)
+                .unwrap(),
+        )
+        .unwrap();
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let image_id = history
+            .ingest(
+                CapturedPayload::Image {
+                    content: source.to_string_lossy().into_owned(),
+                },
+                "截图工具",
+            )
+            .unwrap()
+            .effective_id
+            .unwrap();
+        let attachment = history.content(image_id).unwrap().content;
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (content_type, content, source_app, timestamp, preview, is_external, tags)
+                 VALUES ('file', ?1, '旧版加密', 1, 'unreadable', 1, '[]')",
+                [ENCRYPT_PREFIX],
+            )
+            .unwrap();
+        drop(connection);
+
+        history.apply_action(image_id, "delete").unwrap();
+        assert!(Path::new(&attachment).is_file());
+
         drop(history);
         fs::remove_dir_all(root).unwrap();
     }
