@@ -177,6 +177,19 @@ $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
 .\artifacts\x64\Release\Tiez.WinUIProbe.exe
 ```
 
+To exercise the same production data-directory selection as Tauri without
+copying a path, explicitly enable production data mode:
+
+```powershell
+$env:TIEZ_WINUI_USE_PRODUCTION_DATA = "1"
+.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+```
+
+This resolves `%APPDATA%\com.tiez`, honors a valid `datapath.txt`, and lets an
+existing `data` directory beside the WinUI executable take precedence. The
+shared ownership mutex still requires Tauri to be fully stopped. Leave this
+flag unset to keep the safe synthetic default while migration work continues.
+
 The header should show `sqlite` and **write enabled**. Pin/delete go through
 `tiez_core_apply_action_json` and keep `replacement_id` null for persisted
 positive IDs. Session-only negative IDs are still a Tauri-process concern.
@@ -209,6 +222,7 @@ Unset the variables to return to synthetic mode:
 ```powershell
 Remove-Item Env:TIEZ_WINUI_DB_PATH -ErrorAction SilentlyContinue
 Remove-Item Env:TIEZ_WINUI_DB_READ_ONLY -ErrorAction SilentlyContinue
+Remove-Item Env:TIEZ_WINUI_USE_PRODUCTION_DATA -ErrorAction SilentlyContinue
 ```
 
 ## Measurement

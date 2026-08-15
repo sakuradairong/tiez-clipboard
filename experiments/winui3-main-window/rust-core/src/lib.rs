@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::env;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use tiez_core::clipboard_capture::{
@@ -18,6 +18,7 @@ use tiez_core::clipboard_capture::{
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
+use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
@@ -28,6 +29,7 @@ mod win32_capture;
 const ABI_VERSION: u32 = 4;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
+const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
 static DATABASE_INSTANCE_GUARD: Mutex<Option<DatabaseInstanceGuard>> = Mutex::new(None);
 
 thread_local! {
@@ -68,18 +70,33 @@ impl TiezCoreHandle {
     }
 
     fn new_from_environment() -> Result<Self, String> {
-        let history = match env::var_os(DATABASE_ENV) {
-            Some(value) if !value.is_empty() => {
+        let configured_database = match env::var_os(DATABASE_ENV) {
+            Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
+            _ if env_flag(PRODUCTION_DATA_ENV) => Some(production_database_path()?),
+            _ => None,
+        };
+        let history = match configured_database {
+            Some(value) => {
                 let read_only = env_flag(DATABASE_READ_ONLY_ENV);
-                ensure_database_instance_guard(Path::new(&value))?;
-                ClipboardHistory::open_sqlite(value, read_only)
-                    .map_err(|error| format!("{DATABASE_ENV}: {error}"))?
+                ensure_database_instance_guard(&value)?;
+                ClipboardHistory::open_sqlite(&value, read_only)
+                    .map_err(|error| format!("{}: {error}", value.display()))?
             }
             _ => ClipboardHistory::synthetic(),
         };
 
         Ok(Self::wrap(history))
     }
+}
+
+fn production_database_path() -> Result<PathBuf, String> {
+    let roaming_app_data = env::var_os("APPDATA")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{PRODUCTION_DATA_ENV}: APPDATA is unavailable"))?;
+    let default_app_dir = PathBuf::from(roaming_app_data).join("com.tiez");
+    let executable_path = env::current_exe().ok();
+    let data_dir = resolve_data_directory(&default_app_dir, executable_path.as_deref());
+    Ok(data_dir.path.join("clipboard.db"))
 }
 
 fn ensure_database_instance_guard(database_path: &Path) -> Result<(), String> {

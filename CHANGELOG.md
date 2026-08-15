@@ -17,6 +17,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
+- Tauri and the WinUI candidate now share the same default, redirected, and portable data-directory selection policy; WinUI can opt into the production directory with `TIEZ_WINUI_USE_PRODUCTION_DATA=1` while synthetic data remains the safe default.
 - WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
 
 - Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
