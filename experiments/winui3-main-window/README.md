@@ -460,7 +460,8 @@ window should call, and which extraction phase owns it.
 | WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 11 + write-only secret and read-only `PROPFIND` | 5 (connected) |
 | WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
 | Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
-| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | Tauri-independent database/conflict runner still required; no `AppHandle` may cross the ABI | 5 (remaining) |
+| Cloud-sync runner host boundary | Tauri `AppHandle`, repositories, settings, emoji and events | shared `tiez-core::cloud_sync_runner::CloudSyncHost`; typed runtime state/events and bounded remote planning, with no window handle in the port | 5 (defined) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | implement the shared runner against the defined host boundary; no `AppHandle` may cross the ABI | 5 (remaining) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Emoji, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 

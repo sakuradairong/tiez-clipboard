@@ -27,6 +27,11 @@ use tiez_core::cloud_sync_protocol::{
     WebDavDeviceHead, WebDavDeviceSnapshot, WebDavOpsBatch, WebDavSettingsSnapshot, WebDavSyncHead,
     HASH_VERSION_LEGACY, HASH_VERSION_WHITESPACE,
 };
+use tiez_core::cloud_sync_runner::{
+    should_pull_snapshot as shared_should_pull_snapshot,
+    should_run_periodic_snapshot as shared_should_run_periodic_snapshot,
+    update_head_device as shared_update_head_device,
+};
 use tiez_core::cloud_sync_webdav::{
     build_webdav_http_client_with_timeout, collection_url as shared_webdav_collection_url,
     fetch_json_with_retry as shared_fetch_webdav_json,
@@ -2640,8 +2645,7 @@ fn update_webdav_head_device<F>(head: &mut WebDavSyncHead, device_id: &str, mut 
 where
     F: FnMut(&mut WebDavDeviceHead),
 {
-    let entry = head.devices.entry(device_id.to_string()).or_default();
-    update(entry);
+    shared_update_head_device(head, device_id, |device| update(device));
 }
 
 async fn fetch_webdav_sync_head(
@@ -2933,10 +2937,7 @@ async fn cleanup_local_webdav_ops(
 }
 
 fn should_run_periodic_snapshot(last_ts: i64, now: i64, interval_secs: i64) -> bool {
-    if last_ts <= 0 {
-        return true;
-    }
-    now.saturating_sub(last_ts) >= interval_secs.saturating_mul(1000)
+    shared_should_run_periodic_snapshot(last_ts, now, interval_secs)
 }
 
 fn should_push_webdav_snapshot(app: &AppHandle, now: i64, snapshot_interval_secs: i64) -> bool {
@@ -2951,11 +2952,13 @@ fn should_pull_webdav_snapshot(
     snapshot_interval_secs: i64,
 ) -> bool {
     let last = get_setting_i64(app, CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY, 0);
-    if !has_remote_op_cursor {
-        // Cold-start fallback for new peers without op cursors yet.
-        return should_run_periodic_snapshot(last, now, (5 * 60).min(snapshot_interval_secs));
-    }
-    should_run_periodic_snapshot(last, now, snapshot_interval_secs)
+    shared_should_pull_snapshot(
+        false,
+        last,
+        now,
+        has_remote_op_cursor,
+        snapshot_interval_secs,
+    )
 }
 
 async fn pull_remote_webdav_ops(

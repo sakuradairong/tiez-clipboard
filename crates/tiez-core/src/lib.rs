@@ -3,8 +3,9 @@
 pub mod backup;
 pub mod clipboard_capture;
 pub mod clipboard_history;
-pub mod cloud_sync_settings;
 pub mod cloud_sync_protocol;
+pub mod cloud_sync_runner;
+pub mod cloud_sync_settings;
 pub mod cloud_sync_webdav;
 pub mod content_identity;
 pub mod content_opening;
