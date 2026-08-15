@@ -85,7 +85,10 @@ function Write-Template {
         [Parameter(Mandatory)][hashtable]$Values
     )
 
-    $content = Get-Content -LiteralPath $Template -Raw
+    $content = [System.IO.File]::ReadAllText(
+        $Template,
+        [System.Text.Encoding]::UTF8
+    )
     foreach ($entry in $Values.GetEnumerator()) {
         $content = $content.Replace("{{$($entry.Key)}}", (Escape-Xml ([string]$entry.Value)))
     }
@@ -221,7 +224,10 @@ try {
         $unpackOutput | Write-Host
         throw "MakeAppx could not unpack the generated MSIX package."
     }
-    [xml]$packedManifest = Get-Content (Join-Path $ValidationDirectory "AppxManifest.xml") -Raw
+    [xml]$packedManifest = [System.IO.File]::ReadAllText(
+        (Join-Path $ValidationDirectory "AppxManifest.xml"),
+        [System.Text.Encoding]::UTF8
+    )
     $packedIdentity = $packedManifest.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Identity']")
     if (-not $packedIdentity -or
         $packedIdentity.GetAttribute("Name") -ne $IdentityName -or

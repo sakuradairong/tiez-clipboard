@@ -72,6 +72,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- WinUI MSIX packaging now reads its UTF-8 manifest and App Installer templates explicitly, preventing Windows PowerShell 5.1 from corrupting Chinese metadata and producing an invalid package manifest.
 - The native SQLite cloud-sync host now inlines local rich-HTML images before upload and safely removes tombstoned managed attachments only when no clipboard or emoji reference remains.
 - `emoji_sync` now uses the same stable text payload hash as the legacy Tauri runner, so native favorites are uploaded once and exact remote payloads can suppress echo uploads.
 - The WinUI build and MSIX packaging helpers now run release-version validation from the repository root, so their documented invocations also work from inside `experiments/winui3-main-window`.
