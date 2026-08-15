@@ -2335,6 +2335,281 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::SetCloudSyncBusy(bool busy, winrt::hstring const& message)
+    {
+        m_cloudSyncBusy = busy;
+        auto const editable = !busy && !m_settingsReadOnly;
+        if (m_cloudSyncEnabledToggle) m_cloudSyncEnabledToggle.IsEnabled(editable);
+        if (m_cloudSyncAutoToggle) m_cloudSyncAutoToggle.IsEnabled(editable);
+        if (m_cloudSyncUrlText) m_cloudSyncUrlText.IsEnabled(editable);
+        if (m_cloudSyncUsernameText) m_cloudSyncUsernameText.IsEnabled(editable);
+        if (m_cloudSyncPasswordBox) m_cloudSyncPasswordBox.IsEnabled(editable);
+        if (m_cloudSyncBasePathText) m_cloudSyncBasePathText.IsEnabled(editable);
+        if (m_cloudSyncIntervalNumber) m_cloudSyncIntervalNumber.IsEnabled(editable);
+        if (m_cloudSyncSnapshotIntervalNumber)
+        {
+            m_cloudSyncSnapshotIntervalNumber.IsEnabled(editable);
+        }
+        if (m_cloudSyncTextToggle) m_cloudSyncTextToggle.IsEnabled(editable);
+        if (m_cloudSyncImageToggle) m_cloudSyncImageToggle.IsEnabled(editable);
+        if (m_cloudSyncFileToggle) m_cloudSyncFileToggle.IsEnabled(editable);
+        if (m_cloudSyncEmojiToggle) m_cloudSyncEmojiToggle.IsEnabled(editable);
+        if (m_cloudSyncSaveButton) m_cloudSyncSaveButton.IsEnabled(editable);
+        if (m_cloudSyncProbeButton) m_cloudSyncProbeButton.IsEnabled(!busy);
+        if (m_cloudSyncClearPasswordButton)
+        {
+            m_cloudSyncClearPasswordButton.IsEnabled(
+                editable && m_cloudSyncPasswordConfigured);
+        }
+        if (m_cloudSyncProgress)
+        {
+            m_cloudSyncProgress.IsActive(busy);
+            m_cloudSyncProgress.Visibility(
+                busy ? Visibility::Visible : Visibility::Collapsed);
+        }
+        if (m_cloudSyncStatus && !message.empty())
+        {
+            m_cloudSyncStatus.Text(message);
+        }
+    }
+
+    void MainWindow::LoadCloudSyncSettings()
+    {
+        if (!m_core || !m_cloudSyncEnabledToggle)
+        {
+            return;
+        }
+
+        auto const value = m_core->CloudSyncSettings();
+        auto const root = JsonObject::Parse(
+            tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+        auto const preferences = root.GetNamedObject(L"content_prefs");
+        m_cloudSyncPasswordConfigured = root.GetNamedBoolean(
+            L"password_configured",
+            false);
+        m_cloudSyncEnabledToggle.IsOn(root.GetNamedBoolean(L"enabled", false));
+        m_cloudSyncAutoToggle.IsOn(root.GetNamedBoolean(L"auto_sync", true));
+        m_cloudSyncUrlText.Text(root.GetNamedString(L"webdav_url", L""));
+        m_cloudSyncUsernameText.Text(root.GetNamedString(L"webdav_username", L""));
+        m_cloudSyncPasswordBox.Password(L"");
+        m_cloudSyncBasePathText.Text(root.GetNamedString(
+            L"webdav_base_path",
+            L"tiez-sync"));
+        m_cloudSyncIntervalNumber.Value(root.GetNamedNumber(L"interval_secs", 120));
+        m_cloudSyncSnapshotIntervalNumber.Value(root.GetNamedNumber(
+            L"snapshot_interval_min",
+            720));
+        m_cloudSyncTextToggle.IsOn(preferences.GetNamedBoolean(L"text", true));
+        m_cloudSyncImageToggle.IsOn(preferences.GetNamedBoolean(L"image", true));
+        m_cloudSyncFileToggle.IsOn(preferences.GetNamedBoolean(L"file_path", true));
+        m_cloudSyncEmojiToggle.IsOn(preferences.GetNamedBoolean(L"emoji", true));
+
+        std::wstring status;
+        auto const url = m_cloudSyncUrlText.Text();
+        if (url.empty())
+        {
+            status = L"尚未配置 WebDAV 地址。保存密码后，原生界面只会显示“已配置”，不会回读密码。";
+        }
+        else
+        {
+            status = m_cloudSyncPasswordConfigured
+                ? L"WebDAV 密码已配置且保持只写；"
+                : L"尚未保存 WebDAV 密码；";
+            status.append(root.GetNamedBoolean(L"secure_transport", false)
+                ? L"当前地址使用 HTTPS。"
+                : L"当前旧配置不是 HTTPS，原生界面将拒绝保存或连接。");
+        }
+        if (root.GetNamedBoolean(L"read_only", false))
+        {
+            status.append(L" 当前数据库为只读，只能测试已保存的配置。");
+        }
+        SetCloudSyncBusy(m_cloudSyncBusy, winrt::hstring{ status });
+    }
+
+    bool MainWindow::SaveCloudSyncSettings(bool clearPassword)
+    {
+        if (!m_core || m_settingsReadOnly || m_cloudSyncBusy)
+        {
+            SetStatus(m_settingsReadOnly
+                ? L"当前数据库以只读方式打开，无法保存云同步设置。"
+                : L"云同步设置当前不可保存。");
+            return false;
+        }
+        if (!std::isfinite(m_cloudSyncIntervalNumber.Value())
+            || !std::isfinite(m_cloudSyncSnapshotIntervalNumber.Value()))
+        {
+            SetCloudSyncBusy(false, L"同步间隔必须是有效数字。");
+            return false;
+        }
+
+        try
+        {
+            JsonObject request;
+            request.SetNamedValue(
+                L"enabled",
+                JsonValue::CreateBooleanValue(m_cloudSyncEnabledToggle.IsOn()));
+            request.SetNamedValue(
+                L"auto_sync",
+                JsonValue::CreateBooleanValue(m_cloudSyncAutoToggle.IsOn()));
+            request.SetNamedValue(
+                L"webdav_url",
+                JsonValue::CreateStringValue(m_cloudSyncUrlText.Text()));
+            request.SetNamedValue(
+                L"webdav_username",
+                JsonValue::CreateStringValue(m_cloudSyncUsernameText.Text()));
+            request.SetNamedValue(
+                L"clear_password",
+                JsonValue::CreateBooleanValue(clearPassword));
+            request.SetNamedValue(
+                L"webdav_base_path",
+                JsonValue::CreateStringValue(m_cloudSyncBasePathText.Text()));
+            request.SetNamedValue(
+                L"interval_secs",
+                JsonValue::CreateNumberValue(static_cast<double>(std::llround(
+                    m_cloudSyncIntervalNumber.Value()))));
+            request.SetNamedValue(
+                L"snapshot_interval_min",
+                JsonValue::CreateNumberValue(static_cast<double>(std::llround(
+                    m_cloudSyncSnapshotIntervalNumber.Value()))));
+            auto const password = m_cloudSyncPasswordBox.Password();
+            if (!clearPassword && !password.empty())
+            {
+                request.SetNamedValue(
+                    L"webdav_password",
+                    JsonValue::CreateStringValue(password));
+            }
+
+            JsonObject preferences;
+            preferences.SetNamedValue(
+                L"text",
+                JsonValue::CreateBooleanValue(m_cloudSyncTextToggle.IsOn()));
+            preferences.SetNamedValue(
+                L"image",
+                JsonValue::CreateBooleanValue(m_cloudSyncImageToggle.IsOn()));
+            preferences.SetNamedValue(
+                L"file_path",
+                JsonValue::CreateBooleanValue(m_cloudSyncFileToggle.IsOn()));
+            preferences.SetNamedValue(
+                L"emoji",
+                JsonValue::CreateBooleanValue(m_cloudSyncEmojiToggle.IsOn()));
+            request.SetNamedValue(L"content_prefs", preferences);
+
+            auto const response = m_core->UpdateCloudSyncSettings(
+                winrt::to_string(request.Stringify()));
+            auto const root = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+            m_cloudSyncPasswordConfigured = root.GetNamedBoolean(
+                L"password_configured",
+                false);
+            m_cloudSyncPasswordBox.Password(L"");
+            auto const message = clearPassword
+                ? L"WebDAV 密码已从 TieZ 设置中清除。"
+                : m_cloudSyncPasswordConfigured
+                    ? L"云同步设置已保存；密码保持只写，不会显示在界面中。"
+                    : L"云同步设置已保存；当前没有已保存的密码。";
+            SetCloudSyncBusy(false, message);
+            SetStatus(message);
+            return true;
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"保存云同步设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetCloudSyncBusy(false, message);
+            SetStatus(message);
+            return false;
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ProbeCloudSyncAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_cloudSyncBusy)
+        {
+            co_return;
+        }
+        if (!m_settingsReadOnly && !SaveCloudSyncSettings(false))
+        {
+            co_return;
+        }
+
+        SetCloudSyncBusy(true, L"正在以只读 PROPFIND 测试 WebDAV 地址和凭据……");
+        auto const uiThread = winrt::apartment_context{};
+        std::string response;
+        std::string failure;
+        co_await winrt::resume_background();
+        try
+        {
+            response = m_core->ProbeCloudSync();
+        }
+        catch (std::exception const& error)
+        {
+            failure = error.what();
+        }
+        try
+        {
+            co_await uiThread;
+        }
+        catch (...)
+        {
+            co_return;
+        }
+
+        if (!failure.empty())
+        {
+            auto const message = StatusMessage(
+                L"WebDAV 连接测试失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(failure));
+            SetCloudSyncBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        try
+        {
+            auto const root = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+            auto const reachable = root.GetNamedBoolean(L"reachable", false);
+            auto const statusValue = root.GetNamedValue(L"status_code");
+            auto const statusCode = statusValue.ValueType() == JsonValueType::Number
+                ? static_cast<int>(statusValue.GetNumber())
+                : 0;
+            std::wstring message;
+            if (reachable)
+            {
+                message = L"WebDAV 连接成功；地址和凭据可用，测试期间未写入远端数据。";
+            }
+            else if (statusCode == 401 || statusCode == 403)
+            {
+                message = L"WebDAV 已响应，但拒绝了当前用户名或密码。";
+            }
+            else if (statusCode >= 300 && statusCode < 400)
+            {
+                message = L"WebDAV 返回重定向。为防止凭据跨站发送，请保存重定向后的最终 HTTPS 地址。";
+            }
+            else
+            {
+                message = L"WebDAV 已响应，但未通过连通性检查";
+                if (statusCode > 0)
+                {
+                    message.append(L"（HTTP ");
+                    message.append(std::to_wstring(statusCode));
+                    message.append(L"）");
+                }
+                message.append(L"。");
+            }
+            SetCloudSyncBusy(false, winrt::hstring{ message });
+            SetStatus(winrt::hstring{ message });
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法读取连接测试结果：", error.message());
+            SetCloudSyncBusy(false, message);
+            SetStatus(message);
+        }
+    }
+
     void MainWindow::SetUpdateBusy(bool busy, winrt::hstring const& message)
     {
         m_updateBusy = busy;
@@ -2554,6 +2829,140 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_settingsPanel.Children().Append(m_captureFilesToggle);
         m_settingsPanel.Children().Append(m_captureRichTextToggle);
         m_settingsPanel.Children().Append(m_privacyProtectionToggle);
+
+        TextBlock cloudSyncTitle;
+        cloudSyncTitle.Text(L"云同步（WebDAV）");
+        cloudSyncTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(cloudSyncTitle);
+
+        TextBlock cloudSyncDescription;
+        cloudSyncDescription.Text(
+            L"原生界面使用与旧版完全相同的数据库设置键。密码只允许写入或清除，不会从 Rust 边界返回；连接测试只发送 PROPFIND，不创建目录、不上传剪贴板。远程地址必须使用 HTTPS。");
+        cloudSyncDescription.TextWrapping(TextWrapping::Wrap);
+        cloudSyncDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(cloudSyncDescription);
+
+        m_cloudSyncEnabledToggle = SettingToggle(
+            L"启用云同步",
+            L"保存与旧版兼容的启用状态；完整后台同步运行器仍在迁移中。");
+        m_cloudSyncAutoToggle = SettingToggle(
+            L"自动同步",
+            L"后台运行器接入后按下面的时间间隔自动同步。");
+        m_settingsPanel.Children().Append(m_cloudSyncEnabledToggle);
+        m_settingsPanel.Children().Append(m_cloudSyncAutoToggle);
+
+        m_cloudSyncUrlText = TextBox();
+        m_cloudSyncUrlText.Header(winrt::box_value(L"WebDAV HTTPS 地址"));
+        m_cloudSyncUrlText.PlaceholderText(
+            L"https://dav.example.com/remote.php/dav/files/用户名");
+        AutomationProperties::SetName(m_cloudSyncUrlText, L"WebDAV HTTPS 地址");
+        m_settingsPanel.Children().Append(m_cloudSyncUrlText);
+
+        m_cloudSyncUsernameText = TextBox();
+        m_cloudSyncUsernameText.Header(winrt::box_value(L"WebDAV 用户名"));
+        AutomationProperties::SetName(m_cloudSyncUsernameText, L"WebDAV 用户名");
+        m_settingsPanel.Children().Append(m_cloudSyncUsernameText);
+
+        m_cloudSyncPasswordBox = PasswordBox();
+        m_cloudSyncPasswordBox.Header(winrt::box_value(L"WebDAV 密码或应用专用密码"));
+        m_cloudSyncPasswordBox.PlaceholderText(L"留空表示保留已保存密码");
+        m_cloudSyncPasswordBox.PasswordRevealMode(PasswordRevealMode::Peek);
+        AutomationProperties::SetName(m_cloudSyncPasswordBox, L"WebDAV 密码");
+        m_settingsPanel.Children().Append(m_cloudSyncPasswordBox);
+
+        m_cloudSyncBasePathText = TextBox();
+        m_cloudSyncBasePathText.Header(winrt::box_value(L"远端同步目录"));
+        m_cloudSyncBasePathText.PlaceholderText(L"tiez-sync");
+        AutomationProperties::SetName(m_cloudSyncBasePathText, L"WebDAV 同步目录");
+        m_settingsPanel.Children().Append(m_cloudSyncBasePathText);
+
+        m_cloudSyncIntervalNumber = NumberBox();
+        m_cloudSyncIntervalNumber.Header(winrt::box_value(L"自动同步间隔（秒）"));
+        m_cloudSyncIntervalNumber.Minimum(5);
+        m_cloudSyncIntervalNumber.Maximum(3600);
+        m_cloudSyncIntervalNumber.SmallChange(5);
+        m_cloudSyncIntervalNumber.SpinButtonPlacementMode(
+            NumberBoxSpinButtonPlacementMode::Inline);
+        AutomationProperties::SetName(m_cloudSyncIntervalNumber, L"自动同步间隔秒数");
+        m_settingsPanel.Children().Append(m_cloudSyncIntervalNumber);
+
+        m_cloudSyncSnapshotIntervalNumber = NumberBox();
+        m_cloudSyncSnapshotIntervalNumber.Header(winrt::box_value(L"完整快照间隔（分钟）"));
+        m_cloudSyncSnapshotIntervalNumber.Minimum(5);
+        m_cloudSyncSnapshotIntervalNumber.Maximum(1440);
+        m_cloudSyncSnapshotIntervalNumber.SmallChange(5);
+        m_cloudSyncSnapshotIntervalNumber.SpinButtonPlacementMode(
+            NumberBoxSpinButtonPlacementMode::Inline);
+        AutomationProperties::SetName(
+            m_cloudSyncSnapshotIntervalNumber,
+            L"完整快照间隔分钟数");
+        m_settingsPanel.Children().Append(m_cloudSyncSnapshotIntervalNumber);
+
+        TextBlock cloudContentTitle;
+        cloudContentTitle.Text(L"同步内容");
+        cloudContentTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        m_settingsPanel.Children().Append(cloudContentTitle);
+        m_cloudSyncTextToggle = SettingToggle(L"文本、代码、链接和富文本", L"");
+        m_cloudSyncImageToggle = SettingToggle(L"图片", L"");
+        m_cloudSyncFileToggle = SettingToggle(L"文件与视频路径", L"");
+        m_cloudSyncEmojiToggle = SettingToggle(L"表情收藏", L"");
+        m_settingsPanel.Children().Append(m_cloudSyncTextToggle);
+        m_settingsPanel.Children().Append(m_cloudSyncImageToggle);
+        m_settingsPanel.Children().Append(m_cloudSyncFileToggle);
+        m_settingsPanel.Children().Append(m_cloudSyncEmojiToggle);
+
+        StackPanel cloudSyncActions;
+        cloudSyncActions.Orientation(Orientation::Horizontal);
+        cloudSyncActions.Spacing(8);
+        m_cloudSyncSaveButton = Button();
+        m_cloudSyncSaveButton.Content(winrt::box_value(L"保存云同步设置"));
+        AutomationProperties::SetName(m_cloudSyncSaveButton, L"保存云同步设置");
+        m_cloudSyncProbeButton = Button();
+        m_cloudSyncProbeButton.Content(winrt::box_value(L"测试连接"));
+        AutomationProperties::SetName(m_cloudSyncProbeButton, L"测试 WebDAV 连接");
+        m_cloudSyncClearPasswordButton = Button();
+        m_cloudSyncClearPasswordButton.Content(winrt::box_value(L"清除密码"));
+        AutomationProperties::SetName(m_cloudSyncClearPasswordButton, L"清除 WebDAV 密码");
+        m_cloudSyncProgress = ProgressRing();
+        m_cloudSyncProgress.Width(22);
+        m_cloudSyncProgress.Height(22);
+        m_cloudSyncProgress.IsActive(false);
+        m_cloudSyncProgress.Visibility(Visibility::Collapsed);
+        cloudSyncActions.Children().Append(m_cloudSyncSaveButton);
+        cloudSyncActions.Children().Append(m_cloudSyncProbeButton);
+        cloudSyncActions.Children().Append(m_cloudSyncClearPasswordButton);
+        cloudSyncActions.Children().Append(m_cloudSyncProgress);
+        m_settingsPanel.Children().Append(cloudSyncActions);
+
+        m_cloudSyncStatus = TextBlock();
+        m_cloudSyncStatus.TextWrapping(TextWrapping::Wrap);
+        m_cloudSyncStatus.IsTextSelectionEnabled(true);
+        m_cloudSyncStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_cloudSyncStatus, L"云同步状态");
+        m_settingsPanel.Children().Append(m_cloudSyncStatus);
+
+        m_cloudSyncSaveButton.Click([this](auto const&, auto const&)
+        {
+            (void)SaveCloudSyncSettings(false);
+        });
+        m_cloudSyncProbeButton.Click([this](auto const&, auto const&)
+        {
+            ProbeCloudSyncAsync();
+        });
+        m_cloudSyncClearPasswordButton.Click([this](auto const&, auto const&)
+        {
+            if (MessageBoxW(
+                GetWindowHandle(),
+                L"这会清除 TieZ 数据库中保存的 WebDAV 密码。地址、用户名和其他设置会保留。是否继续？",
+                L"确认清除 WebDAV 密码",
+                MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES)
+            {
+                (void)SaveCloudSyncSettings(true);
+            }
+        });
 
         TextBlock dataSafetyTitle;
         dataSafetyTitle.Text(L"数据安全");
@@ -2910,6 +3319,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             SetBackupBusy(m_backupBusy, backupMessage);
         }
         m_settingsLoading = false;
+        LoadCloudSyncSettings();
 
         ApplyColorMode(winrt::to_string(colorMode));
         ApplyPinnedWindow(pinned);

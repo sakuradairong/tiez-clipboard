@@ -24,6 +24,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v8 adds a shared, privacy-preserving open-content plan. The Chinese native UI can open trusted web links, existing files, UTF-8 text, rich text, and images through `ShellExecuteW` without command shells; dangerous URL schemes are rejected and custom protocols or local HTML require confirmation.
 - WinUI ABI v9 adds asynchronous Chinese backup export and restore controls backed by a shared `tiez-core` archive implementation. Both frontends now create and validate the same database/attachment archives, while WinUI applies scheduled restores before opening SQLite and retains a rollback copy.
 - WinUI ABI v10 adds shared OCR/QR image analysis, an asynchronous Chinese native details panel, result copying, and native history search over cached recognition text. The Tauri commands remain compatible wrappers over the same `tiez-core` implementation.
+- WinUI ABI v11 adds Tauri-compatible WebDAV settings, a write-only password field, and an asynchronous Chinese read-only connectivity test. Full background upload/download and conflict reconciliation remain on the native migration roadmap.
 - The Chinese WinUI settings dialog can check the current MSIX package's associated App Installer feed and hand available updates back to Windows for signed installation; unpackaged builds fail closed without contacting a hard-coded endpoint.
 - Native Windows CI now builds a versioned `TieZ.exe` and structurally validates a self-contained x64 MSIX. Release publishing requires a matching Publisher certificate, SHA256/RFC 3161 signing, package re-verification, and emits an App Installer update feed plus checksum.
 
@@ -47,6 +48,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Shared backup validation rejects undeclared or duplicate ZIP entries, unsafe paths, oversized payloads, invalid hashes, and checksum mismatches; failed pending restores are quarantined before either frontend opens SQLite.
 - Shared image analysis never persists OCR or QR results for sensitive/encrypted entries and rechecks the current row before writing, so a privacy-tag change during background recognition cannot leave a plaintext index behind.
 - Native update checks accept only the HTTPS App Installer URI associated with the installed package; Windows remains responsible for publisher-signature verification and applying the upgrade.
+- Native WebDAV setup never returns saved passwords through the ABI, commits compatible settings transactionally, requires HTTPS except for loopback tests, rejects credential-bearing URLs and redirects, and uses a read-only `PROPFIND` without writing remote data.
 - Native MSIX packaging disables AppData write virtualization and verifies the required capability so installed WinUI builds continue using the Tauri-compatible data directory instead of package-private clipboard history.
 
 ### Fixed

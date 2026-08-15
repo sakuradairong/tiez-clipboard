@@ -6264,6 +6264,7 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "regex",
+ "reqwest 0.12.28",
  "rqrr",
  "rusqlite",
  "serde",

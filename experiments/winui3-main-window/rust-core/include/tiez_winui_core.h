@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 10,
+    TIEZ_CORE_ABI_VERSION = 11,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -110,6 +110,21 @@ TIEZ_CORE_API char* tiez_core_update_setting_json(
     TiezCoreHandle* handle,
     const char* key_utf8,
     const char* value_utf8);
+
+// Returns WebDAV cloud-sync settings without returning stored passwords.
+TIEZ_CORE_API char* tiez_core_get_cloud_sync_settings_json(
+    TiezCoreHandle* handle);
+
+// Transactionally updates WebDAV settings from a UTF-8 JSON object. A password
+// can be replaced or explicitly cleared, but it is never echoed in the result.
+TIEZ_CORE_API char* tiez_core_update_cloud_sync_settings_json(
+    TiezCoreHandle* handle,
+    const char* request_json_utf8);
+
+// Performs a read-only PROPFIND against the configured endpoint. Redirects are
+// not followed and no remote collection or clipboard payload is written.
+TIEZ_CORE_API char* tiez_core_probe_cloud_sync_json(
+    TiezCoreHandle* handle);
 
 // History-changed notifications may arrive on a background worker thread.
 TIEZ_CORE_API void tiez_core_set_changed_callback(

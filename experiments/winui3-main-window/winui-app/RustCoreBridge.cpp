@@ -58,6 +58,12 @@ namespace tiez::probe
             m_settingsJson = Resolve<SettingsJsonFn>("tiez_core_get_settings_json");
             m_updateSettingJson = Resolve<UpdateSettingJsonFn>(
                 "tiez_core_update_setting_json");
+            m_cloudSyncSettingsJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_cloud_sync_settings_json");
+            m_updateCloudSyncSettingsJson = Resolve<JsonRequestFn>(
+                "tiez_core_update_cloud_sync_settings_json");
+            m_probeCloudSyncJson = Resolve<SettingsJsonFn>(
+                "tiez_core_probe_cloud_sync_json");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -259,6 +265,41 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust setting update failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::CloudSyncSettings() const
+    {
+        auto* result = m_cloudSyncSettingsJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust cloud-sync settings lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateCloudSyncSettings(
+        std::string_view requestJson) const
+    {
+        std::string request{ requestJson };
+        auto* result = m_updateCloudSyncSettingsJson(m_handle, request.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust cloud-sync settings update failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ProbeCloudSync() const
+    {
+        auto* result = m_probeCloudSyncJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust cloud-sync probe failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

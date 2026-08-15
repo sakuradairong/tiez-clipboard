@@ -17,16 +17,18 @@ experiments/winui3-main-window
 This is a production-intended, mutually exclusive WinUI candidate. Release
 builds use the Tauri-compatible data directory by default; synthetic and copied
 read-only adapters remain available for diagnostics. Never run WinUI and Tauri
-against the same live database. Cloud sync, file transfer, and some
+against the same live database. WebDAV setup and safe connectivity probing are
+connected, but the background cloud-sync runner, file transfer, and some
 secondary surfaces are not yet parity-complete, so do not make WinUI the default
 installed entry during this validation.
 
 Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
-2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v10;
+2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v11;
 3. verify Chinese-first search/details, tags, pin ordering, capture, copy/paste,
-   safe opening, settings, compact preview, backup/restore, and OCR/QR analysis;
+   safe opening, settings, compact preview, backup/restore, OCR/QR analysis,
+   and WebDAV setup/read-only connectivity testing;
 4. verify the copied production-history adapter is genuinely read-only and the
    writable adapter remains schema/data compatible with Tauri;
 5. verify sensitive/encrypted payloads and recognition results stay protected;
@@ -88,6 +90,9 @@ Required negative tests:
    error without a crash; clear it afterward.
 8. open details for a synthetic entry, delete it, and verify the list refreshes
    without crashing or corrupting the native details panel.
+9. verify the WebDAV password is never displayed, blank preserves it, explicit
+   clear requires confirmation, non-loopback HTTP is rejected, and the test
+   action reports a Chinese result without blocking the UI or writing remotely.
 
 Evidence to save under:
 

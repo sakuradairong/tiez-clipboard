@@ -3,8 +3,9 @@
 pub mod backup;
 pub mod clipboard_capture;
 pub mod clipboard_history;
-pub mod content_opening;
+pub mod cloud_sync_settings;
 pub mod content_identity;
+pub mod content_opening;
 pub mod data_directory;
 pub mod database_bootstrap;
 pub mod database_migrations;

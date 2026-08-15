@@ -32,6 +32,10 @@ namespace tiez::probe
         [[nodiscard]] std::string UpdateSetting(
             std::string_view key,
             std::string_view value) const;
+        [[nodiscard]] std::string CloudSyncSettings() const;
+        [[nodiscard]] std::string UpdateCloudSyncSettings(
+            std::string_view requestJson) const;
+        [[nodiscard]] std::string ProbeCloudSync() const;
         void SetChangedCallback(TiezChangedCallback callback, void* userData) const;
         bool StartCapture() const;
         [[nodiscard]] std::uint32_t AbiVersion() const noexcept;
@@ -52,6 +56,7 @@ namespace tiez::probe
         using UpdatePinnedOrderJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using SettingsJsonFn = char*(__cdecl*)(TiezCoreHandle*);
         using UpdateSettingJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*, char const*);
+        using JsonRequestFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using SetChangedCallbackFn = void(__cdecl*)(TiezCoreHandle*, TiezChangedCallback, void*);
         using StartCaptureFn = bool(__cdecl*)(TiezCoreHandle*);
         using TakeLastErrorFn = char*(__cdecl*)();
@@ -82,6 +87,9 @@ namespace tiez::probe
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};
         UpdateSettingJsonFn m_updateSettingJson{};
+        SettingsJsonFn m_cloudSyncSettingsJson{};
+        JsonRequestFn m_updateCloudSyncSettingsJson{};
+        SettingsJsonFn m_probeCloudSyncJson{};
         SetChangedCallbackFn m_setChangedCallback{};
         StartCaptureFn m_startCapture{};
         TakeLastErrorFn m_takeLastError{};

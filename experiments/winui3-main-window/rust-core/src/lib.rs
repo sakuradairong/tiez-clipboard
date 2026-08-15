@@ -21,6 +21,10 @@ use tiez_core::clipboard_capture::{
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
 };
+use tiez_core::cloud_sync_settings::{
+    CloudSyncProbeResult, CloudSyncSettings, CloudSyncSettingsMutation, CloudSyncSettingsSnapshot,
+    CloudSyncSettingsUpdate,
+};
 use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
@@ -35,7 +39,7 @@ mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
-const ABI_VERSION: u32 = 10;
+const ABI_VERSION: u32 = 11;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -65,6 +69,7 @@ pub(crate) struct TiezCoreInner {
 #[repr(C)]
 pub struct TiezCoreHandle {
     inner: Arc<TiezCoreInner>,
+    cloud_settings: Mutex<CloudSyncSettings>,
     session: Mutex<Option<win32_capture::Session>>,
 }
 
@@ -75,6 +80,14 @@ impl TiezCoreHandle {
     }
 
     fn wrap_with_settings(history: ClipboardHistory, settings: NativeSettings) -> Self {
+        Self::wrap_with_adapters(history, settings, CloudSyncSettings::in_memory())
+    }
+
+    fn wrap_with_adapters(
+        history: ClipboardHistory,
+        settings: NativeSettings,
+        cloud_settings: CloudSyncSettings,
+    ) -> Self {
         Self {
             inner: Arc::new(TiezCoreInner {
                 history: Mutex::new(history),
@@ -82,6 +95,7 @@ impl TiezCoreHandle {
                 capture: Mutex::new(CaptureFilter::new()),
                 changed: Mutex::new(None),
             }),
+            cloud_settings: Mutex::new(cloud_settings),
             session: Mutex::new(None),
         }
     }
@@ -94,7 +108,7 @@ impl TiezCoreHandle {
             _ if use_production_data => Some(production_database_path()?),
             _ => None,
         };
-        let (history, settings) = match configured_database {
+        let (history, settings, cloud_settings) = match configured_database {
             Some(value) => {
                 let read_only = env_flag(DATABASE_READ_ONLY_ENV);
                 ensure_database_instance_guard(&value)?;
@@ -105,12 +119,18 @@ impl TiezCoreHandle {
                     .map_err(|error| format!("{}: {error}", value.display()))?;
                 let settings = NativeSettings::open_sqlite(&value, read_only)
                     .map_err(|error| format!("{}: {error}", value.display()))?;
-                (history, settings)
+                let cloud_settings = CloudSyncSettings::open_sqlite(&value, read_only)
+                    .map_err(|error| format!("{}: {error}", value.display()))?;
+                (history, settings, cloud_settings)
             }
-            _ => (ClipboardHistory::synthetic(), NativeSettings::in_memory()),
+            _ => (
+                ClipboardHistory::synthetic(),
+                NativeSettings::in_memory(),
+                CloudSyncSettings::in_memory(),
+            ),
         };
 
-        Ok(Self::wrap_with_settings(history, settings))
+        Ok(Self::wrap_with_adapters(history, settings, cloud_settings))
     }
 }
 
@@ -205,6 +225,27 @@ struct SettingMutationResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct CloudSyncSettingsResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a CloudSyncSettingsSnapshot,
+}
+
+#[derive(Serialize)]
+struct CloudSyncSettingsMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a CloudSyncSettingsMutation,
+}
+
+#[derive(Serialize)]
+struct CloudSyncProbeResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a CloudSyncProbeResult,
+}
+
+#[derive(Serialize)]
 struct OpenContentResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -267,6 +308,32 @@ fn setting_mutation_json(mutation: &NativeSettingMutation) -> Result<String, Str
         mutation,
     })
     .map_err(|error| format!("failed to serialize native setting mutation: {error}"))
+}
+
+fn cloud_sync_settings_json(snapshot: &CloudSyncSettingsSnapshot) -> Result<String, String> {
+    serde_json::to_string(&CloudSyncSettingsResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize cloud-sync settings: {error}"))
+}
+
+fn cloud_sync_settings_mutation_json(
+    mutation: &CloudSyncSettingsMutation,
+) -> Result<String, String> {
+    serde_json::to_string(&CloudSyncSettingsMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("failed to serialize cloud-sync settings mutation: {error}"))
+}
+
+fn cloud_sync_probe_json(result: &CloudSyncProbeResult) -> Result<String, String> {
+    serde_json::to_string(&CloudSyncProbeResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+    .map_err(|error| format!("failed to serialize cloud-sync probe result: {error}"))
 }
 
 fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
@@ -438,6 +505,38 @@ fn update_native_setting(
         .lock()
         .map_err(|_| "NativeSettings lock is poisoned".to_owned())?
         .update(key, value)
+        .map_err(|error| error.to_string())
+}
+
+fn cloud_sync_settings_snapshot(
+    handle: &TiezCoreHandle,
+) -> Result<CloudSyncSettingsSnapshot, String> {
+    handle
+        .cloud_settings
+        .lock()
+        .map_err(|_| "CloudSyncSettings lock is poisoned".to_owned())?
+        .snapshot()
+        .map_err(|error| error.to_string())
+}
+
+fn update_cloud_sync_settings(
+    handle: &TiezCoreHandle,
+    update: CloudSyncSettingsUpdate,
+) -> Result<CloudSyncSettingsMutation, String> {
+    handle
+        .cloud_settings
+        .lock()
+        .map_err(|_| "CloudSyncSettings lock is poisoned".to_owned())?
+        .update(update)
+        .map_err(|error| error.to_string())
+}
+
+fn probe_cloud_sync(handle: &TiezCoreHandle) -> Result<CloudSyncProbeResult, String> {
+    handle
+        .cloud_settings
+        .lock()
+        .map_err(|_| "CloudSyncSettings lock is poisoned".to_owned())?
+        .probe_webdav()
         .map_err(|error| error.to_string())
 }
 
@@ -1012,6 +1111,62 @@ pub unsafe extern "C" fn tiez_core_update_setting_json(
 }
 
 #[no_mangle]
+/// Return cloud-sync configuration without exposing stored credentials.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_cloud_sync_settings_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = cloud_sync_settings_snapshot(handle)?;
+        into_owned_c_string(cloud_sync_settings_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Transactionally update WebDAV settings. Passwords are write-only.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `request_json_utf8` must be a readable, NUL-terminated UTF-8 JSON object.
+pub unsafe extern "C" fn tiez_core_update_cloud_sync_settings_json(
+    handle: *mut TiezCoreHandle,
+    request_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let request_json = required_utf8(request_json_utf8, "request_json_utf8")?;
+        let update = serde_json::from_str::<CloudSyncSettingsUpdate>(&request_json)
+            .map_err(|error| format!("request_json_utf8 must be cloud settings JSON: {error}"))?;
+        let mutation = update_cloud_sync_settings(handle, update)?;
+        into_owned_c_string(cloud_sync_settings_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Probe the configured WebDAV endpoint with a read-only `PROPFIND` request.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_probe_cloud_sync_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let result = probe_cloud_sync(handle)?;
+        into_owned_c_string(cloud_sync_probe_json(&result)?)
+    })
+}
+
+#[no_mangle]
 /// Register a history-changed callback. Pass a null callback to clear it.
 ///
 /// The callback may run on a background clipboard worker thread. The C++
@@ -1088,8 +1243,10 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `tiez_core_schedule_restore_json`, `tiez_core_apply_action_json`,
 /// `tiez_core_update_tags_json`, or
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
-/// `tiez_core_update_setting_json`, or `tiez_core_take_last_error`. A non-null
-/// pointer must be transferred to this function exactly once.
+/// `tiez_core_update_setting_json`, `tiez_core_get_cloud_sync_settings_json`,
+/// `tiez_core_update_cloud_sync_settings_json`,
+/// `tiez_core_probe_cloud_sync_json`, or `tiez_core_take_last_error`. A
+/// non-null pointer must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
         if value.is_null() {
@@ -1170,7 +1327,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":10"));
+        assert!(json.contains("\"abi_version\":11"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -1221,7 +1378,7 @@ mod tests {
         let json = image_analysis_json(Some(&analysis)).unwrap();
         let empty = image_analysis_json(None).unwrap();
 
-        assert!(json.contains("\"abi_version\":10"));
+        assert!(json.contains("\"abi_version\":11"));
         assert!(json.contains("\"analysis\":{\"text\":\"识别文字\""));
         assert!(json.contains("\"qrCodes\":[\"https://example.com/pay\"]"));
         assert!(json.contains("\"analyzedAt\":42"));
@@ -1239,7 +1396,7 @@ mod tests {
             let value = tiez_core_prepare_open_content_json(handle, 103);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":10"));
+            assert!(json.contains("\"abi_version\":11"));
             assert!(json.contains("\"kind\":\"url\""));
             assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
             assert!(json.contains("\"requires_confirmation\":false"));
@@ -1276,7 +1433,7 @@ mod tests {
             let created = tiez_core_create_backup_json(handle, destination.as_ptr());
             assert!(!created.is_null());
             let created_json = CStr::from_ptr(created).to_str().unwrap();
-            assert!(created_json.contains("\"abi_version\":10"));
+            assert!(created_json.contains("\"abi_version\":11"));
             assert!(created_json.contains("\"entryCount\":0"));
             tiez_core_string_free(created);
 
@@ -1328,7 +1485,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":10"));
+            assert!(pin_json.contains("\"abi_version\":11"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1360,7 +1517,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":10"));
+            assert!(json.contains("\"abi_version\":11"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1401,7 +1558,7 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":10"));
+            assert!(initial_json.contains("\"abi_version\":11"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
@@ -1442,6 +1599,79 @@ mod tests {
     }
 
     #[test]
+    fn cloud_sync_exports_keep_passwords_write_only() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let update = CString::new(
+            r#"{
+                "enabled":true,
+                "auto_sync":true,
+                "webdav_url":"https://dav.example.test/root",
+                "webdav_username":"中文用户",
+                "webdav_password":"must-not-cross-boundary",
+                "clear_password":false,
+                "webdav_base_path":"tiez-sync",
+                "interval_secs":120,
+                "snapshot_interval_min":720,
+                "content_prefs":{"text":true,"image":true,"file_path":false,"emoji":true}
+            }"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let initial = tiez_core_get_cloud_sync_settings_json(handle);
+            assert!(!initial.is_null());
+            let initial_json = CStr::from_ptr(initial).to_str().unwrap();
+            assert!(initial_json.contains("\"abi_version\":11"));
+            assert!(initial_json.contains("\"password_configured\":false"));
+            assert!(!initial_json.contains("webdav_password"));
+            tiez_core_string_free(initial);
+
+            let mutation = tiez_core_update_cloud_sync_settings_json(handle, update.as_ptr());
+            assert!(!mutation.is_null());
+            let mutation_json = CStr::from_ptr(mutation).to_str().unwrap();
+            assert!(mutation_json.contains("\"password_configured\":true"));
+            assert!(mutation_json.contains("\"webdav_username\":\"中文用户\""));
+            assert!(mutation_json.contains("\"file_path\":false"));
+            assert!(!mutation_json.contains("must-not-cross-boundary"));
+            assert!(!mutation_json.contains("webdav_password"));
+            tiez_core_string_free(mutation);
+
+            let snapshot = tiez_core_get_cloud_sync_settings_json(handle);
+            assert!(!snapshot.is_null());
+            let snapshot_json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(snapshot_json.contains("\"password_configured\":true"));
+            assert!(!snapshot_json.contains("must-not-cross-boundary"));
+            tiez_core_string_free(snapshot);
+
+            let invalid = CString::new(
+                r#"{
+                    "enabled":true,
+                    "auto_sync":true,
+                    "webdav_url":"http://dav.example.test/root",
+                    "webdav_username":"",
+                    "clear_password":false,
+                    "webdav_base_path":"tiez-sync",
+                    "interval_secs":120,
+                    "snapshot_interval_min":720,
+                    "content_prefs":{"text":true,"image":true,"file_path":true,"emoji":true}
+                }"#,
+            )
+            .unwrap();
+            assert!(tiez_core_update_cloud_sync_settings_json(handle, invalid.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("must use HTTPS"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn pinned_order_export_requires_all_pinned_ids_and_preserves_requested_order() {
         let handle = Box::into_raw(Box::new(
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
@@ -1460,7 +1690,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":10"));
+            assert!(json.contains("\"abi_version\":11"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));
