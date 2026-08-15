@@ -7,12 +7,21 @@
 
 #include <microsoft.ui.xaml.window.h>
 #include <commctrl.h>
+#include <shellapi.h>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace
 {
     constexpr UINT kToggleHotkeyId = 1;
+    constexpr UINT_PTR kMessageWindowSubclassId = 1;
+    constexpr UINT_PTR kMainWindowSubclassId = 2;
+    constexpr UINT kTrayCallbackMessage = WM_APP + 7;
+    constexpr UINT kTrayIconId = 1;
+    constexpr UINT kTrayShowCommand = 1001;
+    constexpr UINT kTrayExitCommand = 1002;
+    constexpr int kAppIconResourceId = 101;
 
     winrt::hstring StatusMessage(
         std::wstring_view prefix,
@@ -190,10 +199,9 @@ namespace
         UINT_PTR,
         DWORD_PTR refData)
     {
-        if (message == WM_HOTKEY && wParam == kToggleHotkeyId)
+        auto* window = reinterpret_cast<winrt::Tiez::WinUIProbe::implementation::MainWindow*>(refData);
+        if (window != nullptr && window->OnNativeMessage(hwnd, message, wParam, lParam))
         {
-            auto* window = reinterpret_cast<winrt::Tiez::WinUIProbe::implementation::MainWindow*>(refData);
-            window->OnToggleHotkey();
             return 0;
         }
 
@@ -902,29 +910,203 @@ namespace winrt::Tiez::WinUIProbe::implementation
         SetWindowSubclass(
             m_hotkeyHwnd,
             HotkeySubclassProc,
-            1,
+            kMessageWindowSubclassId,
+            reinterpret_cast<DWORD_PTR>(this));
+        SetWindowSubclass(
+            GetWindowHandle(),
+            HotkeySubclassProc,
+            kMainWindowSubclassId,
             reinterpret_cast<DWORD_PTR>(this));
         if (!RegisterHotKey(m_hotkeyHwnd, kToggleHotkeyId, MOD_ALT | MOD_NOREPEAT, 0x43))
         {
-            SetStatus(L"Alt+C 已被其他程序占用，可按 Esc 隐藏并通过任务栏重新显示。");
+            SetStatus(L"Alt+C 已被其他程序占用，可通过系统托盘重新显示 TieZ。");
         }
+        SetupTrayIcon();
     }
 
     void MainWindow::TeardownLifecycle()
     {
+        RemoveTrayIcon();
+        if (m_hwnd != nullptr && IsWindow(m_hwnd))
+        {
+            RemoveWindowSubclass(m_hwnd, HotkeySubclassProc, kMainWindowSubclassId);
+        }
         if (m_hotkeyHwnd != nullptr)
         {
             UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
-            RemoveWindowSubclass(m_hotkeyHwnd, HotkeySubclassProc, 1);
+            RemoveWindowSubclass(
+                m_hotkeyHwnd,
+                HotkeySubclassProc,
+                kMessageWindowSubclassId);
             DestroyWindow(m_hotkeyHwnd);
             m_hotkeyHwnd = nullptr;
         }
     }
 
+    void MainWindow::SetupTrayIcon()
+    {
+        m_taskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+        auto const loadedIcon = LoadImageW(
+            GetModuleHandleW(nullptr),
+            MAKEINTRESOURCEW(kAppIconResourceId),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_DEFAULTCOLOR);
+        m_trayIcon = static_cast<HICON>(loadedIcon);
+        if (m_trayIcon == nullptr)
+        {
+            m_trayIcon = CopyIcon(LoadIconW(nullptr, IDI_APPLICATION));
+        }
+        AddTrayIcon();
+    }
+
+    void MainWindow::AddTrayIcon()
+    {
+        if (m_trayAdded)
+        {
+            return;
+        }
+        if (m_hotkeyHwnd == nullptr || m_trayIcon == nullptr)
+        {
+            SetStatus(L"无法创建系统托盘图标；仍可使用 Alt+C 显示 TieZ。");
+            return;
+        }
+
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = m_hotkeyHwnd;
+        data.uID = kTrayIconId;
+        data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+        data.uCallbackMessage = kTrayCallbackMessage;
+        data.hIcon = m_trayIcon;
+        wcscpy_s(data.szTip, L"TieZ 剪贴板");
+        if (!Shell_NotifyIconW(NIM_ADD, &data))
+        {
+            m_trayAdded = false;
+            SetStatus(L"无法创建系统托盘图标；仍可使用 Alt+C 显示 TieZ。");
+            return;
+        }
+
+        data.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &data);
+        m_trayAdded = true;
+    }
+
+    void MainWindow::RemoveTrayIcon()
+    {
+        if (m_trayAdded && m_hotkeyHwnd != nullptr)
+        {
+            NOTIFYICONDATAW data{};
+            data.cbSize = sizeof(data);
+            data.hWnd = m_hotkeyHwnd;
+            data.uID = kTrayIconId;
+            Shell_NotifyIconW(NIM_DELETE, &data);
+            m_trayAdded = false;
+        }
+        if (m_trayIcon != nullptr)
+        {
+            DestroyIcon(m_trayIcon);
+            m_trayIcon = nullptr;
+        }
+    }
+
+    void MainWindow::ShowTrayMenu()
+    {
+        auto const menu = CreatePopupMenu();
+        if (menu == nullptr)
+        {
+            return;
+        }
+        AppendMenuW(menu, MF_STRING, kTrayShowCommand, L"显示主界面");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"退出 TieZ");
+
+        POINT position{};
+        GetCursorPos(&position);
+        m_suspendLifecycle = true;
+        SetForegroundWindow(m_hotkeyHwnd);
+        auto const command = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+            position.x,
+            position.y,
+            0,
+            m_hotkeyHwnd,
+            nullptr);
+        DestroyMenu(menu);
+        PostMessageW(m_hotkeyHwnd, WM_NULL, 0, 0);
+        m_suspendLifecycle = false;
+
+        if (command == kTrayShowCommand)
+        {
+            ShowMainWindow(false);
+        }
+        else if (command == kTrayExitCommand)
+        {
+            RequestExit();
+        }
+    }
+
+    void MainWindow::RequestExit()
+    {
+        if (m_exitRequested)
+        {
+            return;
+        }
+        m_exitRequested = true;
+        m_suspendLifecycle = true;
+        RemoveTrayIcon();
+        Close();
+    }
+
+    bool MainWindow::OnNativeMessage(
+        HWND hwnd,
+        UINT message,
+        WPARAM wParam,
+        LPARAM lParam)
+    {
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kToggleHotkeyId)
+        {
+            OnToggleHotkey();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd
+            && m_taskbarCreatedMessage != 0
+            && message == m_taskbarCreatedMessage)
+        {
+            m_trayAdded = false;
+            AddTrayIcon();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == kTrayCallbackMessage)
+        {
+            auto const notification = LOWORD(lParam);
+            if (notification == NIN_SELECT
+                || notification == NIN_KEYSELECT
+                || notification == WM_LBUTTONUP
+                || notification == WM_LBUTTONDBLCLK)
+            {
+                ShowMainWindow(false);
+            }
+            else if (notification == WM_CONTEXTMENU || notification == WM_RBUTTONUP)
+            {
+                ShowTrayMenu();
+            }
+            return true;
+        }
+        if (hwnd == GetWindowHandle() && message == WM_CLOSE && !m_exitRequested)
+        {
+            HideMainWindow();
+            return true;
+        }
+        return false;
+    }
+
     void MainWindow::HideMainWindow()
     {
         ShowWindow(GetWindowHandle(), SW_HIDE);
-        SetStatus(L"窗口已隐藏，按 Alt+C 可重新显示。");
+        SetStatus(L"窗口已隐藏，按 Alt+C 或点击系统托盘图标可重新显示。");
     }
 
     void MainWindow::ShowMainWindow(bool captureForeground)
@@ -940,7 +1122,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ShowWindow(GetWindowHandle(), SW_SHOW);
         Activate();
         SearchBox().Focus(FocusState::Programmatic);
-        SetStatus(L"已通过 Alt+C 显示窗口，并记录粘贴目标窗口。");
+        SetStatus(captureForeground
+            ? L"已通过 Alt+C 显示窗口，并记录粘贴目标窗口。"
+            : L"已通过系统托盘显示主界面。");
     }
 
     void MainWindow::PreparePasteTarget()

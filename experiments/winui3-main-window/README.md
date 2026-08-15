@@ -79,6 +79,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
 - card context menu and double-click paste;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
+- native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -289,6 +290,10 @@ adapter with every result.
 - [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
 - [ ] Right-click a card for paste/copy/pin/delete; double-click pastes plain text.
 - [ ] Alt+C toggles visibility and captures the last foreground window.
+- [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
+- [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
+- [ ] Right-clicking the tray icon shows the Chinese “显示主界面” and “退出 TieZ” commands.
+- [ ] Restarting Explorer restores the tray icon.
 - [ ] Sensitive cards show a redacted preview and a sensitive label.
 - [ ] Open details displays full UTF-8 content without WebView2.
 - [ ] Keyboard Tab traversal and text selection work.
@@ -343,6 +348,7 @@ window should call, and which extraction phase owns it.
 | Keyboard up/down + Enter | `useKeyboardNavigation` / `navigation-action` | WinUI list selection | 1 |
 | Toggle hotkey (default Alt+C) | `toggle_window_cmd` | WinUI `RegisterHotKey` + last HWND | 1 |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
+| System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
 | Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy connected, OCR/cloud later | 3 |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
@@ -375,9 +381,10 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    WinUI executes Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
    Tauri still wraps the existing Win32 clipboard/keystroke path after planning
    text payloads;
-4. `UiLifecycle` — **WinUI minimum connected**: Alt+C toggle, Esc hide,
-   deactivate hide unless pinned, last-foreground HWND for paste. Tray, close
-   policy, and single-instance remain later;
+4. `UiLifecycle` — **WinUI daily shell connected**: Alt+C toggle, Esc hide,
+   deactivate hide unless pinned, last-foreground HWND for paste, native tray,
+   close-to-hide, explicit tray exit, Explorer restart recovery, and shared
+   per-database single-instance ownership;
 5. `ClipboardCapture` — **WinUI Unicode/HTML/image/file connected**: format
    priority (files, rich text, image, text), CRLF normalization without trim,
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
@@ -386,7 +393,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    distribution remain later.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs the remaining phase-4 shell work (compact preview, tray, settings entry)
+needs the remaining phase-4 shell work (compact preview and settings entry)
 and the release-critical backup/sync/update surfaces.
 
 ## Primary references

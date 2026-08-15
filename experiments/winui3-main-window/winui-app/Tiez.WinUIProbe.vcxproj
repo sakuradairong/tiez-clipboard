@@ -105,6 +105,7 @@
 
   <ItemGroup>
     <Manifest Include="app.manifest" />
+    <ResourceCompile Include="app.rc" />
   </ItemGroup>
   <ItemGroup>
     <ApplicationDefinition Include="App.xaml" />

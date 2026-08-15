@@ -41,6 +41,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
         void OnToggleHotkey();
+        bool OnNativeMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     private:
         void RefreshItems();
@@ -56,6 +57,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetInitialWindowSize();
         void SetupLifecycle();
         void TeardownLifecycle();
+        void SetupTrayIcon();
+        void AddTrayIcon();
+        void RemoveTrayIcon();
+        void ShowTrayMenu();
+        void RequestExit();
         void HideMainWindow();
         void ShowMainWindow(bool captureForeground);
         void PreparePasteTarget();
@@ -95,9 +101,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
         HWND m_hwnd{};
         HWND m_hotkeyHwnd{};
         HWND m_lastHwnd{};
+        HICON m_trayIcon{};
+        UINT m_taskbarCreatedMessage{};
         bool m_readyMarkerWritten{};
         bool m_pinned{};
         bool m_suspendLifecycle{};
+        bool m_trayAdded{};
+        bool m_exitRequested{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
         bool m_readOnly{};
