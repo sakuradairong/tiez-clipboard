@@ -376,6 +376,24 @@ mod tests {
     }
 
     #[test]
+    fn plan_paste_accepts_a_decrypted_sensitive_payload() {
+        let decrypted = HistoryContent {
+            id: 8,
+            content_type: "text".to_owned(),
+            content: "隐私正文".to_owned(),
+            html_content: None,
+            available: true,
+            is_sensitive: true,
+            unavailable_reason: None,
+        };
+
+        let plan = plan_paste(&decrypted, PasteFormat::Plain, false).unwrap();
+
+        assert_eq!(plan.item_id, 8);
+        assert_eq!(plan.payload.text, "隐私正文");
+    }
+
+    #[test]
     fn execute_paste_runs_hide_restore_apply_then_keystroke() {
         let plan = plan_paste(
             &available_text(101, "notepad text", None),

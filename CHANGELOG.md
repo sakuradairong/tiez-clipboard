@@ -14,6 +14,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI paste plans image/file payloads separately from text: CF_DIB/PNG for images, CF_HDROP for files. Enter does not paste while IME composition is confirming.
 - WinUI copy writes the clipboard without hiding or sending Ctrl+V. Ctrl+Enter pastes rich text; Delete and a card context menu cover pin/delete/copy.
 - WinUI live-captures Unicode text, CF_HTML, PNG/DIB images, and Explorer files through ABI v4. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
+- Writable WinUI history can use existing Tauri DPAPI-protected entries for copy and paste while keeping sensitive previews and the details pane redacted; read-only database inspection remains metadata-only.
 
 ### Changed
 

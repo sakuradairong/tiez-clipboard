@@ -4,6 +4,7 @@ use crate::database_mutation::{
     delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
     PreparedClipboardRecord,
 };
+use crate::encryption::{decrypt_value, ENCRYPT_PREFIX};
 use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
@@ -13,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_HISTORY_LIMIT: i64 = 200;
-const ENCRYPT_PREFIX: &str = "dpapi:";
 const SENSITIVE_PREVIEW: &str = "Sensitive entry — open in the production TieZ UI";
 const SENSITIVE_TAGS: &[&str] = &["sensitive", "密码", "password"];
 
@@ -472,7 +472,7 @@ impl SqliteHistory {
             ))
         });
 
-        let (content_type, content, html_content, tags) = match result {
+        let (content_type, mut content, mut html_content, tags) = match result {
             Ok(value) => value,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Err(entry_not_found(entry_id)),
             Err(error) => {
@@ -484,7 +484,8 @@ impl SqliteHistory {
             || html_content
                 .as_deref()
                 .is_some_and(|html| html.starts_with(ENCRYPT_PREFIX));
-        if has_sensitive_tag(&tags) || is_encrypted {
+        let is_sensitive = has_sensitive_tag(&tags) || is_encrypted;
+        if self.read_only && is_sensitive {
             return Ok(redacted_content(
                 entry_id,
                 content_type,
@@ -495,6 +496,29 @@ impl SqliteHistory {
                 },
             ));
         }
+        if content.starts_with(ENCRYPT_PREFIX) {
+            let Some(decrypted) = decrypt_value(&content) else {
+                return Ok(redacted_content(
+                    entry_id,
+                    content_type,
+                    "Encrypted entry could not be decrypted for this Windows user",
+                ));
+            };
+            content = decrypted;
+        }
+        if html_content
+            .as_deref()
+            .is_some_and(|html| html.starts_with(ENCRYPT_PREFIX))
+        {
+            let Some(decrypted) = html_content.as_deref().and_then(decrypt_value) else {
+                return Ok(redacted_content(
+                    entry_id,
+                    content_type,
+                    "Encrypted HTML could not be decrypted for this Windows user",
+                ));
+            };
+            html_content = Some(decrypted);
+        }
 
         Ok(HistoryContent {
             id: entry_id,
@@ -502,7 +526,7 @@ impl SqliteHistory {
             content,
             html_content,
             available: true,
-            is_sensitive: false,
+            is_sensitive,
             unavailable_reason: None,
         })
     }
@@ -1405,6 +1429,65 @@ mod tests {
         assert!(Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).is_ok());
         assert_eq!(fs::read(&path).unwrap(), bytes_before);
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn writable_sqlite_history_decrypts_sensitive_payloads_without_revealing_read_only_copies() {
+        let path = temporary_database("encrypted-content");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        let encrypted_content = crate::encryption::encrypt_value("隐私正文").unwrap();
+        let encrypted_preview = crate::encryption::encrypt_value("隐私预览").unwrap();
+        let encrypted_html = crate::encryption::encrypt_value("<b>隐私正文</b>").unwrap();
+        connection
+            .execute(
+                "INSERT INTO clipboard_history
+                    (id, content_type, content, html_content, source_app, timestamp, preview,
+                     is_pinned, pinned_order, tags, content_hash, content_hash_version)
+                 VALUES (4, 'rich_text', ?1, ?2, '密码管理器', 30, ?3, 0, 0,
+                         '[\"sensitive\"]', ?4, 2)",
+                params![
+                    encrypted_content,
+                    encrypted_html,
+                    encrypted_preview,
+                    calc_text_hash("隐私正文") as i64,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let writable = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let content = writable.content(4).unwrap();
+        assert!(content.available);
+        assert!(content.is_sensitive);
+        assert_eq!(content.content, "隐私正文");
+        assert_eq!(content.html_content.as_deref(), Some("<b>隐私正文</b>"));
+        drop(writable);
+
+        let read_only = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+        let protected = read_only.content(4).unwrap();
+        assert!(!protected.available);
+        assert!(protected.is_sensitive);
+        assert!(protected.content.is_empty());
+        drop(read_only);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn writable_sqlite_history_fails_closed_for_foreign_dpapi_payloads() {
+        let path = temporary_database("foreign-encrypted-content");
+        create_test_database(&path);
+        let history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let content = history.content(2).unwrap();
+
+        assert!(!content.available);
+        assert!(content.is_sensitive);
+        assert!(content.content.is_empty());
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 

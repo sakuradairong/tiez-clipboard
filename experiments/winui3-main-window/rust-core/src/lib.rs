@@ -19,7 +19,7 @@ use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
 use tiez_core::data_directory::resolve_data_directory;
-use tiez_core::database_bootstrap::open_database;
+use tiez_core::database_bootstrap::open_database_with_decrypt;
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
@@ -117,7 +117,7 @@ fn prepare_writable_database(database_path: &Path) -> Result<(), String> {
 
     std::fs::create_dir_all(data_dir)
         .map_err(|error| format!("无法创建数据目录 {}：{error}", data_dir.display()))?;
-    open_database(database_path)
+    open_database_with_decrypt(database_path, tiez_core::encryption::decrypt_value)
         .map(|_| ())
         .map_err(|error| format!("无法初始化数据库 {}：{error}", database_path.display()))
 }

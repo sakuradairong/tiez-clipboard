@@ -547,7 +547,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             metadata.append(isSensitive ? L" · 敏感内容" : L" · 内容可用");
             DetailsMetadataText().Text(metadata);
 
-            if (available)
+            if (available && !isSensitive)
             {
                 auto displayContent = content.GetNamedString(L"content");
                 if (displayContent.empty())

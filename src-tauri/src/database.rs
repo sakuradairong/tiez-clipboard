@@ -600,6 +600,23 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn shared_dpapi_codec_is_compatible_with_tauri_ciphertext() {
+        let plain = "TieZ 跨界面隐私载荷 🔐";
+        let tauri_cipher = crate::infrastructure::encryption::encrypt_value(plain).unwrap();
+        assert_eq!(
+            tiez_core::encryption::decrypt_value(&tauri_cipher).as_deref(),
+            Some(plain)
+        );
+
+        let shared_cipher = tiez_core::encryption::encrypt_value(plain).unwrap();
+        assert_eq!(
+            crate::infrastructure::encryption::decrypt_value(&shared_cipher).as_deref(),
+            Some(plain)
+        );
+    }
+
     #[test]
     fn test_save_and_get_history() {
         let conn = setup_test_db();
