@@ -4,6 +4,7 @@ use crate::database_mutation::{
     delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
     PreparedClipboardRecord,
 };
+use base64::Engine;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -570,9 +571,16 @@ impl SqliteHistory {
         let connection = open_sqlite_connection(&self.database_path, false)?;
         let timestamp = now_unix_ms();
         let preview = payload.preview();
-        let content = payload.content();
+        let mut content = payload.content();
         let content_type = payload.content_type();
         let html = payload.html();
+        let attachment = if content_type == "image" {
+            let attachment = persist_image_attachment(&self.database_path, &content)?;
+            content = attachment.content.clone();
+            Some(attachment)
+        } else {
+            None
+        };
         let content_hash = if content_type == "image" {
             calc_image_hash(&content).unwrap_or(0)
         } else {
@@ -584,7 +592,7 @@ impl SqliteHistory {
             _ => false,
         };
         let tags = Vec::new();
-        let entry_id = save_prepared_record(
+        let saved = save_prepared_record(
             &connection,
             &PreparedClipboardRecord {
                 id: 0,
@@ -602,13 +610,19 @@ impl SqliteHistory {
                 is_external,
                 pinned_order: 0,
             },
-        )
-        .map_err(|error| {
-            HistoryError::new(
-                HistoryErrorKind::Storage,
-                format!("failed to ingest clipboard payload: {error}"),
-            )
-        })?;
+        );
+        let entry_id = match saved {
+            Ok(entry_id) => entry_id,
+            Err(error) => {
+                if let Some(attachment) = attachment.filter(|value| value.created) {
+                    let _ = std::fs::remove_file(attachment.content);
+                }
+                return Err(HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to ingest clipboard payload: {error}"),
+                ));
+            }
+        };
         self.generation = self.generation.saturating_add(1);
         self.last_action = format!("Captured {content_type} from {source_app}");
         Ok(HistoryMutationResult {
@@ -693,6 +707,73 @@ impl SqliteHistory {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct PersistedImageAttachment {
+    content: String,
+    created: bool,
+}
+
+fn persist_image_attachment(
+    database_path: &Path,
+    content: &str,
+) -> Result<PersistedImageAttachment, HistoryError> {
+    let trimmed = content.trim();
+    let source_path = Path::new(trimmed);
+    let bytes = if source_path.is_file() {
+        std::fs::read(source_path)
+            .map_err(|error| storage_error("failed to read captured image", error))?
+    } else {
+        let payload = trimmed
+            .split_once(',')
+            .map(|(_, payload)| payload)
+            .unwrap_or(trimmed)
+            .replace('\r', "")
+            .replace('\n', "");
+        base64::engine::general_purpose::STANDARD
+            .decode(payload.trim())
+            .map_err(|error| {
+                HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to decode captured image: {error}"),
+                )
+            })?
+    };
+    if bytes.is_empty() {
+        return Err(HistoryError::new(
+            HistoryErrorKind::Storage,
+            "captured image is empty",
+        ));
+    }
+
+    let data_dir = database_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            HistoryError::new(
+                HistoryErrorKind::InvalidDatabase,
+                "clipboard database has no data directory",
+            )
+        })?;
+    let attachments_dir = data_dir.join("attachments");
+    std::fs::create_dir_all(&attachments_dir)
+        .map_err(|error| storage_error("failed to create image attachment directory", error))?;
+
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let destination = attachments_dir.join(format!("img_{:x}.png", hasher.finish()));
+    let created = !destination.exists();
+    if created {
+        std::fs::write(&destination, bytes)
+            .map_err(|error| storage_error("failed to persist captured image", error))?;
+    }
+
+    Ok(PersistedImageAttachment {
+        content: destination.to_string_lossy().into_owned(),
+        created,
+    })
 }
 
 fn open_sqlite_connection(path: &Path, read_only: bool) -> Result<Connection, HistoryError> {
@@ -1548,5 +1629,109 @@ mod tests {
             HistoryErrorKind::ReadOnly
         );
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_history_persists_captured_images_beside_the_database() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tiez-core-image-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("clipboard.db");
+        let source = root.join("captured.png");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lW2ZAAAAAElFTkSuQmCC";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap();
+        fs::write(&source, &bytes).unwrap();
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let result = history
+            .ingest(
+                CapturedPayload::Image {
+                    content: source.to_string_lossy().into_owned(),
+                },
+                "截图工具",
+            )
+            .unwrap();
+        let entry_id = result.effective_id.unwrap();
+        let stored = history.content(entry_id).unwrap().content;
+        let stored_path = PathBuf::from(&stored);
+
+        assert_eq!(
+            stored_path.parent(),
+            Some(root.join("attachments").as_path())
+        );
+        assert_eq!(fs::read(&stored_path).unwrap(), bytes);
+        let connection = Connection::open(&path).unwrap();
+        let identity: (i64, i64) = connection
+            .query_row(
+                "SELECT is_external, content_hash FROM clipboard_history WHERE id = ?1",
+                [entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.0, 1);
+        assert_eq!(identity.1, calc_image_hash(&stored).unwrap());
+        drop(connection);
+        drop(history);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_image_ingest_removes_the_new_attachment() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("tiez-core-image-failure-{nonce}"));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("clipboard.db");
+        let source = root.join("captured.png");
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lW2ZAAAAAElFTkSuQmCC";
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap();
+        fs::write(&source, bytes).unwrap();
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_image_history BEFORE INSERT ON clipboard_history
+                 WHEN NEW.content_type = 'image'
+                 BEGIN SELECT RAISE(ABORT, 'reject image'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let error = history
+            .ingest(
+                CapturedPayload::Image {
+                    content: source.to_string_lossy().into_owned(),
+                },
+                "截图工具",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.kind(), HistoryErrorKind::Storage);
+        let attachments = root.join("attachments");
+        assert!(attachments.is_dir());
+        assert!(fs::read_dir(attachments).unwrap().next().is_none());
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            3
+        );
+        drop(connection);
+        drop(history);
+        fs::remove_dir_all(root).unwrap();
     }
 }
