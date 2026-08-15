@@ -222,6 +222,34 @@ pub fn set_pinned(
     Ok(affected == 1)
 }
 
+pub fn update_pinned_orders(
+    conn: &Connection,
+    orders: &[(i64, i64)],
+    updated_at: i64,
+) -> Result<(), String> {
+    with_savepoint(conn, || {
+        for (id, order) in orders {
+            let affected = conn
+                .execute(
+                    "UPDATE clipboard_history
+                     SET pinned_order = ?1,
+                         sync_updated_at = ?3,
+                         sync_updated_by = COALESCE(
+                             (SELECT value FROM settings WHERE key = 'app.anon_id'), '')
+                     WHERE id = ?2 AND is_pinned = 1",
+                    params![order, id, updated_at],
+                )
+                .map_err(|error| error.to_string())?;
+            if affected != 1 {
+                return Err(format!(
+                    "pinned clipboard entry {id} was not found for reordering"
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
 fn clean_tags(tags: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut cleaned = Vec::new();

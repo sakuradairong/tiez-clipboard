@@ -4,7 +4,7 @@ use crate::content_identity::{
 };
 use crate::database_mutation::{
     delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
-    PreparedClipboardRecord, StoredClipboardRecord,
+    update_pinned_orders, PreparedClipboardRecord, StoredClipboardRecord,
 };
 use crate::encryption::{decrypt_value, encrypt_value, ENCRYPT_PREFIX};
 use crate::privacy::contains_sensitive_info;
@@ -75,6 +75,15 @@ pub struct HistoryMutationResult {
     pub effective_id: Option<i64>,
     pub replacement_id: Option<i64>,
     pub removed: bool,
+    pub generation: u64,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PinnedOrderResult {
+    pub adapter: &'static str,
+    pub action: String,
+    pub ordered_ids: Vec<i64>,
     pub generation: u64,
     pub message: String,
 }
@@ -244,6 +253,16 @@ impl ClipboardHistory {
         }
     }
 
+    pub fn reorder_pinned(
+        &mut self,
+        ordered_ids: Vec<i64>,
+    ) -> Result<PinnedOrderResult, HistoryError> {
+        match &mut self.adapter {
+            HistoryAdapter::Memory(adapter) => adapter.reorder_pinned(ordered_ids),
+            HistoryAdapter::Sqlite(adapter) => adapter.reorder_pinned(ordered_ids),
+        }
+    }
+
     pub fn ingest_text(
         &mut self,
         content: String,
@@ -401,6 +420,41 @@ impl MemoryHistory {
             effective_id: Some(entry_id),
             replacement_id: None,
             removed: false,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
+    }
+
+    fn reorder_pinned(
+        &mut self,
+        ordered_ids: Vec<i64>,
+    ) -> Result<PinnedOrderResult, HistoryError> {
+        validate_pinned_order(
+            self.items
+                .iter()
+                .filter(|item| item.is_pinned)
+                .map(|item| item.id),
+            &ordered_ids,
+        )?;
+        let positions: HashMap<i64, usize> = ordered_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, id)| (id, index))
+            .collect();
+        self.items.sort_by_key(|item| {
+            if item.is_pinned {
+                (0, positions.get(&item.id).copied().unwrap_or(usize::MAX))
+            } else {
+                (1, usize::MAX)
+            }
+        });
+        self.generation = self.generation.saturating_add(1);
+        self.last_action = format!("Reordered {} pinned entries", ordered_ids.len());
+        Ok(PinnedOrderResult {
+            adapter: "memory",
+            action: "reorder-pinned".to_owned(),
+            ordered_ids,
             generation: self.generation,
             message: self.last_action.clone(),
         })
@@ -719,6 +773,55 @@ impl SqliteHistory {
             effective_id: Some(effective_id),
             replacement_id,
             removed: false,
+            generation: self.generation,
+            message: self.last_action.clone(),
+        })
+    }
+
+    fn reorder_pinned(
+        &mut self,
+        ordered_ids: Vec<i64>,
+    ) -> Result<PinnedOrderResult, HistoryError> {
+        if self.read_only {
+            return Err(HistoryError::new(
+                HistoryErrorKind::ReadOnly,
+                "pinned reordering is disabled for sqlite-read-only history",
+            ));
+        }
+
+        let connection = open_sqlite_connection(&self.database_path, false)?;
+        let persisted_ids = connection
+            .prepare("SELECT id FROM clipboard_history WHERE is_pinned = 1")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, i64>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|error| storage_error("failed to load pinned entries for reordering", error))?;
+        validate_pinned_order(persisted_ids.into_iter(), &ordered_ids)?;
+        let item_count = i64::try_from(ordered_ids.len()).unwrap_or(i64::MAX);
+        let orders: Vec<(i64, i64)> = ordered_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, id)| {
+                let index = i64::try_from(index).unwrap_or(i64::MAX);
+                (id, item_count.saturating_sub(index))
+            })
+            .collect();
+        update_pinned_orders(&connection, &orders, now_unix_ms()).map_err(|error| {
+            HistoryError::new(
+                HistoryErrorKind::Storage,
+                format!("failed to update pinned order: {error}"),
+            )
+        })?;
+
+        self.generation = self.generation.saturating_add(1);
+        self.last_action = format!("Reordered {} pinned entries", ordered_ids.len());
+        Ok(PinnedOrderResult {
+            adapter: self.adapter_name(),
+            action: "reorder-pinned".to_owned(),
+            ordered_ids,
             generation: self.generation,
             message: self.last_action.clone(),
         })
@@ -2028,6 +2131,24 @@ fn item_matches_text(item: &HistoryItem, query: &str) -> bool {
             .any(|tag| tag.to_lowercase().contains(&normalized_query))
 }
 
+fn validate_pinned_order(
+    current_ids: impl IntoIterator<Item = i64>,
+    ordered_ids: &[i64],
+) -> Result<(), HistoryError> {
+    let current: HashSet<i64> = current_ids.into_iter().collect();
+    let requested: HashSet<i64> = ordered_ids.iter().copied().collect();
+    if ordered_ids.iter().any(|id| *id <= 0)
+        || requested.len() != ordered_ids.len()
+        || requested != current
+    {
+        return Err(HistoryError::new(
+            HistoryErrorKind::NotFound,
+            "the pinned entry set changed; refresh before reordering",
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_item_exists(items: &[HistoryItem], entry_id: i64) -> Result<(), HistoryError> {
     items
         .iter()
@@ -2384,6 +2505,32 @@ mod tests {
             .unwrap();
         assert!(!item.is_sensitive);
         assert!(history.content(102).unwrap().available);
+    }
+
+    #[test]
+    fn memory_pinned_reorder_requires_the_complete_stable_id_set() {
+        let mut history = ClipboardHistory::synthetic();
+        history.apply_action(102, "pin").unwrap();
+        history.apply_action(103, "pin").unwrap();
+
+        let reordered = history.reorder_pinned(vec![103, 101, 102]).unwrap();
+
+        assert_eq!(reordered.action, "reorder-pinned");
+        assert_eq!(reordered.ordered_ids, vec![103, 101, 102]);
+        assert_eq!(reordered.generation, 4);
+        let pinned: Vec<i64> = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .filter(|item| item.is_pinned)
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(pinned, vec![103, 101, 102]);
+
+        let error = history.reorder_pinned(vec![103, 101]).unwrap_err();
+        assert_eq!(error.kind(), HistoryErrorKind::NotFound);
+        assert_eq!(history.snapshot("").unwrap().generation, 4);
     }
 
     #[test]
@@ -2788,6 +2935,85 @@ mod tests {
             .items
             .iter()
             .any(|item| item.id == 1));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_pinned_reorder_is_atomic_and_advances_sync_metadata() {
+        let path = temporary_database("pinned-reorder");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        history.apply_action(1, "pin").unwrap();
+
+        let reordered = history.reorder_pinned(vec![2, 1]).unwrap();
+
+        assert_eq!(reordered.ordered_ids, vec![2, 1]);
+        let snapshot_pinned: Vec<i64> = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .filter(|item| item.is_pinned)
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(snapshot_pinned, vec![2, 1]);
+        let connection = Connection::open(&path).unwrap();
+        let orders = connection
+            .prepare(
+                "SELECT id, pinned_order, sync_updated_by
+                 FROM clipboard_history WHERE id IN (1, 2) ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(orders, vec![(1, 1, "winui-test".to_owned()), (2, 2, "winui-test".to_owned())]);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_second_pin_order
+                 BEFORE UPDATE OF pinned_order ON clipboard_history
+                 WHEN NEW.id = 2 AND NEW.pinned_order <> OLD.pinned_order
+                 BEGIN SELECT RAISE(ABORT, 'reject pinned order'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let generation_before = history.snapshot("").unwrap().generation;
+
+        let error = history.reorder_pinned(vec![1, 2]).unwrap_err();
+
+        assert_eq!(error.kind(), HistoryErrorKind::Storage);
+        assert_eq!(history.snapshot("").unwrap().generation, generation_before);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pinned_order FROM clipboard_history WHERE id = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pinned_order FROM clipboard_history WHERE id = 2",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+
+        drop(connection);
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 

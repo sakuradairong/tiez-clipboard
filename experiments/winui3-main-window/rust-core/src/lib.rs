@@ -16,7 +16,7 @@ use tiez_core::clipboard_capture::{
     classify_snapshot, CapturedPayload, CaptureFilter, ClipboardSnapshot,
 };
 use tiez_core::clipboard_history::{
-    ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
+    ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
 };
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
@@ -27,7 +27,7 @@ use tiez_core::runtime_instance::DatabaseInstanceGuard;
 mod win32_paste;
 mod win32_capture;
 
-const ABI_VERSION: u32 = 5;
+const ABI_VERSION: u32 = 6;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -165,6 +165,13 @@ struct MutationResponse<'a> {
     mutation: &'a HistoryMutationResult,
 }
 
+#[derive(Serialize)]
+struct PinnedOrderResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a PinnedOrderResult,
+}
+
 fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
     serde_json::to_string(&SnapshotResponse {
         abi_version: ABI_VERSION,
@@ -184,6 +191,14 @@ fn mutation_json(mutation: &HistoryMutationResult) -> Result<String, String> {
         mutation,
     })
     .map_err(|error| format!("failed to serialize clipboard mutation result: {error}"))
+}
+
+fn pinned_order_json(result: &PinnedOrderResult) -> Result<String, String> {
+    serde_json::to_string(&PinnedOrderResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+    .map_err(|error| format!("failed to serialize pinned order result: {error}"))
 }
 
 fn apply_history_action(
@@ -254,6 +269,24 @@ fn update_history_tags(
     };
     notify_changed(&handle.inner, mutation.generation);
     Ok(mutation)
+}
+
+fn reorder_history_pins(
+    handle: &TiezCoreHandle,
+    ordered_ids: Vec<i64>,
+) -> Result<PinnedOrderResult, String> {
+    let result = {
+        let mut history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .reorder_pinned(ordered_ids)
+            .map_err(|error| error.to_string())?
+    };
+    notify_changed(&handle.inner, result.generation);
+    Ok(result)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -598,6 +631,30 @@ pub unsafe extern "C" fn tiez_core_update_tags_json(
 }
 
 #[no_mangle]
+/// Replace the complete top-to-bottom order of pinned entry IDs.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `ordered_ids_json_utf8` must be a readable, NUL-terminated UTF-8 JSON
+/// string containing an array of positive integer IDs for this call.
+pub unsafe extern "C" fn tiez_core_update_pinned_order_json(
+    handle: *mut TiezCoreHandle,
+    ordered_ids_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let ordered_ids_json = required_utf8(ordered_ids_json_utf8, "ordered_ids_json_utf8")?;
+        let ordered_ids = serde_json::from_str::<Vec<i64>>(&ordered_ids_json).map_err(|error| {
+            format!("ordered_ids_json_utf8 must be a JSON integer array: {error}")
+        })?;
+        let result = reorder_history_pins(handle, ordered_ids)?;
+        into_owned_c_string(pinned_order_json(&result)?)
+    })
+}
+
+#[no_mangle]
 /// Register a history-changed callback. Pass a null callback to clear it.
 ///
 /// The callback may run on a background clipboard worker thread. The C++
@@ -669,8 +726,8 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
 /// `tiez_core_apply_action_json`, `tiez_core_update_tags_json`, or
-/// `tiez_core_take_last_error`. A non-null pointer must be transferred to this
-/// function exactly once.
+/// `tiez_core_update_pinned_order_json`, or `tiez_core_take_last_error`. A
+/// non-null pointer must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
         if value.is_null() {
@@ -740,7 +797,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":5"));
+        assert!(json.contains("\"abi_version\":6"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -785,7 +842,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":5"));
+            assert!(pin_json.contains("\"abi_version\":6"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -815,7 +872,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":5"));
+            assert!(json.contains("\"abi_version\":6"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -839,6 +896,51 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("JSON string array"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn pinned_order_export_requires_all_pinned_ids_and_preserves_requested_order() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let pin = CString::new("pin").unwrap();
+
+        unsafe {
+            let value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
+            assert!(!value.is_null());
+            tiez_core_string_free(value);
+            let value = tiez_core_apply_action_json(handle, 103, pin.as_ptr());
+            assert!(!value.is_null());
+            tiez_core_string_free(value);
+
+            let order = CString::new("[103,101,102]").unwrap();
+            let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"abi_version\":6"));
+            assert!(json.contains("\"action\":\"reorder-pinned\""));
+            assert!(json.contains("\"ordered_ids\":[103,101,102]"));
+            assert!(json.contains("\"generation\":4"));
+            tiez_core_string_free(value);
+
+            let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
+            assert!(!snapshot.is_null());
+            let snapshot_json = CStr::from_ptr(snapshot).to_str().unwrap();
+            let first = snapshot_json.find("\"id\":103").unwrap();
+            let second = snapshot_json.find("\"id\":101").unwrap();
+            let third = snapshot_json.find("\"id\":102").unwrap();
+            assert!(first < second && second < third);
+            tiez_core_string_free(snapshot);
+
+            let incomplete = CString::new("[103,101]").unwrap();
+            assert!(tiez_core_update_pinned_order_json(handle, incomplete.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("refresh before reordering"));
             tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }

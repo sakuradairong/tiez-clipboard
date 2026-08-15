@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 5,
+    TIEZ_CORE_ABI_VERSION = 6,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -59,6 +59,11 @@ TIEZ_CORE_API char* tiez_core_update_tags_json(
     TiezCoreHandle* handle,
     int64_t entry_id,
     const char* tags_json_utf8);
+
+// Replaces the complete pinned entry order from a top-to-bottom JSON ID array.
+TIEZ_CORE_API char* tiez_core_update_pinned_order_json(
+    TiezCoreHandle* handle,
+    const char* ordered_ids_json_utf8);
 
 // History-changed notifications may arrive on a background worker thread.
 TIEZ_CORE_API void tiez_core_set_changed_callback(

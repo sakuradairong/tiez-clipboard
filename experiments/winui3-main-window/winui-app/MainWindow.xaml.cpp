@@ -209,6 +209,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
     using namespace Microsoft::UI::Xaml::Controls::Primitives;
     using namespace Microsoft::UI::Xaml::Input;
     using namespace Microsoft::UI::Xaml::Media;
+    using namespace Windows::ApplicationModel::DataTransfer;
     using namespace Windows::Data::Json;
     using winrt::Windows::Foundation::IInspectable;
     using Windows::System::VirtualKey;
@@ -444,8 +445,21 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
             ItemsPanel().Children().Clear();
             m_entryIds.clear();
+            m_pinnedIds.clear();
             m_cards.clear();
             m_tagsById.clear();
+            for (std::uint32_t index = 0; index < items.Size(); ++index)
+            {
+                auto const item = items.GetObjectAt(index);
+                if (item.GetNamedBoolean(L"is_pinned"))
+                {
+                    m_pinnedIds.push_back(
+                        static_cast<std::int64_t>(item.GetNamedNumber(L"id")));
+                }
+            }
+            m_canReorderPinned = !readOnly
+                && CurrentQuery().empty()
+                && m_pinnedIds.size() > 1;
             for (std::uint32_t index = 0; index < items.Size(); ++index)
             {
                 auto const item = items.GetObjectAt(index);
@@ -545,6 +559,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         });
         AutomationProperties::SetName(card, item.GetNamedString(L"preview"));
         AttachCardCommands(card, entryId, readOnly);
+        AttachPinnedReorder(card, entryId, isPinned && m_canReorderPinned);
         m_cards.push_back(card);
 
         StackPanel content;
@@ -634,6 +649,24 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto pinButton = ActionButton(
             isPinned ? L"取消置顶" : L"置顶",
             [this, entryId] { ApplyAction(entryId, "pin"); });
+        Button moveUpButton{ nullptr };
+        Button moveDownButton{ nullptr };
+        if (isPinned)
+        {
+            auto const position = std::find(m_pinnedIds.begin(), m_pinnedIds.end(), entryId);
+            auto const pinnedIndex = position == m_pinnedIds.end()
+                ? m_pinnedIds.size()
+                : static_cast<std::size_t>(std::distance(m_pinnedIds.begin(), position));
+            moveUpButton = ActionButton(
+                L"上移",
+                [this, entryId] { MovePinnedEntry(entryId, -1); });
+            moveDownButton = ActionButton(
+                L"下移",
+                [this, entryId] { MovePinnedEntry(entryId, 1); });
+            moveUpButton.IsEnabled(m_canReorderPinned && pinnedIndex > 0);
+            moveDownButton.IsEnabled(
+                m_canReorderPinned && pinnedIndex + 1 < m_pinnedIds.size());
+        }
         auto pastePlainButton = ActionButton(
             L"纯文本粘贴",
             [this, entryId] { ApplyAction(entryId, "paste-plain"); });
@@ -655,6 +688,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         actions.Children().Append(openButton);
         actions.Children().Append(pinButton);
+        if (moveUpButton)
+        {
+            actions.Children().Append(moveUpButton);
+            actions.Children().Append(moveDownButton);
+        }
         actions.Children().Append(pastePlainButton);
         actions.Children().Append(pasteRichButton);
         actions.Children().Append(copyButton);
@@ -1024,6 +1062,54 @@ namespace winrt::Tiez::WinUIProbe::implementation
         card.ContextFlyout(flyout);
     }
 
+    void MainWindow::AttachPinnedReorder(
+        Border const& card,
+        std::int64_t entryId,
+        bool enabled)
+    {
+        card.CanDrag(enabled);
+        card.AllowDrop(enabled);
+        if (!enabled)
+        {
+            return;
+        }
+
+        AutomationProperties::SetHelpText(
+            card,
+            L"可拖动调整置顶顺序，也可使用上移和下移按钮。");
+        card.DragStarting([this, entryId](auto const&, DragStartingEventArgs const& args)
+        {
+            m_draggedPinnedId = entryId;
+            args.Data().SetText(winrt::to_hstring(entryId));
+            args.Data().RequestedOperation(DataPackageOperation::Move);
+        });
+        card.DragOver([this, entryId](auto const&, DragEventArgs const& args)
+        {
+            if (m_draggedPinnedId && *m_draggedPinnedId != entryId)
+            {
+                args.AcceptedOperation(DataPackageOperation::Move);
+                args.Handled(true);
+            }
+        });
+        card.Drop([this, entryId](IInspectable const& sender, DragEventArgs const& args)
+        {
+            if (m_draggedPinnedId && *m_draggedPinnedId != entryId)
+            {
+                auto const targetCard = sender.as<Border>();
+                auto const position = args.GetPosition(targetCard);
+                auto const afterTarget = position.Y > targetCard.ActualHeight() / 2.0;
+                auto const sourceId = *m_draggedPinnedId;
+                m_draggedPinnedId.reset();
+                DropPinnedEntry(sourceId, entryId, afterTarget);
+                args.Handled(true);
+            }
+        });
+        card.DropCompleted([this](auto const&, DropCompletedEventArgs const&)
+        {
+            m_draggedPinnedId.reset();
+        });
+    }
+
     void MainWindow::MoveSelection(int delta)
     {
         if (m_entryIds.empty())
@@ -1041,6 +1127,84 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
         UpdateSelectionVisuals();
         ShowContent(m_entryIds[static_cast<std::size_t>(m_selectedIndex)]);
+    }
+
+    void MainWindow::MovePinnedEntry(std::int64_t entryId, int delta)
+    {
+        if (!m_canReorderPinned || delta == 0)
+        {
+            return;
+        }
+        auto const position = std::find(m_pinnedIds.begin(), m_pinnedIds.end(), entryId);
+        if (position == m_pinnedIds.end())
+        {
+            return;
+        }
+        auto const index = static_cast<std::ptrdiff_t>(
+            std::distance(m_pinnedIds.begin(), position));
+        auto const target = index + delta;
+        if (target < 0 || target >= static_cast<std::ptrdiff_t>(m_pinnedIds.size()))
+        {
+            return;
+        }
+        std::iter_swap(
+            m_pinnedIds.begin() + index,
+            m_pinnedIds.begin() + target);
+        PersistPinnedOrder();
+    }
+
+    void MainWindow::DropPinnedEntry(
+        std::int64_t sourceId,
+        std::int64_t targetId,
+        bool afterTarget)
+    {
+        if (!m_canReorderPinned || sourceId == targetId)
+        {
+            return;
+        }
+        auto source = std::find(m_pinnedIds.begin(), m_pinnedIds.end(), sourceId);
+        auto target = std::find(m_pinnedIds.begin(), m_pinnedIds.end(), targetId);
+        if (source == m_pinnedIds.end() || target == m_pinnedIds.end())
+        {
+            return;
+        }
+
+        m_pinnedIds.erase(source);
+        target = std::find(m_pinnedIds.begin(), m_pinnedIds.end(), targetId);
+        auto insert = target + (afterTarget ? 1 : 0);
+        m_pinnedIds.insert(insert, sourceId);
+        PersistPinnedOrder();
+    }
+
+    void MainWindow::PersistPinnedOrder()
+    {
+        try
+        {
+            JsonArray ids;
+            for (auto const entryId : m_pinnedIds)
+            {
+                ids.Append(JsonValue::CreateNumberValue(static_cast<double>(entryId)));
+            }
+            auto const value = m_core->UpdatePinnedOrder(
+                winrt::to_string(ids.Stringify()));
+            auto const result = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            RefreshItems();
+
+            std::wstringstream status;
+            status << L"置顶顺序已保存 · " << m_pinnedIds.size()
+                   << L" 条 · 第 "
+                   << static_cast<std::uint64_t>(result.GetNamedNumber(L"generation"))
+                   << L" 代";
+            SetStatus(winrt::hstring{ status.str() });
+        }
+        catch (std::exception const& error)
+        {
+            RefreshItems();
+            SetStatus(StatusMessage(
+                L"保存置顶顺序失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
     }
 
     void MainWindow::UpdateSelectionVisuals()

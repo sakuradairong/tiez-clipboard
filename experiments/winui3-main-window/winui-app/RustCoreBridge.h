@@ -21,6 +21,7 @@ namespace tiez::probe
         [[nodiscard]] std::string UpdateTags(
             std::int64_t entryId,
             std::string_view tagsJson) const;
+        [[nodiscard]] std::string UpdatePinnedOrder(std::string_view orderedIdsJson) const;
         void SetChangedCallback(TiezChangedCallback callback, void* userData) const;
         bool StartCapture() const;
         [[nodiscard]] std::uint32_t AbiVersion() const noexcept;
@@ -35,6 +36,7 @@ namespace tiez::probe
         using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdateTagsJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
+        using UpdatePinnedOrderJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using SetChangedCallbackFn = void(__cdecl*)(TiezCoreHandle*, TiezChangedCallback, void*);
         using StartCaptureFn = bool(__cdecl*)(TiezCoreHandle*);
         using TakeLastErrorFn = char*(__cdecl*)();
@@ -56,6 +58,7 @@ namespace tiez::probe
         ContentFn m_content{};
         ApplyActionJsonFn m_applyActionJson{};
         UpdateTagsJsonFn m_updateTagsJson{};
+        UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SetChangedCallbackFn m_setChangedCallback{};
         StartCaptureFn m_startCapture{};
         TakeLastErrorFn m_takeLastError{};

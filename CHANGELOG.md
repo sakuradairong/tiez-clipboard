@@ -15,7 +15,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI copy writes the clipboard without hiding or sending Ctrl+V. Ctrl+Enter pastes rich text; Delete and a card context menu cover pin/delete/copy.
 - WinUI live-captures Unicode text, CF_HTML, PNG/DIB images, and Explorer files through the native Rust ABI. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
 - Writable WinUI history can use existing Tauri DPAPI-protected entries for copy and paste while keeping sensitive previews and the details pane redacted; read-only database inspection remains metadata-only.
-- WinUI ABI v5 and the native details pane now support searchable item tags, Chinese comma-separated editing, tag chips, and positive replacement IDs when tagging persists a session-only entry.
+- WinUI ABI v6 and the native details pane now support searchable item tags, Chinese comma-separated editing, tag chips, and positive replacement IDs when tagging persists a session-only entry.
+- WinUI pinned cards can now be reordered by drag-and-drop or the Chinese “上移”/“下移” controls; writable SQLite updates the complete pinned order atomically and rejects stale or filtered partial lists.
 
 ### Changed
 

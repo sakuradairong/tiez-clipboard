@@ -65,7 +65,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
             Microsoft::UI::Xaml::Controls::Border const& card,
             std::int64_t entryId,
             bool readOnly);
+        void AttachPinnedReorder(
+            Microsoft::UI::Xaml::Controls::Border const& card,
+            std::int64_t entryId,
+            bool enabled);
         void MoveSelection(int delta);
+        void MovePinnedEntry(std::int64_t entryId, int delta);
+        void DropPinnedEntry(std::int64_t sourceId, std::int64_t targetId, bool afterTarget);
+        void PersistPinnedOrder();
         void UpdateSelectionVisuals();
         std::string CurrentQuery();
         void SaveSelectedTags();
@@ -94,11 +101,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
         bool m_readOnly{};
+        bool m_canReorderPinned{};
         std::string m_typeFilter;
         std::vector<std::int64_t> m_entryIds;
+        std::vector<std::int64_t> m_pinnedIds;
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;
         std::unordered_map<std::int64_t, std::vector<winrt::hstring>> m_tagsById;
         std::optional<std::int64_t> m_detailsEntryId;
+        std::optional<std::int64_t> m_draggedPinnedId;
         int m_selectedIndex{-1};
     };
 }

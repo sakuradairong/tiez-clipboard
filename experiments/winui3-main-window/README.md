@@ -28,7 +28,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v5
+        │ dynamic loading + C ABI v6
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -48,6 +48,7 @@ The C ABI interface is deliberately small:
 - report the active adapter and whether it is read-only;
 - apply `pin`, `delete`, `paste-plain`, or `paste-rich` (memory or writable SQLite);
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
+- replace the complete pinned order from a UTF-8 JSON integer array;
 - return a structured mutation result with requested/effective/replacement IDs,
   removal state, generation, and a display message;
 - retrieve per-thread errors and free returned strings.
@@ -55,7 +56,7 @@ The C ABI interface is deliberately small:
 The shared Rust module owns adapter selection, query filtering (including
 `type:<content_type>` chips), sorting, sensitive-preview redaction, relative
 timestamps, generation tracking, paste payload planning, tag privacy transitions,
-and pin/delete/tag writes.
+and pin/delete/tag/pinned-order writes.
 `PasteCoordinator` plans hide → restore-focus → clipboard → Ctrl+V; the WinUI
 shell captures the last foreground HWND and the Windows executor applies Unicode
 text plus a paste keystroke. The C ABI library owns only transport concerns:
@@ -72,6 +73,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
+- pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
 - copy without paste (clipboard write only);
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
@@ -175,7 +177,7 @@ if they exist). The installed Windows database is normally under TieZ's
 app-data directory; portable mode stores it under `data\clipboard.db` beside
 the executable, and `datapath.txt` may redirect the directory.
 
-Writable (WinUI as the only process — pin/delete/tag changes persist):
+Writable (WinUI as the only process — pin/delete/tag/order changes persist):
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
@@ -201,6 +203,9 @@ before either runtime opens SQLite.
 
 The header should show `sqlite` and **write enabled**. Pin/delete go through
 `tiez_core_apply_action_json`; tag edits go through `tiez_core_update_tags_json`.
+Pinned-order edits go through `tiez_core_update_pinned_order_json` and submit
+the complete visible pinned ID list. Reordering is disabled while search or a
+type filter is active; the Rust core atomically rejects stale or partial lists.
 Persisted positive IDs stay stable. Tagging or pinning a WinUI session-only
 negative ID persists it and returns the new positive `replacement_id`.
 
@@ -266,7 +271,7 @@ adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 5`.
+- [ ] Status shows `Rust ABI 6`.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
@@ -295,6 +300,8 @@ adapter with every result.
 - [ ] Tag chips render, tag search finds matching items, and Chinese comma-separated edits persist.
 - [ ] Adding `sensitive`, `密码`, or `password` redacts the item; removing the last sensitive tag restores access.
 - [ ] Tagging a negative session ID follows the positive replacement ID without losing selection.
+- [ ] Pinned cards reorder by drag-and-drop and by “上移”/“下移”, then retain that order after restart.
+- [ ] Pinned reordering is unavailable in searched, type-filtered, or read-only views.
 
 ### Copied production history
 
@@ -339,7 +346,7 @@ window should call, and which extraction phase owns it.
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
 | Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy connected, OCR/cloud later | 3 |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
-| Pinned drag reorder | `update_pinned_order` | later | 4 |
+| Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
 | Open URL/file | `open_content` | later | 4 |
 | Settings, emoji, tag manager, file transfer, cloud, theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
@@ -360,7 +367,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    delete, clear, and pinned-order changes through `TauriMutationAdapter` and
    `tiez-core` session policies, while preserving replacement IDs, privacy
    encryption/decryption jobs, cleanup events, and cloud sync. The WinUI SQLite
-   **write** adapter now persists pin/delete/tag changes when the probe is the
+   **write** adapter now persists pin/delete/tag/pinned-order changes when the probe is the
    only process. Pinning or tagging session entries returns the positive
    replacement ID, while sensitive tag changes synchronously protect storage;
 3. `PasteCoordinator` — **extracted**: payload planning, hide/restore-focus/
@@ -379,8 +386,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    distribution remain later.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs the remaining phase-4 shell work (pinned reorder, compact preview, tray,
-settings entry) and the release-critical backup/sync/update surfaces.
+needs the remaining phase-4 shell work (compact preview, tray, settings entry)
+and the release-critical backup/sync/update surfaces.
 
 ## Primary references
 

@@ -46,6 +46,8 @@ namespace tiez::probe
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
+            m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
+                "tiez_core_update_pinned_order_json");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -137,6 +139,18 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust tag update failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdatePinnedOrder(std::string_view orderedIdsJson) const
+    {
+        std::string orderValue{ orderedIdsJson };
+        auto* result = m_updatePinnedOrderJson(m_handle, orderValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust pinned reorder failed: " + TakeLastError());
         }
 
         return ConsumeString(result);
