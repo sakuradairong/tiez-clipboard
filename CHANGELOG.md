@@ -37,7 +37,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
-- The native WinUI main window now inherits existing keyboard `app.hotkey` settings instead of hard-coding Alt+C. Common modifier/key aliases are accepted, the active shortcut is shown in Chinese, an empty value disables registration, and invalid or conflicting changes preserve the previously working shortcut. The legacy middle-mouse hook remains an explicit migration item rather than silently changing the saved setting.
+- The native WinUI main window now inherits and edits existing keyboard `app.hotkey` settings instead of hard-coding Alt+C. The Chinese settings dialog registers a new shortcut before persisting it, rolls system registration back if the database write fails, and can disable the shortcut with an empty value. Common modifier/key aliases are accepted, invalid or conflicting changes preserve the previously working shortcut and saved value, and the legacy middle-mouse hook remains an explicit migration item rather than silently changing the setting.
 
 - WebDAV client construction, safe path encoding, retry policy, atomic publication, blob transfer, and remote listing parsers now live in Tauri-independent `tiez-core`, establishing the reusable transport contract for the native WinUI sync runner.
 - Cloud-sync item, snapshot, op-batch, head, content-preference, identity, digest, and revision-collapse rules now share one Tauri-independent protocol model while retaining the existing snake_case remote JSON format.

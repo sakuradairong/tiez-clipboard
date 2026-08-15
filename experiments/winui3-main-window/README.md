@@ -87,10 +87,10 @@ versioned request/response structs or another explicitly versioned wire format.
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
 - card context menu and double-click paste;
 - focusable clipboard list items with Chinese Narrator summaries, keyboard help, live status announcements, and protected sensitive-preview names;
-- configured keyboard global-hotkey toggle (inherited from `app.hotkey`, default Alt+C), last-foreground HWND capture, and deactivate-to-hide (unless pinned); invalid/conflicting registrations keep the previous working shortcut, while the legacy middle-mouse hook remains pending and is reported explicitly in Chinese;
+- configured keyboard global-hotkey toggle (inherited from and editable through `app.hotkey`, default Alt+C), last-foreground HWND capture, and deactivate-to-hide (unless pinned); the Chinese editor registers before persisting, database-write failure rolls registration back, and invalid/conflicting registrations keep the previous working shortcut and saved value, while the legacy middle-mouse hook remains pending and is reported explicitly in Chinese;
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
-- a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
+- a Chinese native settings dialog for theme, compact list, global keyboard shortcut, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
 - packaged login startup through the MSIX `StartupTask` contract, plus a current-EXE HKCU Run fallback for unpackaged development; startup activation stays hidden in the tray and packaged ownership removes legacy Tauri Run values;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
@@ -382,7 +382,9 @@ recognition. Record the active adapter with every result.
 - [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
 - [ ] Right-click a card for open/paste/copy/pin/delete; double-click pastes plain text.
 - [ ] The configured `app.hotkey` (Alt+C by default) toggles visibility and captures the last foreground window; the Chinese shell displays the active shortcut.
-- [ ] An invalid or already-registered shortcut leaves the previous working shortcut registered; an empty setting disables the shortcut without affecting tray access.
+- [ ] Editing the shortcut in Chinese native settings registers it before saving it; reopening settings shows the saved value and the main shell immediately shows the active value.
+- [ ] An invalid or already-registered shortcut leaves both the previous working registration and saved value unchanged; an empty setting disables and persists the shortcut without affecting tray access.
+- [ ] A simulated database-write failure restores the previous system registration and reports a Chinese error; read-only adapters and `TIEZ_WINUI_HOTKEY` diagnostic overrides disable the editor.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
 - [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
 - [ ] An ordinary second launch exits with code 0 and reveals the existing native window without constructing another Rust/SQLite owner.
@@ -467,7 +469,7 @@ window should call, and which extraction phase owns it.
 | Paste rich (right-click) | `copy_to_clipboard` `pasteWithFormat: true` | `PasteCoordinator` + `paste-rich` | 1 |
 | Esc hide | `hide_window_cmd` | WinUI `UiLifecycle` hide | 1 |
 | Keyboard up/down + Enter | `useKeyboardNavigation` / `navigation-action` | WinUI list selection | 1 |
-| Configured keyboard toggle hotkey (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | read-only native settings snapshot + parsed WinUI `RegisterHotKey`, rollback, and last HWND; legacy `MouseMiddle` hook pending | 5 (keyboard connected) |
+| Configured keyboard toggle hotkey (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | allowlisted native settings read/write + parsed WinUI `RegisterHotKey`, registration-first persistence, rollback, and last HWND; legacy `MouseMiddle` hook pending | 5 (keyboard connected) |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
@@ -513,7 +515,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    WinUI executes Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
    Tauri still wraps the existing Win32 clipboard/keystroke path after planning
    text payloads;
-4. `UiLifecycle` — **WinUI daily shell connected**: inherited configured-hotkey toggle, Esc hide,
+4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable configured-hotkey toggle, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste, native tray,
    close-to-hide, explicit tray exit, Explorer restart recovery, AppLifecycle
    launch redirection, and shared per-database single-instance ownership;

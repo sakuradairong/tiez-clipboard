@@ -1658,6 +1658,8 @@ mod tests {
         ));
         let compact_key = CString::new("app.compact_mode").unwrap();
         let true_value = CString::new("true").unwrap();
+        let hotkey_key = CString::new("app.hotkey").unwrap();
+        let hotkey_value = CString::new("Ctrl+Shift+F23").unwrap();
 
         unsafe {
             let initial = tiez_core_get_settings_json(handle);
@@ -1678,12 +1680,23 @@ mod tests {
             assert!(mutation_json.contains("\"generation\":2"));
             tiez_core_string_free(mutation);
 
+            let hotkey_mutation = tiez_core_update_setting_json(
+                handle,
+                hotkey_key.as_ptr(),
+                hotkey_value.as_ptr(),
+            );
+            assert!(!hotkey_mutation.is_null());
+            let hotkey_json = CStr::from_ptr(hotkey_mutation).to_str().unwrap();
+            assert!(hotkey_json.contains("\"key\":\"app.hotkey\""));
+            assert!(hotkey_json.contains("\"value\":\"Ctrl+Shift+F23\""));
+            assert!(hotkey_json.contains("\"generation\":3"));
+            tiez_core_string_free(hotkey_mutation);
+
             let updated = tiez_core_get_settings_json(handle);
             assert!(!updated.is_null());
-            assert!(CStr::from_ptr(updated)
-                .to_str()
-                .unwrap()
-                .contains("\"app.compact_mode\":\"true\""));
+            let updated_json = CStr::from_ptr(updated).to_str().unwrap();
+            assert!(updated_json.contains("\"app.compact_mode\":\"true\""));
+            assert!(updated_json.contains("\"app.hotkey\":\"Ctrl+Shift+F23\""));
             tiez_core_string_free(updated);
 
             let secret_key = CString::new("mqtt_password").unwrap();

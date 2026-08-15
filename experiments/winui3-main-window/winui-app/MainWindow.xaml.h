@@ -76,6 +76,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetupLifecycle();
         void TeardownLifecycle();
         bool ApplyToggleHotkey(winrt::hstring const& configuredHotkey);
+        void SaveToggleHotkey();
         void SetupTrayIcon();
         void AddTrayIcon();
         void RemoveTrayIcon();
@@ -167,6 +168,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_windowPinnedToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_autostartToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_autostartStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_hotkeyEditor{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_hotkeyApplyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_hotkeySettingsStatus{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncEnabledToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncAutoToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox m_cloudSyncUrlText{ nullptr };
@@ -233,6 +237,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_trayVisible{ true };
         bool m_canReorderPinned{};
         std::string m_typeFilter;
+        winrt::hstring m_configuredHotkey{ L"Alt+C" };
         winrt::hstring m_registeredHotkey;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;

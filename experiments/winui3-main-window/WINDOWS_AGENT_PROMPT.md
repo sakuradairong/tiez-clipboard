@@ -114,8 +114,13 @@ Required negative tests:
 13. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
     Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
     the hidden native window, and WM_CLOSE returns the same process to the tray.
-    Then verify an invalid or conflicting `app.hotkey` keeps the previous working
-    shortcut and that the Chinese shell reports the active shortcut without
+    Then edit the shortcut in Chinese native settings and verify registration
+    succeeds before the new value is persisted, the main shell reports the active
+    shortcut, and reopening settings shows the saved value. Verify an invalid or
+    conflicting value preserves both the previous working registration and saved
+    value, an empty value disables and persists the shortcut, and a simulated
+    database-write failure rolls the system registration back. Read-only adapters
+    and `TIEZ_WINUI_HOTKEY` diagnostic overrides must disable the editor without
     exposing any secret setting.
 
 Evidence to save under:

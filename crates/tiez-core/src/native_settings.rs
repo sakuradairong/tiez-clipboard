@@ -96,9 +96,9 @@ const NATIVE_SETTINGS: &[SettingDefinition] = &[
     },
 ];
 
-// These non-secret compatibility values are visible to native frontends but
-// remain read-only until the native UI owns their complete update semantics.
-const READ_ONLY_NATIVE_SETTINGS: &[(&str, &str, usize)] = &[("app.hotkey", "Alt+C", 64)];
+// These non-secret compatibility strings retain their existing database keys.
+// Native callers own feature-specific validation before persisting them here.
+const COMPATIBILITY_TEXT_SETTINGS: &[(&str, &str, usize)] = &[("app.hotkey", "Alt+C", 64)];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeSettingsSnapshot {
@@ -230,7 +230,7 @@ impl NativeSettings {
                         values.insert(definition.key.to_owned(), value);
                     }
                 }
-                for &(key, default_value, max_length) in READ_ONLY_NATIVE_SETTINGS {
+                for &(key, default_value, max_length) in COMPATIBILITY_TEXT_SETTINGS {
                     let value = connection
                         .query_row(
                             "SELECT value FROM settings WHERE key = ?1",
@@ -280,13 +280,27 @@ impl NativeSettings {
         key: &str,
         value: &str,
     ) -> Result<NativeSettingMutation, NativeSettingsError> {
-        let definition = setting_definition(key).ok_or_else(|| {
-            NativeSettingsError::new(
-                NativeSettingsErrorKind::Validation,
-                format!("setting {key} is not exposed to native frontends"),
-            )
-        })?;
-        let value = normalize_value(definition, value)?;
+        let value = if let Some((_, _, max_length)) = COMPATIBILITY_TEXT_SETTINGS
+            .iter()
+            .find(|(candidate, _, _)| *candidate == key)
+        {
+            let normalized = value.trim();
+            if normalized.len() > *max_length {
+                return Err(validation_error(
+                    key,
+                    &format!("must not exceed {max_length} UTF-8 bytes"),
+                ));
+            }
+            normalized.to_owned()
+        } else {
+            let definition = setting_definition(key).ok_or_else(|| {
+                NativeSettingsError::new(
+                    NativeSettingsErrorKind::Validation,
+                    format!("setting {key} is not exposed to native frontends"),
+                )
+            })?;
+            normalize_value(definition, value)?
+        };
         let adapter = match &mut self.adapter {
             NativeSettingsAdapter::Memory(values) => {
                 values.insert(key.to_owned(), value.clone());
@@ -352,7 +366,7 @@ fn default_values() -> BTreeMap<String, String> {
                 definition.default_value.to_owned(),
             )
         })
-        .chain(READ_ONLY_NATIVE_SETTINGS.iter().map(
+        .chain(COMPATIBILITY_TEXT_SETTINGS.iter().map(
             |(key, default_value, _)| ((*key).to_owned(), (*default_value).to_owned()),
         ))
         .collect()
@@ -528,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_hotkey_is_visible_but_not_mutable_through_native_settings() {
+    fn existing_hotkey_is_visible_and_mutable_through_native_settings() {
         let path = temporary_database("hotkey");
         create_settings_database(&path);
         Connection::open(&path)
@@ -544,12 +558,18 @@ mod tests {
             settings.snapshot().unwrap().values.get("app.hotkey"),
             Some(&"Ctrl+Alt+F24".to_owned())
         );
+        let mutation = settings.update("app.hotkey", " Shift+F23 ").unwrap();
+        assert_eq!(mutation.value, "Shift+F23");
         assert_eq!(
-            settings
-                .update("app.hotkey", "Alt+C")
-                .unwrap_err()
-                .kind(),
-            NativeSettingsErrorKind::Validation
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'app.hotkey'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Shift+F23"
         );
 
         drop(settings);

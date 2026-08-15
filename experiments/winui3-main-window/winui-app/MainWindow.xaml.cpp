@@ -2095,6 +2095,84 @@ namespace winrt::Tiez::WinUIProbe::implementation
         return false;
     }
 
+    void MainWindow::SaveToggleHotkey()
+    {
+        if (!m_core || m_settingsReadOnly || !m_hotkeyEditor)
+        {
+            auto const message = m_settingsReadOnly
+                ? winrt::hstring{ L"当前数据库以只读方式打开，无法修改呼出快捷键。" }
+                : winrt::hstring{ L"Rust 核心尚未就绪，无法修改呼出快捷键。" };
+            if (m_hotkeySettingsStatus)
+            {
+                m_hotkeySettingsStatus.Text(message);
+            }
+            SetStatus(message);
+            return;
+        }
+        if (ReadEnvironmentText(L"TIEZ_WINUI_HOTKEY"))
+        {
+            auto const message = winrt::hstring{
+                L"诊断环境变量正在覆盖呼出快捷键；关闭覆盖后才能保存。" };
+            m_hotkeySettingsStatus.Text(message);
+            SetStatus(message);
+            return;
+        }
+
+        auto const candidateText = TrimHotkeyText(m_hotkeyEditor.Text().c_str());
+        auto const candidate = winrt::hstring{ candidateText };
+        auto const previousConfigured = m_configuredHotkey;
+        auto const previousRegistered = m_hotkeyRegistered;
+        auto const previousRegisteredHotkey = m_registeredHotkey;
+        if (!ApplyToggleHotkey(candidate))
+        {
+            m_hotkeySettingsStatus.Text(
+                candidate.empty()
+                ? L"无法停用当前呼出快捷键，原快捷键保持不变。"
+                : L"此快捷键格式无效、尚未支持或已被占用，原快捷键保持不变。");
+            return;
+        }
+
+        try
+        {
+            (void)m_core->UpdateSetting("app.hotkey", winrt::to_string(candidate));
+            m_configuredHotkey = candidate;
+            m_hotkeyEditor.Text(candidate);
+            if (candidate.empty())
+            {
+                m_hotkeySettingsStatus.Text(L"呼出快捷键已停用，仍可通过系统托盘打开 TieZ。");
+                SetStatus(L"全局呼出快捷键已停用。系统托盘仍可使用。");
+            }
+            else
+            {
+                std::wstring message{ L"已保存并启用：" };
+                message.append(candidate.c_str(), candidate.size());
+                m_hotkeySettingsStatus.Text(winrt::hstring{ message });
+                message.append(L"。");
+                SetStatus(winrt::hstring{ message });
+            }
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = ApplyToggleHotkey(rollback);
+            m_configuredHotkey = previousConfigured;
+            m_hotkeyEditor.Text(previousConfigured);
+
+            auto message = StatusMessage(
+                L"保存呼出快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring detail{ message.c_str(), message.size() };
+            detail.append(restored
+                ? L"；已恢复原快捷键。"
+                : L"；无法恢复原快捷键，请使用系统托盘。");
+            auto const finalMessage = winrt::hstring{ detail };
+            m_hotkeySettingsStatus.Text(finalMessage);
+            SetStatus(finalMessage);
+        }
+    }
+
     void MainWindow::TeardownLifecycle()
     {
         RemoveTrayIcon();
@@ -3641,6 +3719,38 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_settingsPanel.Children().Append(m_autostartToggle);
         m_settingsPanel.Children().Append(m_autostartStatus);
 
+        TextBlock hotkeyTitle;
+        hotkeyTitle.Text(L"呼出快捷键");
+        hotkeyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(hotkeyTitle);
+
+        m_hotkeyEditor = TextBox();
+        m_hotkeyEditor.Header(winrt::box_value(L"全局呼出快捷键"));
+        m_hotkeyEditor.PlaceholderText(L"例如 Alt+C、Win+V、Ctrl+Shift+F12；留空停用");
+        m_hotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_hotkeyEditor, L"全局呼出快捷键");
+        AutomationProperties::SetHelpText(
+            m_hotkeyEditor,
+            L"输入修饰键和按键并用加号连接；支持 Ctrl、Shift、Alt、Win、字母、数字、功能键和常用按键。留空可停用。");
+        m_settingsPanel.Children().Append(m_hotkeyEditor);
+
+        m_hotkeyApplyButton = Button();
+        m_hotkeyApplyButton.Content(winrt::box_value(L"应用快捷键"));
+        AutomationProperties::SetName(m_hotkeyApplyButton, L"应用全局呼出快捷键");
+        m_settingsPanel.Children().Append(m_hotkeyApplyButton);
+
+        m_hotkeySettingsStatus = TextBlock();
+        m_hotkeySettingsStatus.Text(L"正在读取已保存的呼出快捷键……");
+        m_hotkeySettingsStatus.TextWrapping(TextWrapping::Wrap);
+        m_hotkeySettingsStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_hotkeySettingsStatus, L"呼出快捷键状态");
+        AutomationProperties::SetLiveSetting(
+            m_hotkeySettingsStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        m_settingsPanel.Children().Append(m_hotkeySettingsStatus);
+
         TextBlock historyTitle;
         historyTitle.Text(L"历史与捕获");
         historyTitle.Style(Application::Current().Resources()
@@ -3957,6 +4067,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 LoadSettings();
             }
         });
+        m_hotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading)
+            {
+                SaveToggleHotkey();
+            }
+        });
         m_compactModeToggle.Toggled([this](auto const&, auto const&)
         {
             if (m_settingsLoading) return;
@@ -4110,10 +4227,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
         };
 
         auto const colorMode = getValue(L"app.color_mode", L"system");
-        auto hotkey = getValue(L"app.hotkey", L"Alt+C");
+        auto const savedHotkey = getValue(L"app.hotkey", L"Alt+C");
+        auto hotkey = savedHotkey;
+        auto hotkeyOverridden = false;
         if (auto const diagnosticHotkey = ReadEnvironmentText(L"TIEZ_WINUI_HOTKEY"))
         {
             hotkey = *diagnosticHotkey;
+            hotkeyOverridden = true;
         }
         auto const compactMode = getBool(L"app.compact_mode", false);
         auto const persistent = getBool(L"app.persistent", false);
@@ -4140,6 +4260,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const compactChanged = m_compactMode != compactMode;
         m_settingsReadOnly = root.GetNamedBoolean(L"read_only");
         m_productionData = adapter == L"sqlite" || adapter == L"sqlite-read-only";
+        m_configuredHotkey = savedHotkey;
+        auto const hotkeyApplied = ApplyToggleHotkey(hotkey);
         m_settingsLoading = true;
         m_compactMode = compactMode;
         m_autostartPreference = autostart;
@@ -4159,6 +4281,36 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_trayVisibleToggle.IsEnabled(settingsEnabled);
             m_windowPinnedToggle.IsEnabled(settingsEnabled);
             m_autostartToggle.IsEnabled(settingsEnabled && !m_autostartBusy);
+            m_hotkeyEditor.IsEnabled(settingsEnabled && !hotkeyOverridden);
+            m_hotkeyApplyButton.IsEnabled(settingsEnabled && !hotkeyOverridden);
+            m_hotkeyEditor.Text(savedHotkey);
+            if (hotkeyOverridden)
+            {
+                std::wstring message{ L"诊断模式正在临时使用 " };
+                message.append(hotkey.c_str(), hotkey.size());
+                message.append(L"；关闭环境变量后可编辑已保存值。");
+                m_hotkeySettingsStatus.Text(winrt::hstring{ message });
+            }
+            else if (savedHotkey.empty())
+            {
+                m_hotkeySettingsStatus.Text(L"呼出快捷键已停用，仍可通过系统托盘打开 TieZ。");
+            }
+            else if (hotkeyApplied)
+            {
+                std::wstring message{ L"当前已启用：" };
+                message.append(savedHotkey.c_str(), savedHotkey.size());
+                m_hotkeySettingsStatus.Text(winrt::hstring{ message });
+            }
+            else if (m_hotkeyRegistered)
+            {
+                std::wstring message{ L"已保存值当前不可用；继续使用：" };
+                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+                m_hotkeySettingsStatus.Text(winrt::hstring{ message });
+            }
+            else
+            {
+                m_hotkeySettingsStatus.Text(L"已保存值当前不可用，请使用系统托盘打开 TieZ。");
+            }
             m_colorModeCombo.SelectedIndex(colorMode == L"light" ? 1 : colorMode == L"dark" ? 2 : 0);
             m_compactModeToggle.IsOn(compactMode);
             m_persistentToggle.IsOn(persistent);
@@ -4196,7 +4348,6 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         ApplyColorMode(winrt::to_string(colorMode));
         ApplyPinnedWindow(pinned);
-        ApplyToggleHotkey(hotkey);
         SetTrayVisible(trayVisible);
         if (compactChanged && m_core)
         {
