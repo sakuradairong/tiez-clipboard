@@ -8,7 +8,7 @@ name: winui3-probe
 on:
   workflow_dispatch:
   push:
-    branches: [explore/winui3-main-window]
+    branches: [master]
     paths:
       - "crates/tiez-core/**"
       - "experiments/winui3-main-window/**"
@@ -40,6 +40,11 @@ jobs:
         working-directory: experiments/winui3-main-window
         shell: pwsh
         run: ./build.ps1 -Configuration Release -Platform x64
+
+      - name: Test native single-instance activation
+        working-directory: experiments/winui3-main-window
+        shell: pwsh
+        run: ./test-single-instance.ps1 -Configuration Release
 
       - name: Validate unsigned MSIX
         working-directory: experiments/winui3-main-window
