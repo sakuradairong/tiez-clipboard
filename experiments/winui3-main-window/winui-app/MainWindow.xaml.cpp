@@ -85,6 +85,72 @@ namespace
         return L"操作已完成";
     }
 
+    std::vector<winrt::hstring> ItemTags(
+        winrt::Windows::Data::Json::JsonObject const& item)
+    {
+        std::vector<winrt::hstring> tags;
+        if (!item.HasKey(L"tags"))
+        {
+            return tags;
+        }
+        auto const values = item.GetNamedArray(L"tags");
+        tags.reserve(values.Size());
+        for (std::uint32_t index = 0; index < values.Size(); ++index)
+        {
+            auto const tag = values.GetStringAt(index);
+            if (!tag.empty())
+            {
+                tags.push_back(tag);
+            }
+        }
+        return tags;
+    }
+
+    winrt::hstring JoinTags(std::vector<winrt::hstring> const& tags)
+    {
+        std::wstring joined;
+        for (auto const& tag : tags)
+        {
+            if (!joined.empty())
+            {
+                joined.append(L"，");
+            }
+            joined.append(tag.c_str(), tag.size());
+        }
+        return winrt::hstring{ joined };
+    }
+
+    std::vector<winrt::hstring> SplitTags(winrt::hstring const& value)
+    {
+        std::wstring normalized{ value.c_str(), value.size() };
+        std::replace(normalized.begin(), normalized.end(), L'，', L',');
+        std::replace(normalized.begin(), normalized.end(), L'；', L',');
+        std::replace(normalized.begin(), normalized.end(), L';', L',');
+
+        constexpr std::wstring_view whitespace{ L" \t\r\n" };
+        std::vector<winrt::hstring> tags;
+        std::size_t start{};
+        while (start <= normalized.size())
+        {
+            auto const end = normalized.find(L',', start);
+            auto const token = normalized.substr(
+                start,
+                end == std::wstring::npos ? std::wstring::npos : end - start);
+            auto const first = token.find_first_not_of(whitespace);
+            if (first != std::wstring::npos)
+            {
+                auto const last = token.find_last_not_of(whitespace);
+                tags.emplace_back(token.substr(first, last - first + 1));
+            }
+            if (end == std::wstring::npos)
+            {
+                break;
+            }
+            start = end + 1;
+        }
+        return tags;
+    }
+
     winrt::Microsoft::UI::Xaml::Controls::Button ActionButton(
         winrt::hstring const& label,
         std::function<void()> action)
@@ -308,6 +374,29 @@ namespace winrt::Tiez::WinUIProbe::implementation
         SetTypeFilter(filter);
     }
 
+    void MainWindow::TagsTextBox_KeyDown(IInspectable const&, KeyRoutedEventArgs const& args)
+    {
+        if (args.Key() != VirtualKey::Enter)
+        {
+            return;
+        }
+        if (m_imeComposing || m_ignoreNextEnter || (GetKeyState(VK_PROCESSKEY) & 0x8000))
+        {
+            m_ignoreNextEnter = false;
+            return;
+        }
+        if (!m_readOnly)
+        {
+            SaveSelectedTags();
+            args.Handled(true);
+        }
+    }
+
+    void MainWindow::SaveTagsButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        SaveSelectedTags();
+    }
+
     void MainWindow::OnToggleHotkey()
     {
         if (IsWindowVisible(GetWindowHandle()))
@@ -332,6 +421,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const items = root.GetNamedArray(L"items");
             auto const adapter = root.GetNamedString(L"adapter");
             auto const readOnly = root.GetNamedBoolean(L"read_only");
+            m_readOnly = readOnly;
 
             AdapterText().Text(AdapterLabel(adapter));
             if (readOnly)
@@ -355,10 +445,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
             ItemsPanel().Children().Clear();
             m_entryIds.clear();
             m_cards.clear();
+            m_tagsById.clear();
             for (std::uint32_t index = 0; index < items.Size(); ++index)
             {
                 auto const item = items.GetObjectAt(index);
-                m_entryIds.push_back(static_cast<std::int64_t>(item.GetNamedNumber(L"id")));
+                auto const entryId = static_cast<std::int64_t>(item.GetNamedNumber(L"id"));
+                m_entryIds.push_back(entryId);
+                m_tagsById.emplace(entryId, ItemTags(item));
                 auto const card = CreateItemCard(item, readOnly, index);
                 ItemsPanel().Children().Append(card);
             }
@@ -380,6 +473,30 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 m_selectedIndex = 0;
             }
             UpdateSelectionVisuals();
+
+            if (m_selectedIndex >= 0
+                && m_selectedIndex < static_cast<int>(m_entryIds.size()))
+            {
+                auto const selectedId = m_entryIds[static_cast<std::size_t>(m_selectedIndex)];
+                TagsTextBox().IsEnabled(!readOnly);
+                SaveTagsButton().IsEnabled(!readOnly);
+                if (TagsTextBox().FocusState() == FocusState::Unfocused)
+                {
+                    TagsTextBox().Text(JoinTags(m_tagsById[selectedId]));
+                    ShowContent(selectedId);
+                }
+            }
+            else
+            {
+                m_detailsEntryId.reset();
+                DetailsTitleText().Text(L"剪贴板详情");
+                DetailsMetadataText().Text(L"没有可显示的记录");
+                DetailsContentText().Text(L"");
+                ShowDetailsImage({}, {});
+                TagsTextBox().Text(L"");
+                TagsTextBox().IsEnabled(false);
+                SaveTagsButton().IsEnabled(false);
+            }
 
             EmptyState().Visibility(items.Size() == 0 ? Visibility::Visible : Visibility::Collapsed);
 
@@ -471,6 +588,32 @@ namespace winrt::Tiez::WinUIProbe::implementation
             content.Children().Append(sensitive);
         }
 
+        auto const tags = ItemTags(item);
+        if (!tags.empty())
+        {
+            StackPanel tagPanel;
+            tagPanel.Orientation(Orientation::Horizontal);
+            tagPanel.Spacing(6);
+            for (auto const& tag : tags)
+            {
+                Border chip;
+                chip.Padding(ThicknessHelper::FromLengths(8, 3, 8, 3));
+                chip.CornerRadius(CornerRadiusHelper::FromUniformRadius(10));
+                chip.Background(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"AccentFillColorSecondaryBrush"))
+                    .as<Brush>());
+                TextBlock label;
+                label.Text(tag);
+                label.FontSize(12);
+                chip.Child(label);
+                std::wstring automationName{ L"标签：" };
+                automationName.append(tag.c_str(), tag.size());
+                AutomationProperties::SetName(chip, winrt::hstring{ automationName });
+                tagPanel.Children().Append(chip);
+            }
+            content.Children().Append(tagPanel);
+        }
+
         TextBlock preview;
         preview.Text(item.GetNamedString(L"preview"));
         preview.TextWrapping(TextWrapping::WrapWholeWords);
@@ -542,6 +685,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
             std::wstringstream title;
             title << L"记录 " << entryId;
             DetailsTitleText().Text(winrt::hstring{ title.str() });
+            m_detailsEntryId = entryId;
+            if (auto const tags = m_tagsById.find(entryId); tags != m_tagsById.end())
+            {
+                TagsTextBox().Text(JoinTags(tags->second));
+            }
+            TagsTextBox().IsEnabled(!m_readOnly);
+            SaveTagsButton().IsEnabled(!m_readOnly);
 
             std::wstring metadata{ ContentTypeLabel(contentType).c_str() };
             metadata.append(isSensitive ? L" · 敏感内容" : L" · 内容可用");
@@ -776,6 +926,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
             HideMainWindow();
             return true;
         }
+        if (TagsTextBox().FocusState() != FocusState::Unfocused)
+        {
+            return false;
+        }
         if (key == VirtualKey::Down)
         {
             MoveSelection(1);
@@ -866,7 +1020,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         flyout.Items().Append(CommandItem(
             L"查看详情",
             true,
-            [this, entryId] { ShowContent(entryId); }));
+            [this, entryId] { SelectEntry(entryId); }));
         card.ContextFlyout(flyout);
     }
 
@@ -907,6 +1061,77 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::SaveSelectedTags()
+    {
+        if (!m_core || !m_detailsEntryId || m_readOnly)
+        {
+            SetStatus(m_readOnly
+                ? L"当前历史以只读方式打开，无法保存标签。"
+                : L"请先选择一条记录再保存标签。");
+            return;
+        }
+
+        try
+        {
+            auto const tags = SplitTags(TagsTextBox().Text());
+            JsonArray values;
+            for (auto const& tag : tags)
+            {
+                values.Append(JsonValue::CreateStringValue(tag));
+            }
+            auto const requestedId = *m_detailsEntryId;
+            auto const result = m_core->UpdateTags(
+                requestedId,
+                winrt::to_string(values.Stringify()));
+            auto const mutation = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(result));
+
+            auto effectiveId = requestedId;
+            auto const replacement = mutation.GetNamedValue(L"replacement_id");
+            if (replacement.ValueType() == JsonValueType::Number)
+            {
+                effectiveId = static_cast<std::int64_t>(replacement.GetNumber());
+            }
+            m_detailsEntryId = effectiveId;
+            RefreshItems();
+            m_tagsById[effectiveId] = tags;
+            SelectEntry(effectiveId);
+
+            std::wstringstream status;
+            status << L"标签已保存";
+            if (effectiveId != requestedId)
+            {
+                status << L" · 会话记录已安全保存为 ID " << effectiveId;
+            }
+            else
+            {
+                status << L" · 记录 ID " << effectiveId;
+            }
+            SetStatus(winrt::hstring{ status.str() });
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"保存标签失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::SelectEntry(std::int64_t entryId)
+    {
+        for (std::size_t index = 0; index < m_entryIds.size(); ++index)
+        {
+            if (m_entryIds[index] == entryId)
+            {
+                m_selectedIndex = static_cast<int>(index);
+                UpdateSelectionVisuals();
+                ShowContent(entryId);
+                return;
+            }
+        }
+        ShowContent(entryId);
+    }
+
     std::string MainWindow::CurrentQuery()
     {
         auto text = winrt::to_string(SearchBox().Text());
@@ -940,6 +1165,15 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_imeComposing = true;
         });
         SearchBox().TextCompositionEnded([this](auto const&, auto const&)
+        {
+            m_imeComposing = false;
+            m_ignoreNextEnter = true;
+        });
+        TagsTextBox().TextCompositionStarted([this](auto const&, auto const&)
+        {
+            m_imeComposing = true;
+        });
+        TagsTextBox().TextCompositionEnded([this](auto const&, auto const&)
         {
             m_imeComposing = false;
             m_ignoreNextEnter = true;

@@ -45,6 +45,7 @@ namespace tiez::probe
             m_snapshot = Resolve<SnapshotFn>("tiez_core_get_snapshot_json");
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
+            m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -122,6 +123,20 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust action failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateTags(
+        std::int64_t entryId,
+        std::string_view tagsJson) const
+    {
+        std::string tagsValue{ tagsJson };
+        auto* result = m_updateTagsJson(m_handle, entryId, tagsValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tag update failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

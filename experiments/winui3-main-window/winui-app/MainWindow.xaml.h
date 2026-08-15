@@ -34,6 +34,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void TypeChip_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void TagsTextBox_KeyDown(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args);
+        void SaveTagsButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void OnToggleHotkey();
 
     private:
@@ -62,6 +68,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void MoveSelection(int delta);
         void UpdateSelectionVisuals();
         std::string CurrentQuery();
+        void SaveSelectedTags();
+        void SelectEntry(std::int64_t entryId);
         void SetTypeFilter(std::string filter);
         void SetupImeGuards();
         void ShowDetailsImage(winrt::hstring const& contentType, winrt::hstring const& content);
@@ -85,9 +93,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_suspendLifecycle{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
+        bool m_readOnly{};
         std::string m_typeFilter;
         std::vector<std::int64_t> m_entryIds;
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;
+        std::unordered_map<std::int64_t, std::vector<winrt::hstring>> m_tagsById;
+        std::optional<std::int64_t> m_detailsEntryId;
         int m_selectedIndex{-1};
     };
 }

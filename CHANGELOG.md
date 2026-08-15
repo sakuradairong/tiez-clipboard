@@ -13,8 +13,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI `paste-rich` writes CF_HTML alongside Unicode text when the history item has HTML; the synthetic adapter includes one rich sample.
 - WinUI paste plans image/file payloads separately from text: CF_DIB/PNG for images, CF_HDROP for files. Enter does not paste while IME composition is confirming.
 - WinUI copy writes the clipboard without hiding or sending Ctrl+V. Ctrl+Enter pastes rich text; Delete and a card context menu cover pin/delete/copy.
-- WinUI live-captures Unicode text, CF_HTML, PNG/DIB images, and Explorer files through ABI v4. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
+- WinUI live-captures Unicode text, CF_HTML, PNG/DIB images, and Explorer files through the native Rust ABI. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
 - Writable WinUI history can use existing Tauri DPAPI-protected entries for copy and paste while keeping sensitive previews and the details pane redacted; read-only database inspection remains metadata-only.
+- WinUI ABI v5 and the native details pane now support searchable item tags, Chinese comma-separated editing, tag chips, and positive replacement IDs when tagging persists a session-only entry.
 
 ### Changed
 
@@ -29,6 +30,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Security
 
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
+- WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.
 
 ### Fixed
 

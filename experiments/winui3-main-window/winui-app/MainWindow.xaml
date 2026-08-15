@@ -97,6 +97,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
@@ -110,8 +111,35 @@
                         Text="请选择记录并点击“查看详情”"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                         TextWrapping="Wrap" />
+                    <StackPanel Grid.Row="2" Spacing="6">
+                        <TextBlock Text="标签（用逗号分隔）" />
+                        <Grid ColumnSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox
+                                x:Name="TagsTextBox"
+                                AutomationProperties.Name="当前记录标签"
+                                IsEnabled="False"
+                                KeyDown="TagsTextBox_KeyDown"
+                                PlaceholderText="例如：工作、稍后处理" />
+                            <Button
+                                x:Name="SaveTagsButton"
+                                Grid.Column="1"
+                                AutomationProperties.Name="保存当前记录标签"
+                                Click="SaveTagsButton_Click"
+                                Content="保存标签"
+                                IsEnabled="False" />
+                        </Grid>
+                        <TextBlock
+                            FontSize="12"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            Text="sensitive、“密码”或 password 标签会立即保护本地内容并清除 OCR 明文索引。"
+                            TextWrapping="Wrap" />
+                    </StackPanel>
                     <ScrollViewer
-                        Grid.Row="2"
+                        Grid.Row="3"
                         HorizontalScrollBarVisibility="Disabled"
                         VerticalScrollBarVisibility="Auto">
                         <StackPanel Spacing="12">

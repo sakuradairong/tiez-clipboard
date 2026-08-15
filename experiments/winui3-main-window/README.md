@@ -9,8 +9,9 @@ This experiment tests one question:
 > same process while providing enough clipboard-list interaction to justify a
 > real Windows-native product slice?
 
-The executable does **not yet** replace the Tauri window or start the real
-clipboard listener. The reusable history, paste, and window-lifecycle policies
+The executable does **not yet** replace the Tauri window. It now starts a native
+Windows clipboard listener for Unicode, HTML, image, and file payloads. The
+reusable history, paste, privacy, and window-lifecycle policies
 now live in the standalone, Tauri-independent `tiez-core` crate. By default the
 probe uses synthetic in-memory data. An opt-in adapter can open a TieZ
 `clipboard.db` for read or write. **Do not run this executable at the same time
@@ -27,7 +28,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v4
+        │ dynamic loading + C ABI v5
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -46,13 +47,15 @@ The C ABI interface is deliberately small:
 - fetch full content metadata for one stable entry ID;
 - report the active adapter and whether it is read-only;
 - apply `pin`, `delete`, `paste-plain`, or `paste-rich` (memory or writable SQLite);
+- replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - return a structured mutation result with requested/effective/replacement IDs,
   removal state, generation, and a display message;
 - retrieve per-thread errors and free returned strings.
 
 The shared Rust module owns adapter selection, query filtering (including
 `type:<content_type>` chips), sorting, sensitive-preview redaction, relative
-timestamps, generation tracking, paste payload planning, and pin/delete writes.
+timestamps, generation tracking, paste payload planning, tag privacy transitions,
+and pin/delete/tag writes.
 `PasteCoordinator` plans hide → restore-focus → clipboard → Ctrl+V; the WinUI
 shell captures the last foreground HWND and the Windows executor applies Unicode
 text plus a paste keystroke. The C ABI library owns only transport concerns:
@@ -68,6 +71,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - search plus type chips (`type:text` and friends) driven by the Rust snapshot;
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
+- searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
 - copy without paste (clipboard write only);
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
@@ -82,9 +86,10 @@ for paste-rich when HTML is available, CF_HTML (`HTML Format`). Image entries wi
 local path or `data:image/` payload write CF_DIB (and PNG when the source is PNG).
 File lists write CF_HDROP. Ctrl+V is sent after hiding and restoring the last
 foreground window. Synthetic image/file placeholders are not pasteable; use a real
-`clipboard.db` to try those types. Sensitive and encrypted payloads stay unavailable
-until a privacy adapter exists. Do not start Tauri and this executable against the
-same `clipboard.db` at once.
+`clipboard.db` to try those types. Writable SQLite mode decrypts protected payloads
+only inside the Rust core for approved copy/paste operations; native cards and the
+details pane remain redacted. Read-only inspection never exposes protected payloads.
+Do not start Tauri and this executable against the same `clipboard.db` at once.
 
 ## Windows prerequisites
 
@@ -170,7 +175,7 @@ if they exist). The installed Windows database is normally under TieZ's
 app-data directory; portable mode stores it under `data\clipboard.db` beside
 the executable, and `datapath.txt` may redirect the directory.
 
-Writable (WinUI as the only process — pin/delete persist):
+Writable (WinUI as the only process — pin/delete/tag changes persist):
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
@@ -195,8 +200,9 @@ WinUI refuses writable startup so Tauri can validate and apply that backup
 before either runtime opens SQLite.
 
 The header should show `sqlite` and **write enabled**. Pin/delete go through
-`tiez_core_apply_action_json` and keep `replacement_id` null for persisted
-positive IDs. Session-only negative IDs are still a Tauri-process concern.
+`tiez_core_apply_action_json`; tag edits go through `tiez_core_update_tags_json`.
+Persisted positive IDs stay stable. Tagging or pinning a WinUI session-only
+negative ID persists it and returns the new positive `replacement_id`.
 
 Read-only inspection of a copied database (byte-identical check):
 
@@ -208,14 +214,13 @@ $env:TIEZ_WINUI_DB_READ_ONLY = "1"
 
 The header and status should show `sqlite-read-only`. The adapter reads at
 most 200 latest entries, supports case-insensitive search over preview, source
-app, and content type, plus exact `type:<name>` filters. It deliberately
+app, content type, and tags, plus exact `type:<name>` filters. It deliberately
 does not:
 
 - read session-only negative-ID entries held in the running Tauri process;
 - display sensitive-tagged or `dpapi:` previews (they are replaced with a
   sensitive-entry label);
-- expose sensitive or encrypted payloads without the production privacy and
-  Windows decryption adapter;
+- expose sensitive or encrypted payloads in read-only mode;
 - perform mutation/paste operations when `TIEZ_WINUI_DB_READ_ONLY=1`.
 
 Use **Open details** to read the full persisted payload for non-sensitive
@@ -248,10 +253,12 @@ working set, handles, and thread count. Use the **Hide for 5 seconds** button fo
 manual visible/hidden comparison.
 
 Live capture is on for Unicode text, CF_HTML, PNG/DIB images, and Explorer
-files (consecutive-copy dedup, paste-echo skip). Do not point
+files (consecutive-copy dedup, paste-echo skip, configured privacy detection).
+Do not point
 `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
-running. Privacy tagging, OCR, and cloud sync are still omitted. Record the
-active adapter with every result.
+running. OCR analysis/search and cloud sync are still omitted; applying a
+sensitive tag does remove any existing plaintext OCR index. Record the active
+adapter with every result.
 
 ## Acceptance checklist
 
@@ -259,7 +266,7 @@ active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 4`.
+- [ ] Status shows `Rust ABI 5`.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
@@ -285,6 +292,9 @@ active adapter with every result.
 - [ ] The clipboard already present at startup is not ingested.
 - [ ] Pasting from the probe does not create a duplicate card.
 - [ ] Leading/trailing whitespace and internal newlines are preserved.
+- [ ] Tag chips render, tag search finds matching items, and Chinese comma-separated edits persist.
+- [ ] Adding `sensitive`, `密码`, or `password` redacts the item; removing the last sensitive tag restores access.
+- [ ] Tagging a negative session ID follows the positive replacement ID without losing selection.
 
 ### Copied production history
 
@@ -327,8 +337,8 @@ window should call, and which extraction phase owns it.
 | Toggle hotkey (default Alt+C) | `toggle_window_cmd` | WinUI `RegisterHotKey` + last HWND | 1 |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
-| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy/OCR/cloud later | 3 |
-| Item tags / tag search | `update_tags` | later C ABI | 4 |
+| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy connected, OCR/cloud later | 3 |
+| Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
 | Pinned drag reorder | `update_pinned_order` | later | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
 | Open URL/file | `open_content` | later | 4 |
@@ -350,9 +360,9 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    delete, clear, and pinned-order changes through `TauriMutationAdapter` and
    `tiez-core` session policies, while preserving replacement IDs, privacy
    encryption/decryption jobs, cleanup events, and cloud sync. The WinUI SQLite
-   **write** adapter now persists pin/delete for positive IDs when the probe is
-   the only process (`replacement_id` stays null; session persist-on-pin is
-   still Tauri-only);
+   **write** adapter now persists pin/delete/tag changes when the probe is the
+   only process. Pinning or tagging session entries returns the positive
+   replacement ID, while sensitive tag changes synchronously protect storage;
 3. `PasteCoordinator` — **extracted**: payload planning, hide/restore-focus/
    Ctrl+V contract, delete-after-paste intent, and a bounded paste-queue policy.
    WinUI executes Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
@@ -364,11 +374,13 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
 5. `ClipboardCapture` — **WinUI Unicode/HTML/image/file connected**: format
    priority (files, rich text, image, text), CRLF normalization without trim,
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
-   worker that never reads the clipboard in WndProc. Privacy tagging, OCR, and
-   the full production pipeline remain later.
+   worker that never reads the clipboard in WndProc. Configured privacy tagging
+   and protected persistence are connected; OCR generation and cloud
+   distribution remain later.
 
-Only after live clipboard capture (phase 3) should the WinUI executable become
-a daily-driver alternative to WebView2.
+Before the WinUI executable becomes the default daily-driver entry, it still
+needs the remaining phase-4 shell work (pinned reorder, compact preview, tray,
+settings entry) and the release-critical backup/sync/update surfaces.
 
 ## Primary references
 
