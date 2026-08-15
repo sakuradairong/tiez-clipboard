@@ -83,6 +83,20 @@ $env:CARGO_TARGET_DIR = Join-Path $Root "rust-core\target"
 & $cargo.Source build --manifest-path $RustManifest --release --locked
 if ($LASTEXITCODE -ne 0) { throw "Rust core build failed." }
 
+if (-not $SkipWinUIBuild) {
+    $rootPrefix = [System.IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    foreach ($generatedDirectory in @($Artifacts, $WinUIOutput)) {
+        $resolvedGeneratedDirectory = [System.IO.Path]::GetFullPath($generatedDirectory)
+        if (-not $resolvedGeneratedDirectory.StartsWith(
+            $rootPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean a generated directory outside the WinUI experiment: $resolvedGeneratedDirectory"
+        }
+        if (Test-Path -LiteralPath $resolvedGeneratedDirectory) {
+            Remove-Item -LiteralPath $resolvedGeneratedDirectory -Recurse -Force
+        }
+    }
+}
 New-Item -ItemType Directory -Force -Path $Artifacts | Out-Null
 
 if (-not $SkipWinUIBuild) {

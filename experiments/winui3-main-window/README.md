@@ -110,9 +110,12 @@ Do not start Tauri and this executable against the same `clipboard.db` at once.
 The project currently pins the maintained Windows App SDK `1.8.260710003`
 line instead of the newer `2.x` line so the first build tests a serviced,
 established toolchain before exploring a major SDK upgrade. 1.8 ships WinUI,
-WebView2, Runtime, and MSIX/MRT build assets as split packages;
-`packages.config` restores those explicitly so XBF compilation and app PRI
-generation both run in command-line builds.
+Runtime, and MSIX/MRT build assets as split packages; `packages.config`
+restores those explicitly so XBF compilation and app PRI generation both run
+in command-line builds. Because WinUI's metadata declares `IWebView2`, cppwinrt
+also needs the WebView2 WinMD while generating projections. That reference is
+compile-time-only (`Private=false`): the project does not import WebView2 build
+targets, link its loader, use a WebView control, or ship WebView2 runtime files.
 
 ## Linux development
 
@@ -273,6 +276,7 @@ adapter with every result.
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
 - [ ] Status shows `Rust ABI 6`.
+- [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 

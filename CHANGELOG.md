@@ -18,6 +18,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v6 and the native details pane now support searchable item tags, Chinese comma-separated editing, tag chips, and positive replacement IDs when tagging persists a session-only entry.
 - WinUI pinned cards can now be reordered by drag-and-drop or the Chinese “上移”/“下移” controls; writable SQLite updates the complete pinned order atomically and rejects stale or filtered partial lists.
 - WinUI now owns a native TieZ system-tray icon with Chinese show/exit commands, restores it after Explorer restarts, hides instead of exiting when the main window closes, and exits only from the explicit tray command.
+- The native WinUI build no longer imports WebView2 build targets, links its loader, or ships its runtime files; only the compile-time WinMD needed to project Windows App SDK's `IWebView2` declaration remains. The build helper now recreates validated generated-output directories so removed runtime files cannot survive as stale artifacts.
 
 ### Changed
 
