@@ -15,12 +15,13 @@ use crate::cloud_sync_runner::{
 };
 use crate::encryption::{decrypt_value, encrypt_value, ENCRYPT_PREFIX};
 use base64::Engine;
+use regex::Regex;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEY_LOCAL_SEQ: &str = "cloud_sync_webdav_local_seq";
@@ -34,6 +35,8 @@ const KEY_CURSOR: &str = "cloud_sync_cursor";
 const KEY_EMOJI_FAVORITES: &str = "app.emoji_favorites";
 const KEY_LAST_EMOJI_HASH: &str = "cloud_sync_webdav_last_emoji_hash";
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--TIEZ_RICH_IMAGE:";
+const RICH_IMAGE_FALLBACK_SUFFIX: &str = "-->";
 
 const SENSITIVE_TAGS: &[&str] = &["sensitive", "密码", "password"];
 
@@ -247,7 +250,7 @@ impl CloudSyncHost for SqliteCloudSyncHost {
                 continue;
             }
             applied = applied.saturating_add(if item.deleted_at > 0 {
-                apply_tombstone(&connection, &item)?
+                apply_tombstone(&connection, &self.data_dir, &item)?
             } else if item.content.is_empty() {
                 0
             } else {
@@ -259,11 +262,16 @@ impl CloudSyncHost for SqliteCloudSyncHost {
 
     fn prepare_upload_items(&mut self, items: &mut [CloudSyncItem]) -> CloudSyncHostResult<()> {
         for item in items {
-            if item.deleted_at > 0 || item.content_type != "image" {
+            if item.deleted_at > 0 {
                 continue;
             }
-            if !item.content.starts_with("data:image/") {
+            if item.content_type == "image" && !item.content.starts_with("data:image/") {
                 item.content = image_path_to_data_url(&item.content)?;
+            }
+            if item.content_type == "rich_text" {
+                if let Some(html) = item.html_content.as_mut() {
+                    *html = rewrite_rich_html_resources_for_sync(html);
+                }
             }
         }
         Ok(())
@@ -663,12 +671,17 @@ fn update_existing(
     Ok(usize::from(remote_wins || max_use_count > local.7))
 }
 
-fn apply_tombstone(connection: &Connection, item: &CloudSyncItem) -> CloudSyncHostResult<usize> {
+fn apply_tombstone(
+    connection: &Connection,
+    data_dir: &Path,
+    item: &CloudSyncItem,
+) -> CloudSyncHostResult<usize> {
     let remote_hash = resolved_content_hash(item);
     if remote_hash == 0 || item.deleted_at <= 0 {
         return Ok(0);
     }
-    with_savepoint(connection, || {
+    let attachments_dir = data_dir.join("attachments");
+    let (applied, cleanup_paths) = with_savepoint(connection, || {
         let version = item.hash_version.max(HASH_VERSION_LEGACY);
         connection
             .execute(
@@ -683,7 +696,7 @@ fn apply_tombstone(connection: &Connection, item: &CloudSyncItem) -> CloudSyncHo
         let mut statement = connection
             .prepare(
                 "SELECT id, content, content_hash, content_hash_version,
-                        sync_updated_at, sync_updated_by
+                        sync_updated_at, sync_updated_by, html_content, is_external
                  FROM clipboard_history WHERE content_type = ?1",
             )
             .map_err(storage_error)?;
@@ -696,6 +709,8 @@ fn apply_tombstone(connection: &Connection, item: &CloudSyncItem) -> CloudSyncHo
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i32>(7)? == 1,
                 ))
             })
             .map_err(storage_error)?;
@@ -709,11 +724,18 @@ fn apply_tombstone(connection: &Connection, item: &CloudSyncItem) -> CloudSyncHo
         drop(statement);
         let mut applied = 0usize;
         let mut accepted = true;
-        for (id, _, _, _, updated_at, updated_by) in matching {
+        let mut cleanup_paths = HashSet::new();
+        for (id, content, _, _, updated_at, updated_by, html, is_external) in matching {
             if (item.deleted_at, item.updated_by.as_str()) < (updated_at, updated_by.as_str()) {
                 accepted = false;
                 continue;
             }
+            cleanup_paths.extend(collect_attachment_paths_for_cleanup(
+                &content,
+                html.as_deref(),
+                is_external,
+                &attachments_dir,
+            ));
             connection
                 .execute("DELETE FROM entry_tags WHERE entry_id = ?1", [id])
                 .map_err(storage_error)?;
@@ -725,8 +747,10 @@ fn apply_tombstone(connection: &Connection, item: &CloudSyncItem) -> CloudSyncHo
         if accepted {
             record_digest(connection, item)?;
         }
-        Ok(applied)
-    })
+        Ok((applied, cleanup_paths))
+    })?;
+    cleanup_unreferenced_attachment_paths(connection, cleanup_paths, &attachments_dir);
+    Ok(applied)
 }
 
 fn find_existing(
@@ -1022,6 +1046,214 @@ fn decode_stored(value: &str) -> Option<String> {
         decrypt_value(value)
     } else {
         Some(value.to_owned())
+    }
+}
+
+fn local_rich_resource_path(raw: &str) -> Option<PathBuf> {
+    let value = raw.trim();
+    if value.is_empty()
+        || value.starts_with("data:")
+        || value.starts_with("http://")
+        || value.starts_with("https://")
+        || value.starts_with("//")
+        || value.starts_with("asset:")
+        || value.starts_with("tauri:")
+        || value.starts_with("blob:")
+    {
+        return None;
+    }
+
+    let path_raw = value.strip_prefix("file://").unwrap_or(value);
+    let path_without_drive_prefix =
+        if path_raw.starts_with('/') && path_raw.chars().nth(2) == Some(':') {
+            &path_raw[1..]
+        } else {
+            path_raw
+        };
+    let decoded = urlencoding::decode(path_without_drive_prefix)
+        .map(|path| path.into_owned())
+        .unwrap_or_else(|_| path_without_drive_prefix.to_owned());
+    let clean = decoded
+        .split('?')
+        .next()
+        .unwrap_or(&decoded)
+        .split('#')
+        .next()
+        .unwrap_or(&decoded)
+        .trim();
+    if clean.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(clean);
+    path.is_absolute().then_some(path)
+}
+
+fn rich_fallback_payload(html: &str) -> Option<&str> {
+    let start = html.rfind(RICH_IMAGE_FALLBACK_PREFIX)? + RICH_IMAGE_FALLBACK_PREFIX.len();
+    let end = start + html[start..].find(RICH_IMAGE_FALLBACK_SUFFIX)?;
+    let payload = html[start..end].trim();
+    (!payload.is_empty()).then_some(payload)
+}
+
+fn rewrite_rich_html_resources_for_sync(html: &str) -> String {
+    static IMAGE_SOURCE: OnceLock<Regex> = OnceLock::new();
+    let expression = IMAGE_SOURCE.get_or_init(|| {
+        Regex::new(r#"(?is)(<img\b[^>]*\bsrc=["'])([^"']+)(["'][^>]*>)"#)
+            .expect("valid rich image source expression")
+    });
+    let with_inline_sources = expression
+        .replace_all(html, |captures: &regex::Captures| {
+            let Some(path) = local_rich_resource_path(&captures[2]) else {
+                return captures[0].to_owned();
+            };
+            let Ok(data_url) = image_path_to_data_url(path.to_string_lossy().as_ref()) else {
+                return captures[0].to_owned();
+            };
+            format!("{}{}{}", &captures[1], data_url, &captures[3])
+        })
+        .into_owned();
+
+    let Some(payload) = rich_fallback_payload(&with_inline_sources) else {
+        return with_inline_sources;
+    };
+    let Some(path) = local_rich_resource_path(payload) else {
+        return with_inline_sources;
+    };
+    let Ok(data_url) = image_path_to_data_url(path.to_string_lossy().as_ref()) else {
+        return with_inline_sources;
+    };
+    let start = with_inline_sources
+        .rfind(RICH_IMAGE_FALLBACK_PREFIX)
+        .expect("fallback marker was found")
+        + RICH_IMAGE_FALLBACK_PREFIX.len();
+    let end = start
+        + with_inline_sources[start..]
+            .find(RICH_IMAGE_FALLBACK_SUFFIX)
+            .expect("fallback suffix was found");
+    format!(
+        "{}{}{}",
+        &with_inline_sources[..start],
+        data_url,
+        &with_inline_sources[end..]
+    )
+}
+
+fn rich_html_local_paths(html: &str) -> Vec<PathBuf> {
+    static IMAGE_SOURCE: OnceLock<Regex> = OnceLock::new();
+    let expression = IMAGE_SOURCE.get_or_init(|| {
+        Regex::new(r#"(?is)<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>"#)
+            .expect("valid rich image source expression")
+    });
+    let mut paths = expression
+        .captures_iter(html)
+        .filter_map(|captures| local_rich_resource_path(&captures[1]))
+        .collect::<Vec<_>>();
+    if let Some(path) = rich_fallback_payload(html).and_then(local_rich_resource_path) {
+        paths.push(path);
+    }
+    paths
+}
+
+fn canonical_attachment_path(path: &Path, attachments_dir: &Path) -> Option<PathBuf> {
+    let attachments = std::fs::canonicalize(attachments_dir).ok()?;
+    let candidate = std::fs::canonicalize(path).ok()?;
+    candidate.starts_with(&attachments).then_some(candidate)
+}
+
+fn collect_attachment_paths_for_cleanup(
+    content_raw: &str,
+    html_raw: Option<&str>,
+    is_external: bool,
+    attachments_dir: &Path,
+) -> HashSet<PathBuf> {
+    let mut paths = HashSet::new();
+    if is_external {
+        if let Some(content) = decode_stored(content_raw) {
+            if let Some(path) = canonical_attachment_path(Path::new(&content), attachments_dir) {
+                paths.insert(path);
+            }
+        }
+    }
+    if let Some(html) = html_raw.and_then(decode_stored) {
+        for path in rich_html_local_paths(&html) {
+            if let Some(path) = canonical_attachment_path(&path, attachments_dir) {
+                paths.insert(path);
+            }
+        }
+    }
+    paths
+}
+
+fn cleanup_unreferenced_attachment_paths(
+    connection: &Connection,
+    cleanup_paths: HashSet<PathBuf>,
+    attachments_dir: &Path,
+) {
+    if cleanup_paths.is_empty() {
+        return;
+    }
+    let cleanup_paths = cleanup_paths
+        .into_iter()
+        .filter_map(|path| canonical_attachment_path(&path, attachments_dir))
+        .collect::<HashSet<_>>();
+    if cleanup_paths.is_empty() {
+        return;
+    }
+
+    let mut statement = match connection
+        .prepare("SELECT content, html_content, is_external FROM clipboard_history")
+    {
+        Ok(statement) => statement,
+        Err(_) => return,
+    };
+    let rows = match statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, i32>(2)? == 1,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    let mut referenced = HashSet::new();
+    for row in rows {
+        let Ok((content_raw, html_raw, is_external)) = row else {
+            return;
+        };
+        if is_external {
+            let Some(content) = decode_stored(&content_raw) else {
+                return;
+            };
+            if let Some(path) = canonical_attachment_path(Path::new(&content), attachments_dir) {
+                referenced.insert(path);
+            }
+        }
+        if let Some(html_raw) = html_raw {
+            let Some(html) = decode_stored(&html_raw) else {
+                return;
+            };
+            for path in rich_html_local_paths(&html) {
+                if let Some(path) = canonical_attachment_path(&path, attachments_dir) {
+                    referenced.insert(path);
+                }
+            }
+        }
+    }
+    if let Some(emoji_favorites) = setting_value(connection, KEY_EMOJI_FAVORITES) {
+        let Ok(paths) = serde_json::from_str::<Vec<String>>(&emoji_favorites) else {
+            return;
+        };
+        for path in paths {
+            if let Some(path) = canonical_attachment_path(Path::new(&path), attachments_dir) {
+                referenced.insert(path);
+            }
+        }
+    }
+
+    for path in cleanup_paths.difference(&referenced) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -1419,6 +1651,159 @@ mod tests {
             .unwrap();
         assert_eq!(collected[0].content, item.content);
         assert_eq!(collected[0].tags, item.tags);
+    }
+
+    #[test]
+    fn rich_html_local_images_are_inlined_before_upload() {
+        let database = TestDatabase::new("rich-upload");
+        let image_path = database.root.join("rich source.png");
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([80, 140, 220, 255]))
+            .save(&image_path)
+            .unwrap();
+        let path = image_path.to_string_lossy();
+        let mut item = text_item("rich-content", 100, "bbbbbbbb");
+        item.content_type = "rich_text".to_owned();
+        item.content_hash = compute_sync_content_hash("rich_text", &item.content);
+        item.html_content = Some(format!(
+            "<p><img src=\"{path}\"></p>{RICH_IMAGE_FALLBACK_PREFIX}{path}{RICH_IMAGE_FALLBACK_SUFFIX}"
+        ));
+
+        database
+            .host()
+            .prepare_upload_items(std::slice::from_mut(&mut item))
+            .unwrap();
+
+        let html = item.html_content.unwrap();
+        assert_eq!(html.matches("data:image/png;base64,").count(), 2);
+        assert!(!html.contains(path.as_ref()));
+        assert!(html.contains(RICH_IMAGE_FALLBACK_PREFIX));
+        assert!(html.contains(RICH_IMAGE_FALLBACK_SUFFIX));
+    }
+
+    #[test]
+    fn remote_tombstones_remove_only_unreferenced_managed_attachments() {
+        let database = TestDatabase::new("attachment-cleanup");
+        let attachments = database.root.join("attachments");
+        fs::create_dir_all(&attachments).unwrap();
+        let owned_image = attachments.join("sync_owned.png");
+        let owned_rich_image = attachments.join("sync_rich_owned.png");
+        let shared_rich_image = attachments.join("sync_rich_shared.png");
+        let emoji_shared_image = attachments.join("sync_emoji_shared.png");
+        let outside_image = database.root.join("outside.png");
+        for (path, color) in [
+            (&owned_image, [220, 20, 20, 255]),
+            (&owned_rich_image, [20, 220, 20, 255]),
+            (&shared_rich_image, [20, 20, 220, 255]),
+            (&emoji_shared_image, [220, 20, 220, 255]),
+            (&outside_image, [120, 120, 120, 255]),
+        ] {
+            image::RgbaImage::from_pixel(1, 1, image::Rgba(color))
+                .save(path)
+                .unwrap();
+        }
+
+        let mut owned = text_item(owned_image.to_string_lossy().as_ref(), 100, "bbbbbbbb");
+        owned.content_type = "image".to_owned();
+        owned.content_hash = 4_101;
+        owned.preview = "owned image".to_owned();
+
+        let mut outside = text_item(outside_image.to_string_lossy().as_ref(), 110, "bbbbbbbb");
+        outside.content_type = "image".to_owned();
+        outside.content_hash = 4_102;
+        outside.preview = "outside image".to_owned();
+
+        let mut emoji_shared = text_item(
+            emoji_shared_image.to_string_lossy().as_ref(),
+            115,
+            "bbbbbbbb",
+        );
+        emoji_shared.content_type = "image".to_owned();
+        emoji_shared.content_hash = 4_103;
+        emoji_shared.preview = "emoji shared image".to_owned();
+
+        let mut rich_owned = text_item("rich-owned", 120, "bbbbbbbb");
+        rich_owned.content_type = "rich_text".to_owned();
+        rich_owned.content_hash = compute_sync_content_hash("rich_text", &rich_owned.content);
+        rich_owned.html_content = Some(format!(
+            "<img src=\"{}\">",
+            owned_rich_image.to_string_lossy()
+        ));
+
+        let mut rich_shared_a = text_item("rich-shared-a", 130, "bbbbbbbb");
+        rich_shared_a.content_type = "rich_text".to_owned();
+        rich_shared_a.content_hash = compute_sync_content_hash("rich_text", &rich_shared_a.content);
+        rich_shared_a.html_content = Some(format!(
+            "{RICH_IMAGE_FALLBACK_PREFIX}{}{RICH_IMAGE_FALLBACK_SUFFIX}",
+            shared_rich_image.to_string_lossy()
+        ));
+        let mut rich_shared_b = text_item("rich-shared-b", 140, "bbbbbbbb");
+        rich_shared_b.content_type = "rich_text".to_owned();
+        rich_shared_b.content_hash = compute_sync_content_hash("rich_text", &rich_shared_b.content);
+        rich_shared_b.html_content = rich_shared_a.html_content.clone();
+
+        let mut host = database.host();
+        let preferences = CloudSyncContentPrefs::default();
+        let connection = Connection::open(&database.path).unwrap();
+        upsert_setting(
+            &connection,
+            KEY_EMOJI_FAVORITES,
+            &serde_json::to_string(&vec![emoji_shared_image.to_string_lossy()]).unwrap(),
+        )
+        .unwrap();
+        drop(connection);
+        assert_eq!(
+            host.apply_remote_items(
+                &[
+                    owned.clone(),
+                    outside.clone(),
+                    emoji_shared.clone(),
+                    rich_owned.clone(),
+                    rich_shared_a.clone(),
+                    rich_shared_b,
+                ],
+                &preferences,
+            )
+            .unwrap(),
+            6
+        );
+
+        let tombstone = |mut item: CloudSyncItem, revision: i64| {
+            item.content.clear();
+            item.html_content = None;
+            item.deleted_at = revision;
+            item.updated_at = revision;
+            item.updated_by = "cccccccc".to_owned();
+            item
+        };
+        assert_eq!(
+            host.apply_remote_items(
+                &[
+                    tombstone(owned, 300),
+                    tombstone(outside, 310),
+                    tombstone(emoji_shared, 315),
+                    tombstone(rich_owned, 320),
+                    tombstone(rich_shared_a, 330),
+                ],
+                &preferences,
+            )
+            .unwrap(),
+            5
+        );
+
+        assert!(!owned_image.exists());
+        assert!(!owned_rich_image.exists());
+        assert!(shared_rich_image.exists());
+        assert!(emoji_shared_image.exists());
+        assert!(outside_image.exists());
+        let connection = Connection::open(&database.path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM clipboard_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

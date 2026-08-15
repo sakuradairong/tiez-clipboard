@@ -527,11 +527,13 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    transport contract, while `CloudSyncProtocol` owns the compatible item,
    snapshot, op/head, digest, and deterministic revision-collapse model.
    `SqliteCloudSyncHost` applies remote revisions, tombstones, tags, sensitive
-   DPAPI storage, settings, attachments, and emoji materialization. The Rust ABI
-   owns the periodic/manual scheduler, cancellation, worker teardown, and
-   credential-free status; WinUI renders it in Chinese. Real-account endurance,
-   multi-device installer testing, rich-HTML local-resource parity, and orphaned
-   remote-attachment cleanup remain required before default cutover.
+   DPAPI storage, settings, attachments, and emoji materialization. It inlines
+   local rich-HTML image resources before upload and removes tombstoned managed
+   attachments only after verifying that clipboard history and emoji favorites
+   no longer reference them. The Rust ABI owns the periodic/manual scheduler,
+   cancellation, worker teardown, and credential-free status; WinUI renders it
+   in Chinese. Real-account endurance and multi-device installer testing remain
+   required before default cutover.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs release-critical sync/service parity plus manual Windows 10/11,
