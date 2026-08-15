@@ -25,7 +25,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v3
+        │ dynamic loading + C ABI v4
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -99,8 +99,10 @@ same `clipboard.db` at once.
 
 The project currently pins the maintained Windows App SDK `1.8.260710003`
 line instead of the newer `2.x` line so the first build tests a serviced,
-established toolchain before exploring a major SDK upgrade. 1.8 ships WinUI
-and WebView2 as split packages; `packages.config` restores those explicitly.
+established toolchain before exploring a major SDK upgrade. 1.8 ships WinUI,
+WebView2, Runtime, and MSIX/MRT build assets as split packages;
+`packages.config` restores those explicitly so XBF compilation and app PRI
+generation both run in command-line builds.
 
 ## Linux development
 
@@ -149,7 +151,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 2. builds the `cdylib` in release mode;
 3. restores the native NuGet packages into the experiment directory;
 4. resolves Visual Studio's MSBuild with `vswhere`;
-5. builds the unpackaged, self-contained WinUI executable;
+5. builds the unpackaged, self-contained WinUI executable and current app PRI;
 6. places the executable and Rust DLL in the same artifact directory.
 
 Override the Rust DLL path for debugging with:
@@ -225,11 +227,11 @@ It records requested-to-ready time plus one-second samples of private bytes,
 working set, handles, and thread count. Use the **Hide for 5 seconds** button for
 manual visible/hidden comparison.
 
-The SQLite mode allows UI measurements against a copied production dataset.
-Live **text** capture is on (Unicode, consecutive-copy dedup, paste-echo skip).
-Do not point `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while
-Tauri TieZ is running. Image/HTML capture, privacy tagging, OCR, and cloud sync
-are still omitted. Record the active adapter with every result.
+Live capture is on for Unicode text, CF_HTML, PNG/DIB images, and Explorer
+files (consecutive-copy dedup, paste-echo skip). Do not point
+`TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
+running. Privacy tagging, OCR, and cloud sync are still omitted. Record the
+active adapter with every result.
 
 ## Acceptance checklist
 
@@ -259,6 +261,7 @@ are still omitted. Record the active adapter with every result.
 - [ ] Open details displays full UTF-8 content without WebView2.
 - [ ] Keyboard Tab traversal and text selection work.
 - [ ] Copying text in another app prepends a new card without restarting the probe.
+- [ ] Copying formatted HTML, an image, or Explorer files prepends the matching card type.
 - [ ] The clipboard already present at startup is not ingested.
 - [ ] Pasting from the probe does not create a duplicate card.
 - [ ] Leading/trailing whitespace and internal newlines are preserved.
@@ -304,7 +307,7 @@ window should call, and which extraction phase owns it.
 | Toggle hotkey (default Alt+C) | `toggle_window_cmd` | WinUI `RegisterHotKey` + last HWND | 1 |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
-| Live capture (Unicode text) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture` / changed callback; image/HTML/privacy later | 3 |
+| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy/OCR/cloud later | 3 |
 | Item tags / tag search | `update_tags` | later C ABI | 4 |
 | Pinned drag reorder | `update_pinned_order` | later | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
@@ -338,10 +341,11 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
 4. `UiLifecycle` — **WinUI minimum connected**: Alt+C toggle, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste. Tray, close
    policy, and single-instance remain later;
-5. `ClipboardCapture` — **WinUI Unicode text connected**: CRLF normalization
-   without trim, consecutive-copy dedup, self-paste echo skip, and a
-   `WM_CLIPBOARDUPDATE` worker that never reads the clipboard in WndProc.
-   Image/HTML capture and the full production pipeline remain later.
+5. `ClipboardCapture` — **WinUI Unicode/HTML/image/file connected**: format
+   priority (files, rich text, image, text), CRLF normalization without trim,
+   consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
+   worker that never reads the clipboard in WndProc. Privacy tagging, OCR, and
+   the full production pipeline remain later.
 
 Only after live clipboard capture (phase 3) should the WinUI executable become
 a daily-driver alternative to WebView2.

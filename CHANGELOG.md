@@ -13,15 +13,17 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI `paste-rich` writes CF_HTML alongside Unicode text when the history item has HTML; the synthetic adapter includes one rich sample.
 - WinUI paste plans image/file payloads separately from text: CF_DIB/PNG for images, CF_HDROP for files. Enter does not paste while IME composition is confirming.
 - WinUI copy writes the clipboard without hiding or sending Ctrl+V. Ctrl+Enter pastes rich text; Delete and a card context menu cover pin/delete/copy.
-- WinUI live-captures Unicode text (CRLF normalized, not trimmed) through ABI v4. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
+- WinUI live-captures Unicode text, CF_HTML, PNG/DIB images, and Explorer files through ABI v4. Startup clipboard is primed rather than ingested; probe paste/copy is treated as an echo.
 
 ### Changed
+
+- WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
 
 - Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
 
 ### Fixed
 
-- WinUI probe now restores WASDK 1.8 split WinUI/WebView2 packages, finds MSBuild on Visual Studio Build Tools, and compiles the Windows paste helper against `windows-sys` 0.59.
+- WinUI probe now restores WASDK 1.8 split packages, imports the Runtime and MSIX/MRT build assets required by self-contained XAML windows, generates the current app PRI, compiles native sources as UTF-8, finds MSBuild on Visual Studio Build Tools, compiles the Windows paste helper against `windows-sys` 0.59, and assembles the current native EXE with the matching Rust DLL.
 
 ## [0.3.8] - 2026-07-27
 
