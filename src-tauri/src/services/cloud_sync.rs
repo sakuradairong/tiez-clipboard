@@ -17,6 +17,14 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+use tiez_core::cloud_sync_webdav::{
+    build_webdav_http_client_with_timeout, collection_url as shared_webdav_collection_url,
+    fetch_json_with_retry as shared_fetch_webdav_json,
+    parse_op_references as shared_parse_webdav_op_refs,
+    parse_snapshot_ids as shared_parse_webdav_snapshot_ids,
+    resource_url as shared_webdav_resource_url, send_with_retry as shared_webdav_send_with_retry,
+    WebDavRetryPolicy, WebDavTransport, WebDavTransportError,
+};
 use tokio::time::sleep;
 use urlencoding::decode;
 
@@ -2177,22 +2185,23 @@ fn build_http_client() -> AppResult<Client> {
     Client::builder()
         .timeout(Duration::from_secs(WEBDAV_REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| AppError::Network(e.to_string()))
+        .map_err(|error| AppError::Network(error.to_string()))
 }
 
-fn webdav_retry_delay(attempt: usize) -> Duration {
-    let factor = 1u64 << attempt.min(4);
-    Duration::from_millis(WEBDAV_RETRY_BASE_DELAY_MS.saturating_mul(factor))
+fn build_webdav_client(cfg: &CloudSyncConfig) -> AppResult<Client> {
+    let client =
+        build_webdav_http_client_with_timeout(Duration::from_secs(WEBDAV_REQUEST_TIMEOUT_SECS))
+            .map_err(map_webdav_transport_error)?;
+    shared_webdav_transport(&client, cfg)?;
+    Ok(client)
 }
 
-fn is_retryable_webdav_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::GATEWAY_TIMEOUT
-    )
+fn webdav_retry_policy() -> WebDavRetryPolicy {
+    WebDavRetryPolicy {
+        max_request_retries: WEBDAV_MAX_RETRIES,
+        max_json_read_retries: WEBDAV_JSON_READ_RETRIES,
+        base_delay: Duration::from_millis(WEBDAV_RETRY_BASE_DELAY_MS),
+    }
 }
 
 fn check_webdav_status_for_backoff(status: StatusCode) {
@@ -2206,36 +2215,37 @@ fn check_webdav_status_for_backoff(status: StatusCode) {
     }
 }
 
+fn map_webdav_transport_error(error: WebDavTransportError) -> AppError {
+    if let Some(status) = error
+        .status_code()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+    {
+        check_webdav_status_for_backoff(status);
+    }
+    AppError::Network(error.to_string())
+}
+
+fn shared_webdav_transport(client: &Client, cfg: &CloudSyncConfig) -> AppResult<WebDavTransport> {
+    WebDavTransport::with_client(
+        client.clone(),
+        cfg.webdav_url.clone(),
+        cfg.webdav_username.clone(),
+        cfg.webdav_password.clone(),
+        cfg.device_id.clone(),
+    )
+    .map(|transport| transport.with_retry_policy(webdav_retry_policy()))
+    .map_err(map_webdav_transport_error)
+}
+
 async fn webdav_send_with_retry<F>(mut build_request: F) -> AppResult<Response>
 where
     F: FnMut() -> RequestBuilder,
 {
-    let mut last_error = None;
-
-    for attempt in 0..=WEBDAV_MAX_RETRIES {
-        match build_request().send().await {
-            Ok(resp) => {
-                check_webdav_status_for_backoff(resp.status());
-                if is_retryable_webdav_status(resp.status()) && attempt < WEBDAV_MAX_RETRIES {
-                    last_error = Some(format!("transient WebDAV status {}", resp.status()));
-                    sleep(webdav_retry_delay(attempt)).await;
-                    continue;
-                }
-                return Ok(resp);
-            }
-            Err(err) => {
-                last_error = Some(err.to_string());
-                if attempt < WEBDAV_MAX_RETRIES {
-                    sleep(webdav_retry_delay(attempt)).await;
-                    continue;
-                }
-            }
-        }
-    }
-
-    Err(AppError::Network(
-        last_error.unwrap_or_else(|| "webdav request failed".to_string()),
-    ))
+    let response = shared_webdav_send_with_retry(|| build_request(), webdav_retry_policy())
+        .await
+        .map_err(map_webdav_transport_error)?;
+    check_webdav_status_for_backoff(response.status());
+    Ok(response)
 }
 
 fn webdav_with_auth(req: RequestBuilder, cfg: &CloudSyncConfig) -> RequestBuilder {
@@ -2246,44 +2256,12 @@ fn webdav_with_auth(req: RequestBuilder, cfg: &CloudSyncConfig) -> RequestBuilde
     }
 }
 
-fn encode_webdav_relative_path(relative_path: &str, collection: bool) -> String {
-    let mut encoded = relative_path
-        .replace('\\', "/")
-        .split('/')
-        .filter_map(|segment| {
-            let trimmed = segment.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(urlencoding::encode(trimmed).into_owned())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    if collection && !encoded.is_empty() {
-        encoded.push('/');
-    }
-
-    encoded
-}
-
 fn webdav_resource_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
-    let encoded = encode_webdav_relative_path(relative_path, false);
-    if encoded.is_empty() {
-        cfg.webdav_url.trim_end_matches('/').to_string()
-    } else {
-        format!("{}/{}", cfg.webdav_url.trim_end_matches('/'), encoded)
-    }
+    shared_webdav_resource_url(&cfg.webdav_url, relative_path)
 }
 
 fn webdav_collection_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
-    let encoded = encode_webdav_relative_path(relative_path, true);
-    if encoded.is_empty() {
-        format!("{}/", cfg.webdav_url.trim_end_matches('/'))
-    } else {
-        format!("{}/{}", cfg.webdav_url.trim_end_matches('/'), encoded)
-    }
+    shared_webdav_collection_url(&cfg.webdav_url, relative_path)
 }
 
 fn webdav_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
@@ -2364,55 +2342,10 @@ async fn delete_webdav_resource_if_exists(
     cfg: &CloudSyncConfig,
     relative_path: &str,
 ) -> AppResult<()> {
-    let url = webdav_url_for(cfg, relative_path);
-    let resp = webdav_send_with_retry(|| webdav_with_auth(client.delete(&url), cfg)).await?;
-
-    if resp.status().is_success() || resp.status().as_u16() == 404 {
-        return Ok(());
-    }
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(AppError::Network(format!(
-        "webdav DELETE cleanup failed for {}: {} {}",
-        url, status, text
-    )))
-}
-
-async fn move_webdav_resource(
-    client: &Client,
-    cfg: &CloudSyncConfig,
-    from_relative: &str,
-    to_relative: &str,
-) -> AppResult<bool> {
-    let from_url = webdav_url_for(cfg, from_relative);
-    let destination = webdav_url_for(cfg, to_relative);
-    let resp = webdav_send_with_retry(|| {
-        let method = Method::from_bytes(b"MOVE").expect("MOVE is a valid HTTP method");
-        webdav_with_auth(
-            client
-                .request(method, &from_url)
-                .header("Destination", destination.clone())
-                .header("Overwrite", "T"),
-            cfg,
-        )
-    })
-    .await?;
-
-    if resp.status().is_success() {
-        return Ok(true);
-    }
-
-    if matches!(resp.status().as_u16(), 405 | 409 | 412 | 501) {
-        return Ok(false);
-    }
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(AppError::Network(format!(
-        "webdav MOVE publish failed for {} -> {}: {} {}",
-        from_url, destination, status, text
-    )))
+    shared_webdav_transport(client, cfg)?
+        .delete_if_exists(relative_path)
+        .await
+        .map_err(map_webdav_transport_error)
 }
 
 async fn upload_webdav_bytes_resource(
@@ -2423,64 +2356,10 @@ async fn upload_webdav_bytes_resource(
     content_type: &str,
     label: &str,
 ) -> AppResult<()> {
-    async fn upload_target(
-        client: &Client,
-        cfg: &CloudSyncConfig,
-        url: &str,
-        payload: &[u8],
-        content_type: &str,
-        label: &str,
-    ) -> AppResult<()> {
-        let url_owned = url.to_string();
-        let payload_owned = payload.to_vec();
-        let content_type_owned = content_type.to_string();
-
-        let resp = webdav_send_with_retry(|| {
-            webdav_with_auth(
-                client
-                    .put(&url_owned)
-                    .header("Content-Type", &content_type_owned)
-                    .body(payload_owned.clone()),
-                cfg,
-            )
-        })
-        .await?;
-
-        if resp.status().is_success() {
-            return Ok(());
-        }
-
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        Err(AppError::Network(format!(
-            "webdav PUT {} failed: {} {}",
-            label, status, text
-        )))
-    }
-
-    let final_url = webdav_url_for(cfg, relative_path);
-    let temp_relative = format!(
-        "{}.uploading.{}.{}.tmp",
-        relative_path.trim_end_matches('/'),
-        cfg.device_id,
-        now_ms()
-    );
-    let temp_url = webdav_url_for(cfg, &temp_relative);
-
-    upload_target(client, cfg, &temp_url, &body, content_type, label).await?;
-
-    match move_webdav_resource(client, cfg, &temp_relative, relative_path).await {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            let fallback = upload_target(client, cfg, &final_url, &body, content_type, label).await;
-            let _ = delete_webdav_resource_if_exists(client, cfg, &temp_relative).await;
-            fallback
-        }
-        Err(err) => {
-            let _ = delete_webdav_resource_if_exists(client, cfg, &temp_relative).await;
-            Err(err)
-        }
-    }
+    shared_webdav_transport(client, cfg)?
+        .put_bytes_atomic(relative_path, &body, content_type, label)
+        .await
+        .map_err(map_webdav_transport_error)
 }
 
 async fn upload_webdav_json_resource(
@@ -2503,47 +2382,15 @@ where
     T: for<'de> Deserialize<'de>,
     F: FnMut() -> RequestBuilder,
 {
-    for attempt in 0..=WEBDAV_JSON_READ_RETRIES {
-        let resp = webdav_send_with_retry(|| make_request()).await?;
-
-        let status_code = resp.status().as_u16();
-        if status_code == missing_status {
-            return Ok(None);
-        }
-
-        // 兼容坚果云：如果父目录不存在，GET 可能返回 409 Conflict (AncestorsNotFound)
-        if status_code == 409 {
-            return Ok(None);
-        }
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Network(format!(
-                "{}: {} {}",
-                fetch_error_label, status, text
-            )));
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| AppError::Network(e.to_string()))?;
-        match serde_json::from_slice::<T>(&bytes) {
-            Ok(parsed) => return Ok(Some(parsed)),
-            Err(err)
-                if matches!(err.classify(), serde_json::error::Category::Eof)
-                    && attempt < WEBDAV_JSON_READ_RETRIES =>
-            {
-                sleep(webdav_retry_delay(attempt)).await;
-            }
-            Err(err) => return Err(AppError::Network(format!("{}: {}", parse_error_label, err))),
-        }
-    }
-
-    Err(AppError::Network(format!(
-        "{}: exhausted retries",
-        parse_error_label
-    )))
+    shared_fetch_webdav_json(
+        || make_request(),
+        missing_status,
+        fetch_error_label,
+        parse_error_label,
+        webdav_retry_policy(),
+    )
+    .await
+    .map_err(map_webdav_transport_error)
 }
 
 async fn ensure_webdav_directories(
@@ -2634,63 +2481,14 @@ async fn download_webdav_blob(
     kind: &str,
     hash: &str,
 ) -> AppResult<Vec<u8>> {
-    let blob_file_path = get_blob_path(base_blobs, kind, hash);
-    let url = webdav_url_for(cfg, &blob_file_path);
-    let resp = webdav_with_auth(client.get(&url), cfg)
-        .send()
+    shared_webdav_transport(client, cfg)?
+        .download_blob(base_blobs, kind, hash)
         .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-
-    if !resp.status().is_success() {
-        return Err(AppError::Network(format!(
-            "webdav GET blob failed: {} ({})",
-            resp.status(),
-            blob_file_path
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-    Ok(bytes.to_vec())
+        .map_err(map_webdav_transport_error)
 }
 
 fn parse_webdav_snapshot_ids(xml: &str) -> Vec<String> {
-    let Ok(re) = Regex::new(r"(?is)<[^>]*href[^>]*>\s*([^<]+)\s*</[^>]*href>") else {
-        return Vec::new();
-    };
-
-    let mut ids = Vec::new();
-    for caps in re.captures_iter(xml) {
-        let Some(raw_match) = caps.get(1) else {
-            continue;
-        };
-        let raw_href = raw_match.as_str().trim();
-        if raw_href.is_empty() {
-            continue;
-        }
-
-        let decoded_href = urlencoding::decode(raw_href)
-            .map(|v| v.into_owned())
-            .unwrap_or_else(|_| raw_href.to_string());
-
-        let normalized = decoded_href.trim_end_matches('/');
-        let Some(file_name) = normalized.rsplit('/').next() else {
-            continue;
-        };
-
-        let Some(device_id) = file_name.strip_suffix(".json") else {
-            continue;
-        };
-        if device_id.is_empty() {
-            continue;
-        }
-        if ids.iter().any(|existing| existing == device_id) {
-            continue;
-        }
-        ids.push(device_id.to_string());
-    }
-    ids
+    shared_parse_webdav_snapshot_ids(xml)
 }
 
 async fn upload_webdav_snapshot(
@@ -2805,53 +2603,13 @@ async fn upload_webdav_ops_batch(
 }
 
 fn parse_webdav_op_refs(xml: &str) -> Vec<WebDavOpRef> {
-    let Ok(re_href) = Regex::new(r"(?is)<[^>]*href[^>]*>\s*([^<]+)\s*</[^>]*href>") else {
-        return Vec::new();
-    };
-    let Ok(re_file) = Regex::new(r"^(.+)__(\d+)\.json$") else {
-        return Vec::new();
-    };
-
-    let mut refs: HashMap<String, WebDavOpRef> = HashMap::new();
-    let _start = std::time::Instant::now();
-    for caps in re_href.captures_iter(xml) {
-        let Some(raw_match) = caps.get(1) else {
-            continue;
-        };
-        let raw_href = raw_match.as_str().trim();
-        if raw_href.is_empty() {
-            continue;
-        }
-
-        let decoded_href = urlencoding::decode(raw_href)
-            .map(|v| v.into_owned())
-            .unwrap_or_else(|_| raw_href.to_string());
-        let normalized = decoded_href.trim_end_matches('/');
-        let Some(file_name) = normalized.rsplit('/').next() else {
-            continue;
-        };
-        let Some(file_caps) = re_file.captures(file_name) else {
-            continue;
-        };
-        let Some(device_id_match) = file_caps.get(1) else {
-            continue;
-        };
-        let Some(seq_match) = file_caps.get(2) else {
-            continue;
-        };
-        let Ok(seq) = seq_match.as_str().parse::<i64>() else {
-            continue;
-        };
-        let device_id = device_id_match.as_str().to_string();
-        let dedup_key = format!("{}:{}", device_id, seq);
-        refs.entry(dedup_key)
-            .or_insert(WebDavOpRef { device_id, seq });
-    }
-
-    let mut out: Vec<WebDavOpRef> = refs.into_values().collect();
-
-    out.sort_by(|a, b| a.device_id.cmp(&b.device_id).then(a.seq.cmp(&b.seq)));
-    out
+    shared_parse_webdav_op_refs(xml)
+        .into_iter()
+        .map(|op_ref| WebDavOpRef {
+            device_id: op_ref.device_id,
+            seq: op_ref.seq,
+        })
+        .collect()
 }
 
 async fn list_webdav_op_refs(
@@ -3527,7 +3285,7 @@ async fn sync_once_webdav(
     let now = now_ms();
     let local_items = collect_local_syncable_items(app, &cfg.content_prefs)?;
     let (delta_items, collapsed_index) = collect_local_incremental_items(app, &local_items)?;
-    let client = build_http_client()?;
+    let client = build_webdav_client(cfg)?;
     let paths = ensure_webdav_directories(&client, cfg).await?;
     let mut sync_head = resolve_webdav_sync_head(app, &client, cfg, &paths, now).await?;
     let mut webdav_blob_cache = load_webdav_blob_cache(app);

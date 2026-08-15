@@ -333,9 +333,10 @@ the native capture settings; images remain supported by the format pipeline
 Do not point
 `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
 running. OCR/QR analysis and native search are connected through the shared
-core. WebDAV configuration and safe connectivity testing are connected, while
-the native background upload/download and conflict-reconciliation runner is
-still omitted. Sensitive or encrypted entries never retain
+core. WebDAV configuration, safe connectivity testing, and the redirect-free
+transport contract (retry, atomic publication, blobs, and remote listings) are
+shared; the native background database/conflict runner is still omitted.
+Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
 recognition. Record the active adapter with every result.
 
@@ -457,7 +458,8 @@ window should call, and which extraction phase owns it.
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
 | WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 11 + write-only secret and read-only `PROPFIND` | 5 (connected) |
-| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | Tauri-independent service runner still required; no `AppHandle` may cross the ABI | 5 (remaining) |
+| WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | Tauri-independent database/conflict runner still required; no `AppHandle` may cross the ABI | 5 (remaining) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Emoji, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
@@ -511,9 +513,11 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
 9. `CloudSyncSettings` — **shared core and WinUI setup connected**: ABI v11
    reads and transactionally writes the existing WebDAV keys, keeps passwords
    write-only, validates HTTPS and safe remote paths, and runs a redirect-free
-   read-only `PROPFIND` off the UI thread. The full periodic upload/download,
-   mutation distribution, remote snapshot, and conflict-reconciliation runner
-   still needs extraction from the Tauri service before default cutover.
+   read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the
+   reusable retry, safe path/layout, atomic PUT/MOVE, blob, JSON, and listing
+   transport contract, with the Tauri service using compatibility wrappers.
+   The periodic scheduler, database merge/mutation distribution, and remote
+   conflict-reconciliation runner still need extraction before default cutover.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs release-critical sync/service parity plus manual Windows 10/11,

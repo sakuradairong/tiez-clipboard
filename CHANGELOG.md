@@ -30,6 +30,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
+- WebDAV client construction, safe path encoding, retry policy, atomic publication, blob transfer, and remote listing parsers now live in Tauri-independent `tiez-core`, establishing the reusable transport contract for the native WinUI sync runner.
 - Tauri and writable WinUI database startup now use the same `tiez-core` schema-v15 migration and 77-setting bootstrap; WinUI validates and applies a scheduled restore itself before opening the database instead of requiring the Tauri fallback.
 - Tauri and writable WinUI history mutations now share atomic row, normalized-tag, sync-revision, and deletion-tombstone semantics; native file captures use the production `file` content type.
 - Writable WinUI capture now follows the production persistence and deduplication settings: session-only entries use replaceable negative IDs with a 500-item cap, while persisted captures reuse matching rows and enforce the configured unprotected-history limit.
@@ -43,6 +44,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Security
 
+- Shared WebDAV transport refuses credential-bearing endpoints and cross-origin redirects, encodes path segments defensively, validates blob identities, and bounds remote error bodies before surfacing them.
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
 - WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.
 - Shared backup validation rejects undeclared or duplicate ZIP entries, unsafe paths, oversized payloads, invalid hashes, and checksum mismatches; failed pending restores are quarantined before either frontend opens SQLite.

@@ -6270,6 +6270,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
+ "urlencoding",
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "zip 2.4.2",
