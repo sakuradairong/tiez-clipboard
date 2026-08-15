@@ -1,12 +1,15 @@
 use crate::clipboard_capture::{classify_snapshot, CapturedPayload, ClipboardSnapshot};
-use crate::content_identity::{calc_image_hash, calc_text_hash, uses_text_content_hash};
+use crate::content_identity::{
+    calc_image_hash, calc_text_hash, is_text_type, uses_text_content_hash,
+};
 use crate::database_mutation::{
     delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
     PreparedClipboardRecord,
 };
-use crate::encryption::{decrypt_value, ENCRYPT_PREFIX};
+use crate::encryption::{decrypt_value, encrypt_value, ENCRYPT_PREFIX};
+use crate::privacy::contains_sensitive_info;
 use base64::Engine;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -598,6 +601,8 @@ impl SqliteHistory {
         let mut content = payload.content();
         let content_type = payload.content_type();
         let html = payload.html();
+        let should_protect = load_privacy_policy(&connection)?
+            .should_protect(content_type, &content);
         let attachment = if content_type == "image" {
             let attachment = persist_image_attachment(&self.database_path, &content)?;
             content = attachment.content.clone();
@@ -615,19 +620,33 @@ impl SqliteHistory {
             "image" => !content.trim_start().starts_with("data:"),
             _ => false,
         };
-        let tags = Vec::new();
+        let mut tags = Vec::new();
+        let (stored_content, stored_preview, stored_html) = if should_protect {
+            tags.push("sensitive".to_owned());
+            (
+                encrypt_sensitive_value(&content)?,
+                encrypt_sensitive_value(&preview)?,
+                html.map(encrypt_sensitive_value).transpose()?,
+            )
+        } else {
+            (
+                content.clone(),
+                preview.clone(),
+                html.map(str::to_owned),
+            )
+        };
         let saved = save_prepared_record(
             &connection,
             &PreparedClipboardRecord {
                 id: 0,
                 content_type,
-                content: &content,
+                content: &stored_content,
                 identity_content: &content,
-                html_content: html,
+                html_content: stored_html.as_deref(),
                 source_app: &source_app,
                 source_app_path: None,
                 timestamp,
-                preview: &preview,
+                preview: &stored_preview,
                 is_pinned: false,
                 content_hash,
                 tags: &tags,
@@ -731,6 +750,73 @@ impl SqliteHistory {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct PrivacyPolicy {
+    enabled: bool,
+    kinds: Vec<String>,
+    custom_rules: Vec<String>,
+}
+
+impl PrivacyPolicy {
+    fn should_protect(&self, content_type: &str, content: &str) -> bool {
+        self.enabled
+            && is_text_type(content_type)
+            && contains_sensitive_info(content, &self.kinds, &self.custom_rules)
+    }
+}
+
+fn load_privacy_policy(connection: &Connection) -> Result<PrivacyPolicy, HistoryError> {
+    let enabled = load_setting(connection, "app.privacy_protection", "true")? == "true";
+    let kinds = load_setting(
+        connection,
+        "app.privacy_protection_kinds",
+        "phone,idcard,email,secret",
+    )?
+    .split(',')
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_owned)
+    .collect();
+    let custom_rules = load_setting(
+        connection,
+        "app.privacy_protection_custom_rules",
+        "",
+    )?
+    .lines()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_owned)
+    .collect();
+    Ok(PrivacyPolicy {
+        enabled,
+        kinds,
+        custom_rules,
+    })
+}
+
+fn load_setting(
+    connection: &Connection,
+    key: &str,
+    default_value: &str,
+) -> Result<String, HistoryError> {
+    connection
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+        .map(|value| value.unwrap_or_else(|| default_value.to_owned()))
+        .map_err(|error| storage_error(&format!("failed to read setting {key}"), error))
+}
+
+fn encrypt_sensitive_value(value: &str) -> Result<String, HistoryError> {
+    encrypt_value(value).ok_or_else(|| {
+        HistoryError::new(
+            HistoryErrorKind::Storage,
+            "failed to protect sensitive clipboard content with Windows DPAPI",
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -1711,6 +1797,112 @@ mod tests {
                 .kind(),
             HistoryErrorKind::ReadOnly
         );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn sqlite_history_encrypts_new_sensitive_capture_using_database_privacy_settings() {
+        let path = temporary_database("privacy-capture");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let plain = "token=abcdefghijklmnop1234";
+
+        let result = history
+            .ingest(
+                CapturedPayload::RichText {
+                    content: plain.to_owned(),
+                    html: format!("<b>{plain}</b>"),
+                },
+                "终端",
+            )
+            .unwrap();
+        let entry_id = result.effective_id.unwrap();
+
+        let snapshot_item = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|item| item.id == entry_id)
+            .unwrap();
+        assert!(snapshot_item.is_sensitive);
+        assert_eq!(snapshot_item.preview, SENSITIVE_PREVIEW);
+        let resolved = history.content(entry_id).unwrap();
+        assert!(resolved.available);
+        assert!(resolved.is_sensitive);
+        assert_eq!(resolved.content, plain);
+        assert_eq!(resolved.html_content, Some(format!("<b>{plain}</b>")));
+
+        let connection = Connection::open(&path).unwrap();
+        let stored: (String, String, Option<String>, String, i64) = connection
+            .query_row(
+                "SELECT content, preview, html_content, tags, content_hash
+                 FROM clipboard_history WHERE id = ?1",
+                [entry_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(stored.0.starts_with(ENCRYPT_PREFIX));
+        assert!(stored.1.starts_with(ENCRYPT_PREFIX));
+        assert!(stored.2.unwrap().starts_with(ENCRYPT_PREFIX));
+        assert_eq!(stored.3, "[\"sensitive\"]");
+        assert_eq!(stored.4, calc_text_hash(plain) as i64);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT tag FROM entry_tags WHERE entry_id = ?1",
+                    [entry_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "sensitive"
+        );
+        drop(connection);
+        drop(history);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_history_respects_disabled_privacy_protection() {
+        let path = temporary_database("privacy-disabled");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 VALUES ('app.privacy_protection', 'false')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let plain = "person@example.com";
+
+        let result = history
+            .ingest_text(plain.to_owned(), "邮件")
+            .unwrap();
+        let entry_id = result.effective_id.unwrap();
+
+        let connection = Connection::open(&path).unwrap();
+        let stored: (String, String) = connection
+            .query_row(
+                "SELECT content, tags FROM clipboard_history WHERE id = ?1",
+                [entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, (plain.to_owned(), "[]".to_owned()));
+        drop(connection);
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 

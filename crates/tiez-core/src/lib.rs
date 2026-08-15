@@ -9,6 +9,7 @@ pub mod database_migrations;
 pub mod database_mutation;
 pub mod encryption;
 pub mod paste_coordinator;
+pub mod privacy;
 pub mod production_history;
 pub mod production_mutation;
 pub mod runtime_instance;
