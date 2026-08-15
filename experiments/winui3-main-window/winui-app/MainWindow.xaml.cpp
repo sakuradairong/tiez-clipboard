@@ -10,6 +10,7 @@
 #include <shellapi.h>
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
 
 namespace
@@ -23,6 +24,75 @@ namespace
     constexpr UINT kTrayShowCommand = 1001;
     constexpr UINT kTrayExitCommand = 1002;
     constexpr int kAppIconResourceId = 101;
+
+    std::optional<std::filesystem::path> SelectBackupPath(HWND owner, bool save)
+    {
+        winrt::com_ptr<IFileDialog> dialog;
+        winrt::check_hresult(CoCreateInstance(
+            save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            __uuidof(IFileDialog),
+            dialog.put_void()));
+
+        COMDLG_FILTERSPEC filters[] = {
+            { L"TieZ 备份 (*.tiez-backup)", L"*.tiez-backup" },
+            { L"所有文件 (*.*)", L"*.*" },
+        };
+        winrt::check_hresult(dialog->SetFileTypes(
+            static_cast<UINT>(std::size(filters)),
+            filters));
+        winrt::check_hresult(dialog->SetDefaultExtension(L"tiez-backup"));
+        winrt::check_hresult(dialog->SetTitle(save ? L"导出 TieZ 备份" : L"选择 TieZ 备份"));
+        if (save)
+        {
+            winrt::check_hresult(dialog->SetFileName(L"TieZ-backup.tiez-backup"));
+        }
+
+        FILEOPENDIALOGOPTIONS options{};
+        winrt::check_hresult(dialog->GetOptions(&options));
+        options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+        options |= save ? FOS_OVERWRITEPROMPT : FOS_FILEMUSTEXIST;
+        winrt::check_hresult(dialog->SetOptions(options));
+
+        auto const shown = dialog->Show(owner);
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        {
+            return std::nullopt;
+        }
+        winrt::check_hresult(shown);
+
+        winrt::com_ptr<IShellItem> result;
+        winrt::check_hresult(dialog->GetResult(result.put()));
+        PWSTR rawPath{};
+        winrt::check_hresult(result->GetDisplayName(SIGDN_FILESYSPATH, &rawPath));
+        if (rawPath == nullptr)
+        {
+            throw winrt::hresult_error(E_UNEXPECTED, L"系统文件选择器未返回路径");
+        }
+        std::filesystem::path selected{ rawPath };
+        CoTaskMemFree(rawPath);
+        return selected;
+    }
+
+    winrt::hstring BackupSummary(
+        winrt::Windows::Data::Json::JsonObject const& information,
+        std::wstring_view prefix)
+    {
+        auto const entryCount = static_cast<std::uint64_t>(std::llround(
+            information.GetNamedNumber(L"entryCount")));
+        auto const fileCount = static_cast<std::uint64_t>(std::llround(
+            information.GetNamedNumber(L"fileCount")));
+        auto const totalBytes = static_cast<std::uint64_t>(std::llround(
+            information.GetNamedNumber(L"totalBytes")));
+        auto const appVersion = information.GetNamedString(L"appVersion");
+        std::wstringstream message;
+        message << prefix
+            << L"版本 " << appVersion.c_str()
+            << L"，" << entryCount << L" 条记录，"
+            << fileCount << L" 个文件，共 " << totalBytes << L" 字节。";
+        return winrt::hstring{ message.str() };
+    }
 
     winrt::hstring StatusMessage(
         std::wstring_view prefix,
@@ -1765,6 +1835,262 @@ namespace winrt::Tiez::WinUIProbe::implementation
         RefreshItems();
     }
 
+    void MainWindow::SetBackupBusy(bool busy, winrt::hstring const& message)
+    {
+        m_backupBusy = busy;
+        if (m_exportBackupButton)
+        {
+            m_exportBackupButton.IsEnabled(m_productionData && !busy);
+        }
+        if (m_restoreBackupButton)
+        {
+            m_restoreBackupButton.IsEnabled(
+                m_productionData && !m_settingsReadOnly && !busy);
+        }
+        if (m_backupProgress)
+        {
+            m_backupProgress.IsActive(busy);
+            m_backupProgress.Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
+        }
+        if (m_backupStatus)
+        {
+            m_backupStatus.Text(message);
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ExportBackupAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_backupBusy || !m_productionData)
+        {
+            co_return;
+        }
+
+        std::optional<std::filesystem::path> destination;
+        try
+        {
+            destination = SelectBackupPath(GetWindowHandle(), true);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法选择备份位置：", error.message());
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"无法选择备份位置：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+        if (!destination)
+        {
+            co_return;
+        }
+
+        auto const path = winrt::to_string(winrt::hstring{ destination->wstring() });
+        auto const uiThread = winrt::apartment_context{};
+        SetBackupBusy(true, L"正在创建一致性快照并校验备份，请勿退出 TieZ……");
+        std::string response;
+        std::string failure;
+        co_await winrt::resume_background();
+        try
+        {
+            response = m_core->CreateBackup(path);
+        }
+        catch (std::exception const& error)
+        {
+            failure = error.what();
+        }
+        try
+        {
+            co_await uiThread;
+        }
+        catch (...)
+        {
+            co_return;
+        }
+
+        if (!failure.empty())
+        {
+            auto const message = StatusMessage(
+                L"导出备份失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(failure));
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        try
+        {
+            auto const information = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+            auto const message = BackupSummary(information, L"备份已导出：");
+            SetBackupBusy(false, message);
+            SetStatus(L"备份已安全导出。原始数据未被修改。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法读取备份结果：", error.message());
+            SetBackupBusy(false, message);
+            SetStatus(message);
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::RestoreBackupAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_backupBusy || !m_productionData || m_settingsReadOnly)
+        {
+            co_return;
+        }
+
+        std::optional<std::filesystem::path> source;
+        try
+        {
+            source = SelectBackupPath(GetWindowHandle(), false);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法选择备份文件：", error.message());
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"无法选择备份文件：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+        if (!source)
+        {
+            co_return;
+        }
+
+        auto const path = winrt::to_string(winrt::hstring{ source->wstring() });
+        auto const uiThread = winrt::apartment_context{};
+        SetBackupBusy(true, L"正在检查备份结构、数据库和全部 SHA-256 校验值……");
+        std::string inspectionResponse;
+        std::string failure;
+        co_await winrt::resume_background();
+        try
+        {
+            inspectionResponse = m_core->InspectBackup(path);
+        }
+        catch (std::exception const& error)
+        {
+            failure = error.what();
+        }
+        try
+        {
+            co_await uiThread;
+        }
+        catch (...)
+        {
+            co_return;
+        }
+
+        if (!failure.empty())
+        {
+            auto const message = StatusMessage(
+                L"备份校验失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(failure));
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        JsonObject information;
+        try
+        {
+            information = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(inspectionResponse));
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法读取备份信息：", error.message());
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        auto summary = std::wstring{ BackupSummary(information, L"已验证备份：").c_str() };
+        summary.append(
+            L"\n\n继续后将把备份复制到 TieZ 的安全待恢复位置。当前数据不会立即改变；下次启动会在打开数据库前恢复，并保留七天回滚副本。是否继续？");
+        if (MessageBoxW(
+            GetWindowHandle(),
+            summary.c_str(),
+            L"确认安排恢复",
+            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+        {
+            SetBackupBusy(false, L"已取消恢复，当前数据未改变。");
+            co_return;
+        }
+
+        SetBackupBusy(true, L"正在复制并再次校验待恢复备份……");
+        std::string scheduleResponse;
+        failure.clear();
+        co_await winrt::resume_background();
+        try
+        {
+            scheduleResponse = m_core->ScheduleRestore(path);
+        }
+        catch (std::exception const& error)
+        {
+            failure = error.what();
+        }
+        try
+        {
+            co_await uiThread;
+        }
+        catch (...)
+        {
+            co_return;
+        }
+
+        if (!failure.empty())
+        {
+            auto const message = StatusMessage(
+                L"安排恢复失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(failure));
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        try
+        {
+            information = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(scheduleResponse));
+            SetBackupBusy(false, BackupSummary(information, L"恢复已安排："));
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            auto const message = StatusMessage(L"无法读取恢复结果：", error.message());
+            SetBackupBusy(false, message);
+            SetStatus(message);
+            co_return;
+        }
+
+        SetStatus(L"恢复已安排；退出后再次启动 TieZ 即会安全应用。");
+        if (MessageBoxW(
+            GetWindowHandle(),
+            L"恢复已安排。现在退出 TieZ，可在下次启动时应用备份。\n\n是否立即退出？",
+            L"恢复已安排",
+            MB_ICONINFORMATION | MB_YESNO | MB_DEFBUTTON1) == IDYES)
+        {
+            RequestExit();
+        }
+    }
+
     void MainWindow::EnsureSettingsDialog()
     {
         if (m_settingsDialog)
@@ -1853,6 +2179,58 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_settingsPanel.Children().Append(m_captureFilesToggle);
         m_settingsPanel.Children().Append(m_captureRichTextToggle);
         m_settingsPanel.Children().Append(m_privacyProtectionToggle);
+
+        TextBlock dataSafetyTitle;
+        dataSafetyTitle.Text(L"数据安全");
+        dataSafetyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(dataSafetyTitle);
+
+        TextBlock dataSafetyDescription;
+        dataSafetyDescription.Text(
+            L"备份包含一致的 SQLite 快照、附件和表情收藏，文件本身不会额外加密，请仅保存到可信位置。受保护字段仍绑定当前 Windows 账户的 DPAPI，换账户或设备可能无法解密。恢复前会校验结构、大小和 SHA-256，并保留七天回滚副本。");
+        dataSafetyDescription.TextWrapping(TextWrapping::Wrap);
+        dataSafetyDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(dataSafetyDescription);
+
+        StackPanel backupActions;
+        backupActions.Orientation(Orientation::Horizontal);
+        backupActions.Spacing(8);
+        m_exportBackupButton = Button();
+        m_exportBackupButton.Content(winrt::box_value(L"导出备份"));
+        m_exportBackupButton.IsEnabled(false);
+        AutomationProperties::SetName(m_exportBackupButton, L"导出 TieZ 备份");
+        m_restoreBackupButton = Button();
+        m_restoreBackupButton.Content(winrt::box_value(L"恢复备份"));
+        m_restoreBackupButton.IsEnabled(false);
+        AutomationProperties::SetName(m_restoreBackupButton, L"恢复 TieZ 备份");
+        m_backupProgress = ProgressRing();
+        m_backupProgress.Width(22);
+        m_backupProgress.Height(22);
+        m_backupProgress.IsActive(false);
+        m_backupProgress.Visibility(Visibility::Collapsed);
+        backupActions.Children().Append(m_exportBackupButton);
+        backupActions.Children().Append(m_restoreBackupButton);
+        backupActions.Children().Append(m_backupProgress);
+        m_settingsPanel.Children().Append(backupActions);
+
+        m_backupStatus = TextBlock();
+        m_backupStatus.TextWrapping(TextWrapping::Wrap);
+        m_backupStatus.IsTextSelectionEnabled(true);
+        m_backupStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_backupStatus, L"备份状态");
+        m_settingsPanel.Children().Append(m_backupStatus);
+
+        m_exportBackupButton.Click([this](auto const&, auto const&)
+        {
+            ExportBackupAsync();
+        });
+        m_restoreBackupButton.Click([this](auto const&, auto const&)
+        {
+            RestoreBackupAsync();
+        });
 
         ScrollViewer scroller;
         scroller.MaxHeight(620);
@@ -2040,6 +2418,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const privacyProtection = getBool(L"app.privacy_protection", true);
         auto const trayVisible = !getBool(L"app.hide_tray_icon", false);
         auto const pinned = getBool(L"app.window_pinned", false);
+        auto const adapter = root.GetNamedString(L"adapter", L"memory");
         double persistentLimit = 500;
         try
         {
@@ -2053,12 +2432,24 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         auto const compactChanged = m_compactMode != compactMode;
         m_settingsReadOnly = root.GetNamedBoolean(L"read_only");
+        m_productionData = adapter == L"sqlite" || adapter == L"sqlite-read-only";
         m_settingsLoading = true;
         m_compactMode = compactMode;
         if (m_settingsPanel)
         {
-            m_settingsPanel.IsHitTestVisible(!m_settingsReadOnly);
-            m_settingsPanel.Opacity(m_settingsReadOnly ? 0.65 : 1.0);
+            auto const settingsEnabled = !m_settingsReadOnly;
+            m_settingsPanel.IsHitTestVisible(true);
+            m_settingsPanel.Opacity(1.0);
+            m_colorModeCombo.IsEnabled(settingsEnabled);
+            m_compactModeToggle.IsEnabled(settingsEnabled);
+            m_persistentToggle.IsEnabled(settingsEnabled);
+            m_persistentLimitEnabledToggle.IsEnabled(settingsEnabled);
+            m_deduplicateToggle.IsEnabled(settingsEnabled);
+            m_captureFilesToggle.IsEnabled(settingsEnabled);
+            m_captureRichTextToggle.IsEnabled(settingsEnabled);
+            m_privacyProtectionToggle.IsEnabled(settingsEnabled);
+            m_trayVisibleToggle.IsEnabled(settingsEnabled);
+            m_windowPinnedToggle.IsEnabled(settingsEnabled);
             m_colorModeCombo.SelectedIndex(colorMode == L"light" ? 1 : colorMode == L"dark" ? 2 : 0);
             m_compactModeToggle.IsOn(compactMode);
             m_persistentToggle.IsOn(persistent);
@@ -2071,6 +2462,24 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_privacyProtectionToggle.IsOn(privacyProtection);
             m_trayVisibleToggle.IsOn(trayVisible);
             m_windowPinnedToggle.IsOn(pinned);
+
+            auto backupMessage = m_backupStatus.Text();
+            if (backupMessage.empty())
+            {
+                if (!m_productionData)
+                {
+                    backupMessage = L"当前使用演示数据。连接生产数据库后才能导出或恢复备份。";
+                }
+                else if (m_settingsReadOnly)
+                {
+                    backupMessage = L"当前为只读生产数据：可以导出备份，不能安排恢复。";
+                }
+                else
+                {
+                    backupMessage = L"建议定期导出备份，并将文件保存在 TieZ 数据目录之外。";
+                }
+            }
+            SetBackupBusy(m_backupBusy, backupMessage);
         }
         m_settingsLoading = false;
 

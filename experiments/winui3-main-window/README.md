@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v8
+        │ dynamic loading + C ABI v9
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  clipboard_history · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · content_opening · paste_coordinator · ui_lifecycle
     - synthetic in-memory data (default)
     - production-schema SQLite history (opt-in, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
 ```
@@ -51,6 +51,8 @@ The C ABI interface is deliberately small:
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
 - read and update a strict allowlist of non-secret daily-use settings;
+- create, fully validate, and schedule restoration of the same `.tiez-backup`
+  archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
   removal state, generation, and a display message;
 - retrieve per-thread errors and free returned strings.
@@ -58,7 +60,7 @@ The C ABI interface is deliberately small:
 The shared Rust module owns adapter selection, query filtering (including
 `type:<content_type>` chips), sorting, sensitive-preview redaction, relative
 timestamps, generation tracking, paste payload planning, tag privacy transitions,
-and pin/delete/tag/pinned-order writes.
+pin/delete/tag/pinned-order writes, and the backup/rollback transaction.
 `PasteCoordinator` plans hide → restore-focus → clipboard → Ctrl+V; the WinUI
 shell captures the last foreground HWND and the Windows executor applies Unicode
 text plus a paste keystroke. The C ABI library owns only transport concerns:
@@ -86,6 +88,8 @@ versioned request/response structs or another explicitly versioned wire format.
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
 - Chinese “打开” actions for validated links/files and controlled temporary text, rich-text, or image files;
+- asynchronous Chinese backup export and restore controls with native file dialogs,
+  archive/checksum validation, next-startup restore, and seven-day rollback retention;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -208,8 +212,9 @@ shared ownership mutex still requires Tauri to be fully stopped. Leave this
 flag unset to keep the safe synthetic default while migration work continues.
 In writable mode the shared Rust bootstrap creates or upgrades schema version
 15 and seeds the same defaults as Tauri. If a scheduled restore is pending,
-WinUI refuses writable startup so Tauri can validate and apply that backup
-before either runtime opens SQLite.
+WinUI now validates and applies it itself before opening SQLite. Invalid pending
+archives are quarantined, and a successful restore keeps the replaced data in a
+seven-day rollback directory; starting the Tauri fallback is no longer required.
 
 The header should show `sqlite` and **write enabled**. Pin/delete go through
 `tiez_core_apply_action_json`; tag edits go through `tiez_core_update_tags_json`.
@@ -282,7 +287,7 @@ adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 8`.
+- [ ] Status shows `Rust ABI 9`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
@@ -325,6 +330,11 @@ adapter with every result.
 - [ ] HTTP/HTTPS and existing files open through the Windows default handler without `cmd` or PowerShell.
 - [ ] Custom URL protocols and local rich-text HTML require Chinese confirmation; dangerous URL protocols and sensitive entries are rejected.
 - [ ] Text and embedded images open from uniquely named files under the TieZ temporary directory without changing the stored clipboard entry.
+- [ ] The Chinese settings dialog exports a backup without blocking the UI and reports version, record count, file count, and byte size.
+- [ ] Restore rejects a malformed or checksum-mismatched archive before changing current data.
+- [ ] A scheduled restore applies on the next WinUI startup before SQLite opens, removes the pending archive, and keeps a rollback directory.
+- [ ] Read-only production mode permits export but disables restore; synthetic mode disables both actions.
+- [ ] The UI warns that backup archives are not additionally encrypted and DPAPI-protected fields remain bound to the current Windows account.
 
 ### Copied production history
 
@@ -374,6 +384,7 @@ window should call, and which extraction phase owns it.
 | Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
 | Open URL/file/text/rich/image | `open_content` | `tiez_core_prepare_open_content_json` + native `ShellExecuteW`, without command shells | 4 |
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
+| Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + ABI 9 + async native file dialogs and startup restore | 4 |
 | Emoji, tag manager, file transfer, cloud, advanced theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
@@ -415,10 +426,14 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    links, resolves existing files, and creates unique UTF-8/HTML/image temporary
    files. WinUI confirms custom protocols or local HTML, then calls
    `ShellExecuteW` directly without `cmd` or PowerShell. Editing temporary files
-   back into history remains a later parity item.
+   back into history remains a later parity item;
+7. `BackupRestore` — **shared core and WinUI surface connected**: Tauri command
+   wrappers and WinUI ABI 9 use one manifest/checksum implementation. Native
+   export and restore run off the UI thread; restore is staged, revalidated,
+   applied before SQLite opens, and retains a rollback directory.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs release-critical backup/sync/update surfaces plus manual Windows 10/11,
+needs release-critical sync/update surfaces plus manual Windows 10/11,
 DPI, IME, accessibility, and long-run lifecycle acceptance.
 
 ## Primary references

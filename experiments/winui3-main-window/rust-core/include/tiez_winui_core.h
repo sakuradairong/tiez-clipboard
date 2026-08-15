@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 8,
+    TIEZ_CORE_ABI_VERSION = 9,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -46,6 +46,23 @@ TIEZ_CORE_API char* tiez_core_get_content_json(
 TIEZ_CORE_API char* tiez_core_prepare_open_content_json(
     TiezCoreHandle* handle,
     int64_t entry_id);
+
+// Creates a consistent database + attachment backup. Backup operations use
+// production data owned by this process and return allocated metadata JSON.
+TIEZ_CORE_API char* tiez_core_create_backup_json(
+    TiezCoreHandle* handle,
+    const char* destination_utf8);
+
+// Fully validates archive structure, declared sizes, and SHA-256 checksums.
+TIEZ_CORE_API char* tiez_core_inspect_backup_json(
+    TiezCoreHandle* handle,
+    const char* path_utf8);
+
+// Copies a validated archive into the managed pending-restore slot. Writable
+// WinUI startup applies it before opening SQLite and keeps a rollback copy.
+TIEZ_CORE_API char* tiez_core_schedule_restore_json(
+    TiezCoreHandle* handle,
+    const char* path_utf8);
 
 // Supported prototype actions: pin, delete, paste-plain, and paste-rich.
 TIEZ_CORE_API bool tiez_core_apply_action(

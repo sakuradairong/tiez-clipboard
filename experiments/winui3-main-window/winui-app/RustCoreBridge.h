@@ -16,6 +16,9 @@ namespace tiez::probe
         [[nodiscard]] std::string Snapshot(std::string_view query) const;
         [[nodiscard]] std::string Content(std::int64_t entryId) const;
         [[nodiscard]] std::string PrepareOpenContent(std::int64_t entryId) const;
+        [[nodiscard]] std::string CreateBackup(std::string_view destination) const;
+        [[nodiscard]] std::string InspectBackup(std::string_view path) const;
+        [[nodiscard]] std::string ScheduleRestore(std::string_view path) const;
         [[nodiscard]] std::string ApplyAction(
             std::int64_t entryId,
             std::string_view action) const;
@@ -40,6 +43,7 @@ namespace tiez::probe
         using SnapshotFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using PrepareOpenContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
+        using PathJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdateTagsJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdatePinnedOrderJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
@@ -65,6 +69,9 @@ namespace tiez::probe
         SnapshotFn m_snapshot{};
         ContentFn m_content{};
         PrepareOpenContentFn m_prepareOpenContent{};
+        PathJsonFn m_createBackup{};
+        PathJsonFn m_inspectBackup{};
+        PathJsonFn m_scheduleRestore{};
         ApplyActionJsonFn m_applyActionJson{};
         UpdateTagsJsonFn m_updateTagsJson{};
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};

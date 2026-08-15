@@ -97,6 +97,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetupImeGuards();
         void EnsureSettingsDialog();
         void LoadSettings();
+        winrt::fire_and_forget ExportBackupAsync();
+        winrt::fire_and_forget RestoreBackupAsync();
+        void SetBackupBusy(bool busy, winrt::hstring const& message);
         bool PersistSetting(
             std::string_view key,
             std::string_view value,
@@ -135,6 +138,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_privacyProtectionToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_trayVisibleToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_windowPinnedToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_exportBackupButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_restoreBackupButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::ProgressRing m_backupProgress{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_backupStatus{ nullptr };
         Microsoft::UI::Xaml::Window m_hoverPreviewWindow{ nullptr };
         Microsoft::UI::Xaml::Controls::Border m_hoverPreviewRoot{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_hoverPreviewTitle{ nullptr };
@@ -156,6 +163,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_readOnly{};
         bool m_settingsReadOnly{};
         bool m_settingsLoading{};
+        bool m_backupBusy{};
+        bool m_productionData{};
         bool m_compactMode{};
         bool m_trayVisible{ true };
         bool m_canReorderPinned{};

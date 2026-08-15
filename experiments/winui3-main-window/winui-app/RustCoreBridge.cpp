@@ -46,6 +46,9 @@ namespace tiez::probe
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
             m_prepareOpenContent = Resolve<PrepareOpenContentFn>(
                 "tiez_core_prepare_open_content_json");
+            m_createBackup = Resolve<PathJsonFn>("tiez_core_create_backup_json");
+            m_inspectBackup = Resolve<PathJsonFn>("tiez_core_inspect_backup_json");
+            m_scheduleRestore = Resolve<PathJsonFn>("tiez_core_schedule_restore_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
@@ -127,6 +130,42 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust open-content planning failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::CreateBackup(std::string_view destination) const
+    {
+        std::string path{ destination };
+        auto* result = m_createBackup(m_handle, path.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust backup creation failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::InspectBackup(std::string_view pathValue) const
+    {
+        std::string path{ pathValue };
+        auto* result = m_inspectBackup(m_handle, path.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust backup inspection failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ScheduleRestore(std::string_view pathValue) const
+    {
+        std::string path{ pathValue };
+        auto* result = m_scheduleRestore(m_handle, path.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust restore scheduling failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

@@ -12,8 +12,11 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use tiez_core::backup::{
+    apply_pending_restore, create_backup, inspect_backup, schedule_backup_restore, BackupInfo,
+};
 use tiez_core::clipboard_capture::{
-    classify_snapshot, detect_content_type, CapturedPayload, CaptureFilter, ClipboardSnapshot,
+    classify_snapshot, detect_content_type, CaptureFilter, CapturedPayload, ClipboardSnapshot,
 };
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
@@ -21,21 +24,18 @@ use tiez_core::clipboard_history::{
 use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
-use tiez_core::native_settings::{
-    NativeSettingMutation, NativeSettings, NativeSettingsSnapshot,
-};
+use tiez_core::native_settings::{NativeSettingMutation, NativeSettings, NativeSettingsSnapshot};
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
+mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
-mod win32_capture;
 
-const ABI_VERSION: u32 = 8;
+const ABI_VERSION: u32 = 9;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
-const PENDING_RESTORE_NAME: &str = ".tiez-restore-pending.tiez-backup";
 static DATABASE_INSTANCE_GUARD: Mutex<Option<DatabaseInstanceGuard>> = Mutex::new(None);
 
 thread_local! {
@@ -122,15 +122,13 @@ fn prepare_writable_database(database_path: &Path) -> Result<(), String> {
     let data_dir = database_path
         .parent()
         .ok_or_else(|| format!("数据库路径缺少父目录：{}", database_path.display()))?;
-    if data_dir.join(PENDING_RESTORE_NAME).is_file() {
-        return Err(
-            "检测到待恢复备份。请先启动 Tauri 版本完成恢复，再使用 WinUI 生产数据模式。"
-                .to_owned(),
-        );
-    }
-
     std::fs::create_dir_all(data_dir)
         .map_err(|error| format!("无法创建数据目录 {}：{error}", data_dir.display()))?;
+    let restore =
+        apply_pending_restore(data_dir).map_err(|error| format!("无法应用待恢复备份：{error}"))?;
+    if restore.applied || restore.quarantined {
+        eprintln!(">>> [RESTORE] {}", restore.message);
+    }
     open_database_with_decrypt(database_path, tiez_core::encryption::decrypt_value)
         .map(|_| ())
         .map_err(|error| format!("无法初始化数据库 {}：{error}", database_path.display()))
@@ -207,6 +205,13 @@ struct OpenContentResponse<'a> {
     plan: &'a OpenContentPlan,
 }
 
+#[derive(Serialize)]
+struct BackupResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    info: &'a BackupInfo,
+}
+
 fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
     serde_json::to_string(&SnapshotResponse {
         abi_version: ABI_VERSION,
@@ -260,10 +265,36 @@ fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
     .map_err(|error| format!("failed to serialize open-content plan: {error}"))
 }
 
-fn prepare_history_open(
-    handle: &TiezCoreHandle,
-    entry_id: i64,
-) -> Result<OpenContentPlan, String> {
+fn backup_json(info: &BackupInfo) -> Result<String, String> {
+    serde_json::to_string(&BackupResponse {
+        abi_version: ABI_VERSION,
+        info,
+    })
+    .map_err(|error| format!("failed to serialize backup information: {error}"))
+}
+
+fn owned_database_context(handle: &TiezCoreHandle) -> Result<(PathBuf, bool), String> {
+    let database_path = {
+        let guard = DATABASE_INSTANCE_GUARD
+            .lock()
+            .map_err(|_| "database instance guard lock is poisoned".to_owned())?;
+        guard
+            .as_ref()
+            .map(|guard| guard.database_path().to_path_buf())
+            .ok_or_else(|| "备份功能仅在 WinUI 生产数据模式下可用".to_owned())?
+    };
+    let read_only = handle
+        .inner
+        .history
+        .lock()
+        .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?
+        .snapshot("")
+        .map_err(|error| error.to_string())?
+        .read_only;
+    Ok((database_path, read_only))
+}
+
+fn prepare_history_open(handle: &TiezCoreHandle, entry_id: i64) -> Result<OpenContentPlan, String> {
     let content = {
         let history = handle
             .inner
@@ -434,10 +465,7 @@ pub(crate) fn ingest_captured_snapshot(
             .capture
             .lock()
             .map_err(|_| "CaptureFilter lock is poisoned".to_owned())?;
-        match filter.accept_payload_with_dedup(
-            Some(payload),
-            capture_preferences.deduplicate,
-        ) {
+        match filter.accept_payload_with_dedup(Some(payload), capture_preferences.deduplicate) {
             Ok(payload) => payload,
             Err(_) => return Ok(None),
         }
@@ -514,7 +542,11 @@ fn paste_payload_summary(payload: &PastePayload) -> String {
         format!(
             "{} chars{}",
             payload.text.chars().count(),
-            if payload.html.is_some() { " + HTML" } else { "" }
+            if payload.html.is_some() {
+                " + HTML"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -711,6 +743,84 @@ pub unsafe extern "C" fn tiez_core_prepare_open_content_json(
 }
 
 #[no_mangle]
+/// Create a validated TieZ backup and return its metadata as allocated JSON.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `destination_utf8` must remain a readable, NUL-terminated UTF-8 path for
+/// the duration of this call.
+pub unsafe extern "C" fn tiez_core_create_backup_json(
+    handle: *mut TiezCoreHandle,
+    destination_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let destination = PathBuf::from(required_utf8(destination_utf8, "destination_utf8")?);
+        let (database_path, _) = owned_database_context(handle)?;
+        let data_dir = database_path
+            .parent()
+            .ok_or_else(|| format!("数据库路径缺少父目录：{}", database_path.display()))?;
+        let info = create_backup(
+            &database_path,
+            data_dir,
+            &destination,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .map_err(|error| error.to_string())?;
+        into_owned_c_string(backup_json(&info)?)
+    })
+}
+
+#[no_mangle]
+/// Validate a TieZ backup and return its metadata as allocated JSON.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `path_utf8` must remain a readable, NUL-terminated UTF-8 path for this call.
+pub unsafe extern "C" fn tiez_core_inspect_backup_json(
+    handle: *mut TiezCoreHandle,
+    path_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let _handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let path = PathBuf::from(required_utf8(path_utf8, "path_utf8")?);
+        let info = inspect_backup(&path).map_err(|error| error.to_string())?;
+        into_owned_c_string(backup_json(&info)?)
+    })
+}
+
+#[no_mangle]
+/// Validate and stage a TieZ backup for restore before the next database open.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `path_utf8` must remain a readable, NUL-terminated UTF-8 path for this call.
+pub unsafe extern "C" fn tiez_core_schedule_restore_json(
+    handle: *mut TiezCoreHandle,
+    path_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let path = PathBuf::from(required_utf8(path_utf8, "path_utf8")?);
+        let (database_path, read_only) = owned_database_context(handle)?;
+        if read_only {
+            return Err("只读生产数据模式不能安排恢复".to_owned());
+        }
+        let data_dir = database_path
+            .parent()
+            .ok_or_else(|| format!("数据库路径缺少父目录：{}", database_path.display()))?;
+        let info = schedule_backup_restore(data_dir, &path).map_err(|error| error.to_string())?;
+        into_owned_c_string(backup_json(&info)?)
+    })
+}
+
+#[no_mangle]
 /// # Safety
 ///
 /// `handle` must point to a live handle returned by `tiez_core_create`.
@@ -806,9 +916,7 @@ pub unsafe extern "C" fn tiez_core_update_pinned_order_json(
 /// # Safety
 ///
 /// `handle` must point to a live handle returned by `tiez_core_create`.
-pub unsafe extern "C" fn tiez_core_get_settings_json(
-    handle: *mut TiezCoreHandle,
-) -> *mut c_char {
+pub unsafe extern "C" fn tiez_core_get_settings_json(handle: *mut TiezCoreHandle) -> *mut c_char {
     with_ffi_result(ptr::null_mut(), || {
         let handle =
             unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
@@ -911,7 +1019,9 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
 /// `tiez_core_prepare_open_content_json`,
-/// `tiez_core_apply_action_json`, `tiez_core_update_tags_json`, or
+/// `tiez_core_create_backup_json`, `tiez_core_inspect_backup_json`,
+/// `tiez_core_schedule_restore_json`, `tiez_core_apply_action_json`,
+/// `tiez_core_update_tags_json`, or
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
 /// `tiez_core_update_setting_json`, or `tiez_core_take_last_error`. A non-null
 /// pointer must be transferred to this function exactly once.
@@ -955,16 +1065,27 @@ mod tests {
     }
 
     #[test]
-    fn writable_database_bootstrap_refuses_a_pending_restore() {
+    fn writable_database_bootstrap_quarantines_an_invalid_pending_restore() {
         let root = temporary_database_root("pending-restore");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(PENDING_RESTORE_NAME), b"pending").unwrap();
+        std::fs::write(
+            root.join(tiez_core::backup::PENDING_BACKUP_NAME),
+            b"pending",
+        )
+        .unwrap();
         let database_path = root.join("clipboard.db");
 
-        let error = prepare_writable_database(&database_path).unwrap_err();
+        prepare_writable_database(&database_path).unwrap();
 
-        assert!(error.contains("待恢复备份"));
-        assert!(!database_path.exists());
+        assert!(database_path.exists());
+        assert!(!root.join(tiez_core::backup::PENDING_BACKUP_NAME).exists());
+        assert!(std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("restore-failed-")));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -984,7 +1105,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":8"));
+        assert!(json.contains("\"abi_version\":9"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -1021,13 +1142,15 @@ mod tests {
 
     #[test]
     fn open_content_export_returns_a_validated_plan_and_rejects_sensitive_entries() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
 
         unsafe {
             let value = tiez_core_prepare_open_content_json(handle, 103);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":8"));
+            assert!(json.contains("\"abi_version\":9"));
             assert!(json.contains("\"kind\":\"url\""));
             assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
             assert!(json.contains("\"requires_confirmation\":false"));
@@ -1046,8 +1169,69 @@ mod tests {
     }
 
     #[test]
+    fn backup_exports_round_trip_production_data_and_startup_restore() {
+        let root = temporary_database_root("backup-round-trip");
+        let data_dir = root.join("data");
+        let database_path = data_dir.join("clipboard.db");
+        let destination = root.join("daily.tiez-backup");
+        prepare_writable_database(&database_path).unwrap();
+        ensure_database_instance_guard(&database_path).unwrap();
+        let history = ClipboardHistory::open_sqlite_read_write(&database_path).unwrap();
+        let settings = NativeSettings::open_sqlite(&database_path, false).unwrap();
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap_with_settings(
+            history, settings,
+        )));
+        let destination = CString::new(destination.to_string_lossy().as_bytes()).unwrap();
+
+        unsafe {
+            let created = tiez_core_create_backup_json(handle, destination.as_ptr());
+            assert!(!created.is_null());
+            let created_json = CStr::from_ptr(created).to_str().unwrap();
+            assert!(created_json.contains("\"abi_version\":9"));
+            assert!(created_json.contains("\"entryCount\":0"));
+            tiez_core_string_free(created);
+
+            let inspected = tiez_core_inspect_backup_json(handle, destination.as_ptr());
+            assert!(!inspected.is_null());
+            assert!(CStr::from_ptr(inspected)
+                .to_str()
+                .unwrap()
+                .contains("\"fileCount\":1"));
+            tiez_core_string_free(inspected);
+
+            let scheduled = tiez_core_schedule_restore_json(handle, destination.as_ptr());
+            assert!(!scheduled.is_null());
+            assert!(CStr::from_ptr(scheduled)
+                .to_str()
+                .unwrap()
+                .contains("\"formatVersion\":1"));
+            tiez_core_string_free(scheduled);
+            tiez_core_destroy(handle);
+        }
+
+        DATABASE_INSTANCE_GUARD.lock().unwrap().take();
+        assert!(data_dir
+            .join(tiez_core::backup::PENDING_BACKUP_NAME)
+            .is_file());
+        prepare_writable_database(&database_path).unwrap();
+        assert!(!data_dir
+            .join(tiez_core::backup::PENDING_BACKUP_NAME)
+            .exists());
+        assert!(std::fs::read_dir(&data_dir)
+            .unwrap()
+            .flatten()
+            .any(|entry| entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("restore-rollback-")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn action_export_serializes_structured_mutation_result() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let pin = CString::new("pin").unwrap();
         let delete = CString::new("delete").unwrap();
 
@@ -1055,7 +1239,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":8"));
+            assert!(pin_json.contains("\"abi_version\":9"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1078,14 +1262,16 @@ mod tests {
 
     #[test]
     fn tag_export_accepts_utf8_json_and_returns_structured_mutation() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let tags = CString::new("[\"工作\",\"密码\",\"工作\"]").unwrap();
 
         unsafe {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":8"));
+            assert!(json.contains("\"abi_version\":9"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1116,7 +1302,9 @@ mod tests {
 
     #[test]
     fn native_settings_export_is_allowlisted_and_mutable() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let compact_key = CString::new("app.compact_mode").unwrap();
         let true_value = CString::new("true").unwrap();
 
@@ -1124,16 +1312,13 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":8"));
+            assert!(initial_json.contains("\"abi_version\":9"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
 
-            let mutation = tiez_core_update_setting_json(
-                handle,
-                compact_key.as_ptr(),
-                true_value.as_ptr(),
-            );
+            let mutation =
+                tiez_core_update_setting_json(handle, compact_key.as_ptr(), true_value.as_ptr());
             assert!(!mutation.is_null());
             let mutation_json = CStr::from_ptr(mutation).to_str().unwrap();
             assert!(mutation_json.contains("\"key\":\"app.compact_mode\""));
@@ -1169,7 +1354,9 @@ mod tests {
 
     #[test]
     fn pinned_order_export_requires_all_pinned_ids_and_preserves_requested_order() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let pin = CString::new("pin").unwrap();
 
         unsafe {
@@ -1184,7 +1371,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":8"));
+            assert!(json.contains("\"abi_version\":9"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));
@@ -1214,7 +1401,9 @@ mod tests {
 
     #[test]
     fn paste_action_plans_payload_instead_of_logging_only() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let action = CString::new("paste-plain").unwrap();
 
         unsafe {
@@ -1266,7 +1455,9 @@ mod tests {
 
     #[test]
     fn invalid_action_sets_a_retrievable_error() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let action = CString::new("explode").unwrap();
 
         unsafe {
@@ -1284,8 +1475,7 @@ mod tests {
 
     #[test]
     fn ingest_notifies_changed_callback_and_skips_duplicates() {
-        static LAST_GENERATION: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static LAST_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         extern "C" fn on_changed(_: *mut c_void, generation: u64) {
             LAST_GENERATION.store(generation, std::sync::atomic::Ordering::SeqCst);
         }
@@ -1299,21 +1489,14 @@ mod tests {
             assert!(tiez_core_start_capture(handle));
             let first = ingest_captured_text(&(*handle).inner, "hello from notepad").unwrap();
             assert_eq!(first, Some(2));
-            assert_eq!(
-                LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst),
-                2
-            );
+            assert_eq!(LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst), 2);
             assert!(ingest_captured_text(&(*handle).inner, "hello from notepad")
                 .unwrap()
                 .is_none());
-            assert_eq!(
-                LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst),
-                2
-            );
+            assert_eq!(LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst), 2);
             let key = CString::new("app.deduplicate").unwrap();
             let disabled = CString::new("false").unwrap();
-            let mutation =
-                tiez_core_update_setting_json(handle, key.as_ptr(), disabled.as_ptr());
+            let mutation = tiez_core_update_setting_json(handle, key.as_ptr(), disabled.as_ptr());
             assert!(!mutation.is_null());
             tiez_core_string_free(mutation);
             assert_eq!(

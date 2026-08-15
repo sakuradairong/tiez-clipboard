@@ -22,10 +22,11 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v7 exposes an allowlisted, non-secret native settings surface with SQLite and memory adapters. The Chinese settings dialog can immediately apply theme, compact-list, persistence, history-limit, deduplication, file/rich-text capture, privacy, tray visibility, and real always-on-top window behavior.
 - WinUI compact mode now opens a no-activate, always-on-top native hover preview for text, rich text, files, images, and protected-entry messages without using WebView2.
 - WinUI ABI v8 adds a shared, privacy-preserving open-content plan. The Chinese native UI can open trusted web links, existing files, UTF-8 text, rich text, and images through `ShellExecuteW` without command shells; dangerous URL schemes are rejected and custom protocols or local HTML require confirmation.
+- WinUI ABI v9 adds asynchronous Chinese backup export and restore controls backed by a shared `tiez-core` archive implementation. Both frontends now create and validate the same database/attachment archives, while WinUI applies scheduled restores before opening SQLite and retains a rollback copy.
 
 ### Changed
 
-- Tauri and writable WinUI database startup now use the same `tiez-core` schema-v15 migration and 77-setting bootstrap; WinUI refuses to open a data directory with a scheduled restore pending.
+- Tauri and writable WinUI database startup now use the same `tiez-core` schema-v15 migration and 77-setting bootstrap; WinUI validates and applies a scheduled restore itself before opening the database instead of requiring the Tauri fallback.
 - Tauri and writable WinUI history mutations now share atomic row, normalized-tag, sync-revision, and deletion-tombstone semantics; native file captures use the production `file` content type.
 - Writable WinUI capture now follows the production persistence and deduplication settings: session-only entries use replaceable negative IDs with a 500-item cap, while persisted captures reuse matching rows and enforce the configured unprotected-history limit.
 - Tauri and the WinUI candidate now share the same default, redirected, and portable data-directory selection policy; WinUI can opt into the production directory with `TIEZ_WINUI_USE_PRODUCTION_DATA=1` while synthetic data remains the safe default.
@@ -38,6 +39,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
 - WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.
+- Shared backup validation rejects undeclared or duplicate ZIP entries, unsafe paths, oversized payloads, invalid hashes, and checksum mismatches; failed pending restores are quarantined before either frontend opens SQLite.
 
 ### Fixed
 
