@@ -31,6 +31,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - The Chinese WinUI settings dialog now owns Windows login startup. Installed MSIX builds use the native `TieZStartup` task, unpackaged builds register only the current native executable, and startup activation remains hidden in the system tray.
 - Native WinUI launches now register one AppLifecycle main instance before XAML and Rust/SQLite startup. Duplicate startup activations remain hidden, while ordinary duplicate launches exit and reveal the existing tray process; an isolated PowerShell smoke test covers both paths.
 - Native Windows validation and signed-release jobs now run the single-instance activation smoke test before packaging; the dedicated WinUI workflow follows `master` instead of the retired exploration branch.
+- The native lifecycle smoke test now repeats real activation and `WM_CLOSE`-to-tray cycles while asserting one persistent PID/Rust owner; CI runs ten cycles and release acceptance can run one hundred.
 
 ### Changed
 

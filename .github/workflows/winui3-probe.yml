@@ -44,7 +44,7 @@ jobs:
       - name: Test native single-instance activation
         working-directory: experiments/winui3-main-window
         shell: pwsh
-        run: ./test-single-instance.ps1 -Configuration Release
+        run: ./test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
 
       - name: Validate unsigned MSIX
         working-directory: experiments/winui3-main-window

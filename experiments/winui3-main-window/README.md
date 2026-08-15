@@ -359,7 +359,7 @@ recognition. Record the active adapter with every result.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
 - [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
-- [ ] `test-single-instance.ps1 -Configuration Release` passes against an isolated temporary database.
+- [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` passes against an isolated temporary database.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
 - [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
@@ -436,7 +436,7 @@ recognition. Record the active adapter with every result.
 ### Evidence before a real product slice
 
 - [ ] At least five independent release memory runs.
-- [ ] At least 100 open/hide/show/close cycles without crashes.
+- [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` completes 100 show/WM_CLOSE-to-tray cycles without changing the primary PID or exiting the Rust owner.
 - [ ] Median requested-to-ready no more than 750 ms.
 - [ ] Worst five requested-to-ready samples no more than 1500 ms.
 - [ ] Narrator announces search, buttons, list content, and status changes.

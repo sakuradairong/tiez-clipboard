@@ -5,7 +5,10 @@ param(
 
     [int]$ReadyTimeoutSeconds = 15,
 
-    [int]$RedirectTimeoutSeconds = 10
+    [int]$RedirectTimeoutSeconds = 10,
+
+    [ValidateRange(1, 1000)]
+    [int]$LifecycleCycles = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,19 +121,6 @@ try {
     $Primary.Refresh()
     $HandleAfterMinimizedRedirect = [int64]$Primary.MainWindowHandle
 
-    $VisibleSecondary = Start-Process -FilePath $Executable -PassThru
-    if (-not $VisibleSecondary.WaitForExit($RedirectTimeoutSeconds * 1000)) {
-        throw "Visible secondary instance did not redirect and exit."
-    }
-    $VisibleExitCode = $VisibleSecondary.ExitCode
-
-    $ShowDeadline = (Get-Date).AddSeconds($RedirectTimeoutSeconds)
-    do {
-        Start-Sleep -Milliseconds 50
-        $Primary.Refresh()
-        $ShownHandle = [int64]$Primary.MainWindowHandle
-    } while ($ShownHandle -eq 0 -and (Get-Date) -lt $ShowDeadline)
-
     $Primary.Refresh()
     if ($InitialHandle -ne 0) {
         throw "Primary instance was not hidden (window handle $InitialHandle)."
@@ -141,11 +131,47 @@ try {
     if ($MinimizedExitCode -ne 0 -or $HandleAfterMinimizedRedirect -ne 0) {
         throw "Minimized activation failed or revealed the primary window."
     }
-    if ($VisibleExitCode -ne 0 -or $ShownHandle -eq 0) {
-        throw "Visible activation did not reveal the primary window."
-    }
     if ($Primary.HasExited) {
         throw "Primary instance exited during redirection."
+    }
+
+    $VisibleExitCode = $null
+    $ShownHandle = [int64]0
+    $FinalHiddenHandle = [int64]0
+    for ($cycle = 1; $cycle -le $LifecycleCycles; $cycle++) {
+        $VisibleSecondary = Start-Process -FilePath $Executable -PassThru
+        if (-not $VisibleSecondary.WaitForExit($RedirectTimeoutSeconds * 1000)) {
+            throw "Visible secondary instance did not redirect and exit in cycle $cycle."
+        }
+        $VisibleExitCode = $VisibleSecondary.ExitCode
+
+        $ShowDeadline = (Get-Date).AddSeconds($RedirectTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 50
+            $Primary.Refresh()
+            $ShownHandle = [int64]$Primary.MainWindowHandle
+        } while ($ShownHandle -eq 0 -and (Get-Date) -lt $ShowDeadline)
+
+        if ($VisibleExitCode -ne 0 -or $ShownHandle -eq 0) {
+            throw "Visible activation did not reveal the primary window in cycle $cycle."
+        }
+        if (-not $Primary.CloseMainWindow()) {
+            throw "WM_CLOSE could not be sent to the primary window in cycle $cycle."
+        }
+
+        $HideDeadline = (Get-Date).AddSeconds($RedirectTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 50
+            $Primary.Refresh()
+            $FinalHiddenHandle = [int64]$Primary.MainWindowHandle
+        } while ($FinalHiddenHandle -ne 0 -and (Get-Date) -lt $HideDeadline)
+
+        if ($FinalHiddenHandle -ne 0) {
+            throw "Primary window did not close to the tray in cycle $cycle."
+        }
+        if ($Primary.HasExited) {
+            throw "Primary instance exited during lifecycle cycle $cycle."
+        }
     }
 
     [pscustomobject]@{
@@ -156,8 +182,10 @@ try {
         HandleAfterHiddenRedirect = $HandleAfterHiddenRedirect
         MinimizedSecondaryExitCode = $MinimizedExitCode
         HandleAfterMinimizedRedirect = $HandleAfterMinimizedRedirect
+        LifecycleCycles = $LifecycleCycles
         VisibleSecondaryExitCode = $VisibleExitCode
-        ShownHandle = $ShownHandle
+        LastShownHandle = $ShownHandle
+        FinalHiddenHandle = $FinalHiddenHandle
         DatabaseCreated = Test-Path -LiteralPath (
             [Environment]::GetEnvironmentVariable("TIEZ_WINUI_DB_PATH", "Process"))
     }

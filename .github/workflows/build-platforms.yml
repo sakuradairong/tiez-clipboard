@@ -121,7 +121,7 @@ jobs:
       - name: Test native WinUI single-instance activation
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./experiments/winui3-main-window/test-single-instance.ps1 -Configuration Release
+        run: ./experiments/winui3-main-window/test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
 
       - name: Validate unsigned native WinUI MSIX
         if: runner.os == 'Windows'
