@@ -19,6 +19,7 @@ use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
 use tiez_core::data_directory::resolve_data_directory;
+use tiez_core::database_bootstrap::open_database;
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
@@ -30,6 +31,7 @@ const ABI_VERSION: u32 = 4;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
+const PENDING_RESTORE_NAME: &str = ".tiez-restore-pending.tiez-backup";
 static DATABASE_INSTANCE_GUARD: Mutex<Option<DatabaseInstanceGuard>> = Mutex::new(None);
 
 thread_local! {
@@ -79,6 +81,9 @@ impl TiezCoreHandle {
             Some(value) => {
                 let read_only = env_flag(DATABASE_READ_ONLY_ENV);
                 ensure_database_instance_guard(&value)?;
+                if !read_only {
+                    prepare_writable_database(&value)?;
+                }
                 ClipboardHistory::open_sqlite(&value, read_only)
                     .map_err(|error| format!("{}: {error}", value.display()))?
             }
@@ -97,6 +102,24 @@ fn production_database_path() -> Result<PathBuf, String> {
     let executable_path = env::current_exe().ok();
     let data_dir = resolve_data_directory(&default_app_dir, executable_path.as_deref());
     Ok(data_dir.path.join("clipboard.db"))
+}
+
+fn prepare_writable_database(database_path: &Path) -> Result<(), String> {
+    let data_dir = database_path
+        .parent()
+        .ok_or_else(|| format!("数据库路径缺少父目录：{}", database_path.display()))?;
+    if data_dir.join(PENDING_RESTORE_NAME).is_file() {
+        return Err(
+            "检测到待恢复备份。请先启动 Tauri 版本完成恢复，再使用 WinUI 生产数据模式。"
+                .to_owned(),
+        );
+    }
+
+    std::fs::create_dir_all(data_dir)
+        .map_err(|error| format!("无法创建数据目录 {}：{error}", data_dir.display()))?;
+    open_database(database_path)
+        .map(|_| ())
+        .map_err(|error| format!("无法初始化数据库 {}：{error}", database_path.display()))
 }
 
 fn ensure_database_instance_guard(database_path: &Path) -> Result<(), String> {
@@ -619,7 +642,43 @@ pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tiez_core::clipboard_history::HistoryItem;
+
+    fn temporary_database_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("tiez-winui-bootstrap-{name}-{unique}"))
+    }
+
+    #[test]
+    fn writable_database_bootstrap_creates_a_usable_production_schema() {
+        let root = temporary_database_root("new");
+        let database_path = root.join("clipboard.db");
+
+        prepare_writable_database(&database_path).unwrap();
+        let history = ClipboardHistory::open_sqlite_read_write(&database_path).unwrap();
+        assert_eq!(history.snapshot("").unwrap().adapter, "sqlite");
+
+        drop(history);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writable_database_bootstrap_refuses_a_pending_restore() {
+        let root = temporary_database_root("pending-restore");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(PENDING_RESTORE_NAME), b"pending").unwrap();
+        let database_path = root.join("clipboard.db");
+
+        let error = prepare_writable_database(&database_path).unwrap_err();
+
+        assert!(error.contains("待恢复备份"));
+        assert!(!database_path.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn snapshot_serializes_the_stable_abi_and_utf8() {

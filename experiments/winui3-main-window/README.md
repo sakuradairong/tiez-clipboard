@@ -189,6 +189,10 @@ This resolves `%APPDATA%\com.tiez`, honors a valid `datapath.txt`, and lets an
 existing `data` directory beside the WinUI executable take precedence. The
 shared ownership mutex still requires Tauri to be fully stopped. Leave this
 flag unset to keep the safe synthetic default while migration work continues.
+In writable mode the shared Rust bootstrap creates or upgrades schema version
+15 and seeds the same defaults as Tauri. If a scheduled restore is pending,
+WinUI refuses writable startup so Tauri can validate and apply that backup
+before either runtime opens SQLite.
 
 The header should show `sqlite` and **write enabled**. Pin/delete go through
 `tiez_core_apply_action_json` and keep `replacement_id` null for persisted

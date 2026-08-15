@@ -37,37 +37,23 @@ pub fn has_sensitive_tag(tags: &[String]) -> bool {
 }
 
 pub fn is_text_type(content_type: &str) -> bool {
-    matches!(content_type, "text" | "code" | "url" | "rich_text")
+    tiez_core::content_identity::is_text_type(content_type)
 }
 
 /// Content types whose identity is the normalized, readable text stored in `content`.
 pub fn uses_text_content_hash(content_type: &str) -> bool {
-    is_text_type(content_type) || matches!(content_type, "file" | "video")
-}
-
-fn normalize_text(content: &str) -> String {
-    content.replace("\r\n", "\n").replace('\r', "\n")
+    tiez_core::content_identity::uses_text_content_hash(content_type)
 }
 
 pub fn calc_text_hash(content: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let normalized = normalize_text(content);
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    hasher.finish()
+    tiez_core::content_identity::calc_text_hash(content)
 }
 
 /// Hash used by pre-whitespace-preserving sync payloads. This intentionally
 /// reproduces the historical algorithm byte-for-byte: trim first, normalize
 /// CRLF pairs to LF, and leave standalone CR bytes unchanged.
 pub fn calc_legacy_text_hash(content: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let normalized = content.trim().replace("\r\n", "\n");
-    let mut hasher = DefaultHasher::new();
-    normalized.hash(&mut hasher);
-    hasher.finish()
+    tiez_core::content_identity::calc_legacy_text_hash(content)
 }
 
 fn calc_visual_hash(img: &image::DynamicImage) -> i64 {
@@ -128,24 +114,10 @@ pub fn calc_image_hash(base64_data: &str) -> Option<i64> {
 }
 
 pub fn init_db(path: &str) -> Result<Connection> {
-    let conn = Connection::open(path)?;
-
-    // Performance and space pragmas
-    conn.execute_batch(
-        "
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA auto_vacuum = FULL;
-    ",
-    )?;
-
-    // Run migrations
-    crate::infrastructure::repository::migrations::run_migrations(&conn)?;
-
-    // Initialize default settings
-    seed_defaults(&conn)?;
-
-    Ok(conn)
+    tiez_core::database_bootstrap::open_database_with_decrypt(
+        path,
+        crate::infrastructure::encryption::decrypt_value,
+    )
 }
 
 // save_entry removed (migrated to repository)
@@ -191,6 +163,11 @@ pub fn save_image_to_file(data_url: &str, data_dir: &std::path::Path) -> Option<
 // delete_entry_db, delete_entry, enforce_storage_limit, clear_history removed (migrated to repository)
 
 pub fn seed_defaults(conn: &Connection) -> Result<()> {
+    tiez_core::database_bootstrap::seed_defaults(conn)
+}
+
+#[cfg(test)]
+fn seed_defaults_legacy_fixture(conn: &Connection) -> Result<()> {
     // App settings
     let _ = conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('app.theme', 'mica')",
@@ -672,6 +649,26 @@ mod tests {
         )?;
 
         assert!(hotkey.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_and_shared_default_settings_remain_identical() -> Result<()> {
+        let legacy = setup_test_db();
+        let shared = setup_test_db();
+        seed_defaults_legacy_fixture(&legacy)?;
+        tiez_core::database_bootstrap::seed_defaults(&shared)?;
+
+        let read_settings = |connection: &Connection| -> Result<Vec<(String, String)>> {
+            let mut statement =
+                connection.prepare("SELECT key, value FROM settings ORDER BY key")?;
+            let settings = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect();
+            settings
+        };
+
+        assert_eq!(read_settings(&legacy)?, read_settings(&shared)?);
         Ok(())
     }
 
