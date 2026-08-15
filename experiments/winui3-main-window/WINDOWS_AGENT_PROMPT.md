@@ -114,10 +114,14 @@ Required negative tests:
 13. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
     Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
     the hidden native window, and WM_CLOSE returns the same process to the tray.
+    Verify the script then starts a separate `MouseMiddle` instance, real mouse
+    input reveals it, and WM_CLOSE again returns the same process to the tray.
     Then edit the shortcut in Chinese native settings and verify registration
     succeeds before the new value is persisted, the main shell reports the active
-    shortcut, and reopening settings shows the saved value. Verify an invalid or
-    conflicting value preserves both the previous working registration and saved
+    shortcut, and reopening settings shows the saved value. Switch keyboard →
+    mouse middle → keyboard and verify each previous registration or hook is
+    removed. Verify an invalid or conflicting value preserves both the previous
+    working registration and saved
     value, an empty value disables and persists the shortcut, and a simulated
     database-write failure rolls the system registration back. Read-only adapters
     and `TIEZ_WINUI_HOTKEY` diagnostic overrides must disable the editor without

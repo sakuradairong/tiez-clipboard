@@ -87,7 +87,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
 - card context menu and double-click paste;
 - focusable clipboard list items with Chinese Narrator summaries, keyboard help, live status announcements, and protected sensitive-preview names;
-- configured keyboard global-hotkey toggle (inherited from and editable through `app.hotkey`, default Alt+C), last-foreground HWND capture, and deactivate-to-hide (unless pinned); the Chinese editor registers before persisting, database-write failure rolls registration back, and invalid/conflicting registrations keep the previous working shortcut and saved value, while the legacy middle-mouse hook remains pending and is reported explicitly in Chinese;
+- configured keyboard or `MouseMiddle`/`MButton` global toggle (inherited from and editable through `app.hotkey`, default Alt+C), last-foreground HWND capture, and deactivate-to-hide (unless pinned); the Chinese editor registers before persisting, database-write failure rolls registration back, and invalid/conflicting registrations keep the previous working shortcut and saved value;
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
 - a Chinese native settings dialog for theme, compact list, global keyboard shortcut, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
@@ -361,7 +361,7 @@ recognition. Record the active adapter with every result.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
 - [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
 - [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` passes against an isolated temporary database.
-- [ ] `test-hotkey.ps1 -Configuration Release` proves an isolated configured shortcut is registered, activates the hidden window through a real system keystroke, and survives close-to-tray.
+- [ ] `test-hotkey.ps1 -Configuration Release` proves an isolated keyboard shortcut owns its registration, then independently proves real keyboard and mouse-middle input activate the hidden window and survive close-to-tray.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
 - [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
@@ -381,8 +381,9 @@ recognition. Record the active adapter with every result.
 - [ ] Up/Down moves the selected card; Enter pastes plain text; Ctrl+Enter pastes rich; Esc hides.
 - [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
 - [ ] Right-click a card for open/paste/copy/pin/delete; double-click pastes plain text.
-- [ ] The configured `app.hotkey` (Alt+C by default) toggles visibility and captures the last foreground window; the Chinese shell displays the active shortcut.
+- [ ] The configured `app.hotkey` (Alt+C by default, with `MouseMiddle`/`MButton` compatibility) toggles visibility and captures the last foreground window; the Chinese shell displays the active input method.
 - [ ] Editing the shortcut in Chinese native settings registers it before saving it; reopening settings shows the saved value and the main shell immediately shows the active value.
+- [ ] Switching keyboard → mouse middle → keyboard removes the previous registration or hook each time; mouse middle is consumed only while configured and teardown leaves no hook behind.
 - [ ] An invalid or already-registered shortcut leaves both the previous working registration and saved value unchanged; an empty setting disables and persists the shortcut without affecting tray access.
 - [ ] A simulated database-write failure restores the previous system registration and reports a Chinese error; read-only adapters and `TIEZ_WINUI_HOTKEY` diagnostic overrides disable the editor.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
@@ -469,7 +470,7 @@ window should call, and which extraction phase owns it.
 | Paste rich (right-click) | `copy_to_clipboard` `pasteWithFormat: true` | `PasteCoordinator` + `paste-rich` | 1 |
 | Esc hide | `hide_window_cmd` | WinUI `UiLifecycle` hide | 1 |
 | Keyboard up/down + Enter | `useKeyboardNavigation` / `navigation-action` | WinUI list selection | 1 |
-| Configured keyboard toggle hotkey (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | allowlisted native settings read/write + parsed WinUI `RegisterHotKey`, registration-first persistence, rollback, and last HWND; legacy `MouseMiddle` hook pending | 5 (keyboard connected) |
+| Configured keyboard/mouse-middle toggle (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | allowlisted native settings read/write + parsed WinUI `RegisterHotKey` or scoped `WH_MOUSE_LL`, registration-first persistence, rollback, teardown, and last HWND | 5 (connected) |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
@@ -515,7 +516,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    WinUI executes Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
    Tauri still wraps the existing Win32 clipboard/keystroke path after planning
    text payloads;
-4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable configured-hotkey toggle, Esc hide,
+4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable keyboard/mouse-middle toggle, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste, native tray,
    close-to-hide, explicit tray exit, Explorer restart recovery, AppLifecycle
    launch redirection, and shared per-database single-instance ownership;

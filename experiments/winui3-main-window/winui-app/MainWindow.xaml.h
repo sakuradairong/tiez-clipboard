@@ -206,6 +206,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         HWND m_hoverPreviewHwnd{};
         HWND m_hotkeyHwnd{};
         HWND m_lastHwnd{};
+        HHOOK m_mouseHotkeyHook{};
         HICON m_trayIcon{};
         UINT m_hotkeyModifiers{};
         UINT m_hotkeyVirtualKey{};

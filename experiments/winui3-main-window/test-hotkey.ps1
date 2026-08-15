@@ -46,6 +46,9 @@ public static class TieZHotkeyProbe
 
     [DllImport("user32.dll")]
     public static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extraInfo);
 }
 "@
 }
@@ -81,6 +84,8 @@ $VkControl = 0x11
 $VkMenu = 0x12
 $VkF24 = 0x87
 $KeyUp = 0x0002
+$MouseMiddleDown = 0x0020
+$MouseMiddleUp = 0x0040
 $CustomModifiers = $ModAlt -bor $ModControl -bor $ModNoRepeat
 
 try {
@@ -158,13 +163,81 @@ try {
         throw "The hotkey-activated window did not return to the tray-owned process."
     }
 
+    $KeyboardPrimaryPid = $Primary.Id
+    $KeyboardShownHandle = $ShownHandle
+    $KeyboardFinalHiddenHandle = $FinalHiddenHandle
+    Stop-Process -Id $Primary.Id -Force
+    if (-not $Primary.WaitForExit(5000)) {
+        throw "The keyboard-hotkey test process did not stop before the mouse test."
+    }
+    $Primary = $null
+
+    [Environment]::SetEnvironmentVariable("TIEZ_WINUI_HOTKEY", "MouseMiddle", "Process")
+    [Environment]::SetEnvironmentVariable(
+        "TIEZ_WINUI_READY_FILE",
+        (Join-Path $TestDirectory "mouse-ready.txt"),
+        "Process")
+
+    $Primary = Start-Process `
+        -FilePath $Executable `
+        -ArgumentList "--autostart" `
+        -WindowStyle Hidden `
+        -PassThru
+
+    $MouseReadyFile = [Environment]::GetEnvironmentVariable(
+        "TIEZ_WINUI_READY_FILE",
+        "Process")
+    $ReadyDeadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
+    while (-not (Test-Path -LiteralPath $MouseReadyFile)) {
+        $Primary.Refresh()
+        if ($Primary.HasExited) {
+            throw "Mouse-middle test instance exited before reporting ready (exit code $($Primary.ExitCode))."
+        }
+        if ((Get-Date) -ge $ReadyDeadline) {
+            throw "Mouse-middle test instance did not report ready within $ReadyTimeoutSeconds seconds."
+        }
+        Start-Sleep -Milliseconds 50
+    }
+
+    [TieZHotkeyProbe]::mouse_event($MouseMiddleDown, 0, 0, 0, [UIntPtr]::Zero)
+    [TieZHotkeyProbe]::mouse_event($MouseMiddleUp, 0, 0, 0, [UIntPtr]::Zero)
+
+    $ActivationDeadline = (Get-Date).AddSeconds($ActivationTimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 50
+        $Primary.Refresh()
+        $MouseShownHandle = [int64]$Primary.MainWindowHandle
+    } while ($MouseShownHandle -eq 0 -and (Get-Date) -lt $ActivationDeadline)
+
+    if ($MouseShownHandle -eq 0) {
+        throw "MouseMiddle did not reveal the TieZ main window."
+    }
+    if (-not $Primary.CloseMainWindow()) {
+        throw "The mouse-middle-activated main window did not accept WM_CLOSE."
+    }
+
+    $HideDeadline = (Get-Date).AddSeconds($ActivationTimeoutSeconds)
+    do {
+        Start-Sleep -Milliseconds 50
+        $Primary.Refresh()
+        $MouseFinalHiddenHandle = [int64]$Primary.MainWindowHandle
+    } while ($MouseFinalHiddenHandle -ne 0 -and (Get-Date) -lt $HideDeadline)
+
+    if ($MouseFinalHiddenHandle -ne 0 -or $Primary.HasExited) {
+        throw "The mouse-middle-activated window did not return to the tray-owned process."
+    }
+
     [pscustomobject]@{
-        PrimaryPid = $Primary.Id
-        ConfiguredHotkey = "Ctrl+Alt+F24"
+        KeyboardPrimaryPid = $KeyboardPrimaryPid
+        KeyboardHotkey = "Ctrl+Alt+F24"
         RegistrationBlockedForProbe = $RegistrationError -eq 1409
-        ActivatedWindowHandle = $ShownHandle
-        FinalHiddenHandle = $FinalHiddenHandle
-        PrimaryAlive = -not $Primary.HasExited
+        KeyboardActivatedWindowHandle = $KeyboardShownHandle
+        KeyboardFinalHiddenHandle = $KeyboardFinalHiddenHandle
+        MousePrimaryPid = $Primary.Id
+        MouseHotkey = "MouseMiddle"
+        MouseActivatedWindowHandle = $MouseShownHandle
+        MouseFinalHiddenHandle = $MouseFinalHiddenHandle
+        MousePrimaryAlive = -not $Primary.HasExited
     }
 }
 finally {

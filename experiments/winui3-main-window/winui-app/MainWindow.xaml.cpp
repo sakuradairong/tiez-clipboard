@@ -6,6 +6,7 @@
 #endif
 
 #include <microsoft.ui.xaml.window.h>
+#include <atomic>
 #include <commctrl.h>
 #include <shellapi.h>
 
@@ -20,6 +21,7 @@ namespace
     constexpr UINT_PTR kMainWindowSubclassId = 2;
     constexpr UINT_PTR kHoverPreviewSubclassId = 3;
     constexpr UINT kTrayCallbackMessage = WM_APP + 7;
+    constexpr UINT kMouseMiddleHotkeyMessage = WM_APP + 8;
     constexpr UINT kTrayIconId = 1;
     constexpr UINT kTrayShowCommand = 1001;
     constexpr UINT kTrayExitCommand = 1002;
@@ -27,6 +29,7 @@ namespace
     constexpr wchar_t kAutostartTaskId[] = L"TieZStartup";
     constexpr wchar_t kRunRegistryPath[] =
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    std::atomic<HWND> g_mouseMiddleTargetHwnd{};
 
     struct HotkeySpec
     {
@@ -714,6 +717,19 @@ namespace
         }
 
         return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT CALLBACK MouseMiddleHookProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code >= 0 && wParam == WM_MBUTTONDOWN)
+        {
+            auto const target = g_mouseMiddleTargetHwnd.load(std::memory_order_acquire);
+            if (target != nullptr && PostMessageW(target, kMouseMiddleHotkeyMessage, 0, 0))
+            {
+                return 1;
+            }
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
     }
 
     LRESULT CALLBACK HoverPreviewSubclassProc(
@@ -1974,27 +1990,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
             return false;
         }
 
-        auto const normalized = UpperAscii(TrimHotkeyText(configuredHotkey.c_str()));
-        if (normalized == L"MOUSEMIDDLE" || normalized == L"MBUTTON")
-        {
-            std::wstring message{ L"鼠标中键呼出尚未迁移" };
-            if (m_hotkeyRegistered)
-            {
-                message.append(L"；已继续使用 ");
-                message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
-                HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
-            }
-            else
-            {
-                message.append(L"；可通过系统托盘显示 TieZ。");
-                HotkeyText().Text(L"呼出快捷键：鼠标中键尚未支持");
-            }
-            SetStatus(winrt::hstring{ message });
-            return false;
-        }
-
-        auto const parsed = ParseHotkey(configuredHotkey.c_str());
-        if (!parsed)
+        auto const display = TrimHotkeyText(configuredHotkey.c_str());
+        auto const normalized = UpperAscii(display);
+        auto const useMouseMiddle = normalized == L"MOUSEMIDDLE" || normalized == L"MBUTTON";
+        auto const parsed = useMouseMiddle
+            ? std::optional<HotkeySpec>{}
+            : ParseHotkey(configuredHotkey.c_str());
+        if (!useMouseMiddle && !parsed)
         {
             std::wstring message{ L"快捷键格式无效：" };
             message.append(configuredHotkey.c_str(), configuredHotkey.size());
@@ -2013,14 +2015,28 @@ namespace winrt::Tiez::WinUIProbe::implementation
             return false;
         }
 
-        if (parsed->virtualKey == 0)
+        if (useMouseMiddle && m_hotkeyRegistered && m_mouseHotkeyHook != nullptr)
         {
-            if (m_hotkeyRegistered
-                && !UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId))
+            m_registeredHotkey = winrt::hstring{ display };
+            HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
+            return true;
+        }
+
+        if (!useMouseMiddle && parsed->virtualKey == 0)
+        {
+            if (m_hotkeyRegistered)
             {
-                SetStatus(L"无法停用全局呼出快捷键；原快捷键保持不变。");
-                return false;
+                auto const removed = m_mouseHotkeyHook != nullptr
+                    ? UnhookWindowsHookEx(m_mouseHotkeyHook)
+                    : UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
+                if (!removed)
+                {
+                    SetStatus(L"无法停用全局呼出快捷键；原快捷键保持不变。");
+                    return false;
+                }
             }
+            g_mouseMiddleTargetHwnd.store(nullptr, std::memory_order_release);
+            m_mouseHotkeyHook = nullptr;
             m_hotkeyRegistered = false;
             m_hotkeyModifiers = 0;
             m_hotkeyVirtualKey = 0;
@@ -2029,7 +2045,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
             return true;
         }
 
-        if (m_hotkeyRegistered
+        if (!useMouseMiddle
+            && m_hotkeyRegistered
+            && m_mouseHotkeyHook == nullptr
             && m_hotkeyModifiers == parsed->modifiers
             && m_hotkeyVirtualKey == parsed->virtualKey)
         {
@@ -2042,24 +2060,51 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const previousModifiers = m_hotkeyModifiers;
         auto const previousVirtualKey = m_hotkeyVirtualKey;
         auto const previousDisplay = m_registeredHotkey;
-        if (previousRegistered
-            && !UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId))
+        auto const previousWasMouseMiddle = m_mouseHotkeyHook != nullptr;
+        if (previousRegistered)
         {
-            SetStatus(L"无法更新全局呼出快捷键；原快捷键保持不变。");
-            return false;
+            auto const removed = previousWasMouseMiddle
+                ? UnhookWindowsHookEx(m_mouseHotkeyHook)
+                : UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
+            if (!removed)
+            {
+                SetStatus(L"无法更新全局呼出快捷键；原快捷键保持不变。");
+                return false;
+            }
         }
 
+        g_mouseMiddleTargetHwnd.store(nullptr, std::memory_order_release);
+        m_mouseHotkeyHook = nullptr;
         m_hotkeyRegistered = false;
-        if (RegisterHotKey(
+        auto registered = false;
+        if (useMouseMiddle)
+        {
+            g_mouseMiddleTargetHwnd.store(m_hotkeyHwnd, std::memory_order_release);
+            m_mouseHotkeyHook = SetWindowsHookExW(
+                WH_MOUSE_LL,
+                MouseMiddleHookProc,
+                GetModuleHandleW(nullptr),
+                0);
+            registered = m_mouseHotkeyHook != nullptr;
+            if (!registered)
+            {
+                g_mouseMiddleTargetHwnd.store(nullptr, std::memory_order_release);
+            }
+        }
+        else
+        {
+            registered = RegisterHotKey(
                 m_hotkeyHwnd,
                 kToggleHotkeyId,
                 parsed->modifiers,
-                parsed->virtualKey))
+                parsed->virtualKey);
+        }
+        if (registered)
         {
             m_hotkeyRegistered = true;
-            m_hotkeyModifiers = parsed->modifiers;
-            m_hotkeyVirtualKey = parsed->virtualKey;
-            m_registeredHotkey = winrt::hstring{ parsed->display };
+            m_hotkeyModifiers = useMouseMiddle ? 0 : parsed->modifiers;
+            m_hotkeyVirtualKey = useMouseMiddle ? 0 : parsed->virtualKey;
+            m_registeredHotkey = winrt::hstring{ display };
             HotkeyText().Text(HotkeyLabel(m_registeredHotkey));
             return true;
         }
@@ -2067,19 +2112,36 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto restored = false;
         if (previousRegistered)
         {
-            restored = RegisterHotKey(
-                m_hotkeyHwnd,
-                kToggleHotkeyId,
-                previousModifiers,
-                previousVirtualKey);
+            if (previousWasMouseMiddle)
+            {
+                g_mouseMiddleTargetHwnd.store(m_hotkeyHwnd, std::memory_order_release);
+                m_mouseHotkeyHook = SetWindowsHookExW(
+                    WH_MOUSE_LL,
+                    MouseMiddleHookProc,
+                    GetModuleHandleW(nullptr),
+                    0);
+                restored = m_mouseHotkeyHook != nullptr;
+                if (!restored)
+                {
+                    g_mouseMiddleTargetHwnd.store(nullptr, std::memory_order_release);
+                }
+            }
+            else
+            {
+                restored = RegisterHotKey(
+                    m_hotkeyHwnd,
+                    kToggleHotkeyId,
+                    previousModifiers,
+                    previousVirtualKey);
+            }
         }
         m_hotkeyRegistered = restored;
-        m_hotkeyModifiers = restored ? previousModifiers : 0;
-        m_hotkeyVirtualKey = restored ? previousVirtualKey : 0;
+        m_hotkeyModifiers = restored && !previousWasMouseMiddle ? previousModifiers : 0;
+        m_hotkeyVirtualKey = restored && !previousWasMouseMiddle ? previousVirtualKey : 0;
         m_registeredHotkey = restored ? previousDisplay : winrt::hstring{};
 
-        std::wstring message{ L"无法注册全局快捷键 " };
-        message.append(parsed->display);
+        std::wstring message{ L"无法启用全局呼出方式 " };
+        message.append(display);
         if (restored)
         {
             message.append(L"；已继续使用 ");
@@ -2128,7 +2190,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_hotkeySettingsStatus.Text(
                 candidate.empty()
                 ? L"无法停用当前呼出快捷键，原快捷键保持不变。"
-                : L"此快捷键格式无效、尚未支持或已被占用，原快捷键保持不变。");
+                : L"此快捷键格式无效、无法启用或已被占用，原快捷键保持不变。");
             return;
         }
 
@@ -2176,17 +2238,24 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::TeardownLifecycle()
     {
         RemoveTrayIcon();
+        auto const keyboardHotkeyRegistered = m_hotkeyRegistered && m_mouseHotkeyHook == nullptr;
+        g_mouseMiddleTargetHwnd.store(nullptr, std::memory_order_release);
+        if (m_mouseHotkeyHook != nullptr)
+        {
+            UnhookWindowsHookEx(m_mouseHotkeyHook);
+            m_mouseHotkeyHook = nullptr;
+        }
         if (m_hwnd != nullptr && IsWindow(m_hwnd))
         {
             RemoveWindowSubclass(m_hwnd, HotkeySubclassProc, kMainWindowSubclassId);
         }
         if (m_hotkeyHwnd != nullptr)
         {
-            if (m_hotkeyRegistered)
+            if (keyboardHotkeyRegistered)
             {
                 UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
-                m_hotkeyRegistered = false;
             }
+            m_hotkeyRegistered = false;
             RemoveWindowSubclass(
                 m_hotkeyHwnd,
                 HotkeySubclassProc,
@@ -2364,6 +2433,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         WPARAM wParam,
         LPARAM lParam)
     {
+        if (hwnd == m_hotkeyHwnd && message == kMouseMiddleHotkeyMessage)
+        {
+            OnToggleHotkey();
+            return true;
+        }
         if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kToggleHotkeyId)
         {
             OnToggleHotkey();
@@ -2408,7 +2482,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
     {
         HideHoverPreview();
         ShowWindow(GetWindowHandle(), SW_HIDE);
-        SetStatus(L"窗口已隐藏，按 Alt+C 或点击系统托盘图标可重新显示。");
+        if (m_hotkeyRegistered)
+        {
+            std::wstring message{ L"窗口已隐藏，使用 " };
+            message.append(m_registeredHotkey.c_str(), m_registeredHotkey.size());
+            message.append(L" 或点击系统托盘图标可重新显示。");
+            SetStatus(winrt::hstring{ message });
+        }
+        else
+        {
+            SetStatus(L"窗口已隐藏，可点击系统托盘图标重新显示。");
+        }
     }
 
     void MainWindow::ShowMainWindow(bool captureForeground)
@@ -3727,12 +3811,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         m_hotkeyEditor = TextBox();
         m_hotkeyEditor.Header(winrt::box_value(L"全局呼出快捷键"));
-        m_hotkeyEditor.PlaceholderText(L"例如 Alt+C、Win+V、Ctrl+Shift+F12；留空停用");
+        m_hotkeyEditor.PlaceholderText(
+            L"例如 Alt+C、Ctrl+Shift+F12 或 MouseMiddle；留空停用");
         m_hotkeyEditor.MaxLength(64);
         AutomationProperties::SetName(m_hotkeyEditor, L"全局呼出快捷键");
         AutomationProperties::SetHelpText(
             m_hotkeyEditor,
-            L"输入修饰键和按键并用加号连接；支持 Ctrl、Shift、Alt、Win、字母、数字、功能键和常用按键。留空可停用。");
+            L"输入修饰键和按键并用加号连接，或输入 MouseMiddle 使用鼠标中键；支持 Ctrl、Shift、Alt、Win、字母、数字、功能键和常用按键。留空可停用。");
         m_settingsPanel.Children().Append(m_hotkeyEditor);
 
         m_hotkeyApplyButton = Button();
