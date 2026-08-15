@@ -44,6 +44,8 @@ namespace tiez::probe
             m_destroy = Resolve<DestroyFn>("tiez_core_destroy");
             m_snapshot = Resolve<SnapshotFn>("tiez_core_get_snapshot_json");
             m_content = Resolve<ContentFn>("tiez_core_get_content_json");
+            m_prepareOpenContent = Resolve<PrepareOpenContentFn>(
+                "tiez_core_prepare_open_content_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
@@ -114,6 +116,17 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust content lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::PrepareOpenContent(std::int64_t entryId) const
+    {
+        auto* result = m_prepareOpenContent(m_handle, entryId);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust open-content planning failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

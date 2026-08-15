@@ -43,12 +43,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SaveTagsButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void OpenSelectedButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void OnToggleHotkey();
         bool OnNativeMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     private:
         void RefreshItems();
         void ShowContent(std::int64_t entryId);
+        void OpenEntry(std::int64_t entryId);
+        void LaunchOpenPlan(Windows::Data::Json::JsonObject const& plan);
         void ApplyAction(std::int64_t entryId, std::string_view action);
         Microsoft::UI::Xaml::UIElement CreateItemCard(
             Windows::Data::Json::JsonObject const& item,
@@ -74,7 +79,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void AttachCardCommands(
             Microsoft::UI::Xaml::Controls::Border const& card,
             std::int64_t entryId,
-            bool readOnly);
+            bool readOnly,
+            bool isSensitive);
         void AttachPinnedReorder(
             Microsoft::UI::Xaml::Controls::Border const& card,
             std::int64_t entryId,

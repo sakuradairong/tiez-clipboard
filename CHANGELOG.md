@@ -21,6 +21,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - The native WinUI build no longer imports WebView2 build targets, links its loader, or ships its runtime files; only the compile-time WinMD needed to project Windows App SDK's `IWebView2` declaration remains. The build helper now recreates validated generated-output directories so removed runtime files cannot survive as stale artifacts.
 - WinUI ABI v7 exposes an allowlisted, non-secret native settings surface with SQLite and memory adapters. The Chinese settings dialog can immediately apply theme, compact-list, persistence, history-limit, deduplication, file/rich-text capture, privacy, tray visibility, and real always-on-top window behavior.
 - WinUI compact mode now opens a no-activate, always-on-top native hover preview for text, rich text, files, images, and protected-entry messages without using WebView2.
+- WinUI ABI v8 adds a shared, privacy-preserving open-content plan. The Chinese native UI can open trusted web links, existing files, UTF-8 text, rich text, and images through `ShellExecuteW` without command shells; dangerous URL schemes are rejected and custom protocols or local HTML require confirmation.
 
 ### Changed
 

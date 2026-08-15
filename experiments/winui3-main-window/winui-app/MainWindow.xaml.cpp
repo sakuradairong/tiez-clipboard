@@ -495,6 +495,18 @@ namespace winrt::Tiez::WinUIProbe::implementation
         SaveSelectedTags();
     }
 
+    void MainWindow::OpenSelectedButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        if (m_detailsEntryId)
+        {
+            OpenEntry(*m_detailsEntryId);
+        }
+        else
+        {
+            SetStatus(L"请先选择一条剪贴板记录。");
+        }
+    }
+
     void MainWindow::OnToggleHotkey()
     {
         if (IsWindowVisible(GetWindowHandle()))
@@ -605,6 +617,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 DetailsTitleText().Text(L"剪贴板详情");
                 DetailsMetadataText().Text(L"没有可显示的记录");
                 DetailsContentText().Text(L"");
+                OpenSelectedButton().IsEnabled(false);
                 ShowDetailsImage({}, {});
                 TagsTextBox().Text(L"");
                 TagsTextBox().IsEnabled(false);
@@ -671,7 +684,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             }
         });
         AutomationProperties::SetName(card, item.GetNamedString(L"preview"));
-        AttachCardCommands(card, entryId, readOnly);
+        AttachCardCommands(card, entryId, readOnly, isSensitive);
         AttachPinnedReorder(card, entryId, isPinned && m_canReorderPinned);
         m_cards.push_back(card);
 
@@ -751,7 +764,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         StackPanel actions;
         actions.Orientation(Orientation::Horizontal);
         actions.Spacing(8);
-        auto openButton = ActionButton(
+        auto detailsButton = ActionButton(
             L"查看详情",
             [this, entryId, index]
             {
@@ -799,7 +812,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         copyButton.IsEnabled(!readOnly);
         deleteButton.IsEnabled(!readOnly);
 
-        actions.Children().Append(openButton);
+        actions.Children().Append(detailsButton);
         actions.Children().Append(pinButton);
         if (moveUpButton)
         {
@@ -828,6 +841,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
             return;
         }
 
+        OpenSelectedButton().IsEnabled(false);
+
         try
         {
             auto const value = m_core->Content(entryId);
@@ -835,6 +850,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const contentType = content.GetNamedString(L"content_type");
             auto const available = content.GetNamedBoolean(L"available");
             auto const isSensitive = content.GetNamedBoolean(L"is_sensitive");
+            OpenSelectedButton().IsEnabled(available && !isSensitive);
 
             std::wstringstream title;
             title << L"记录 " << entryId;
@@ -884,6 +900,109 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             SetStatus(StatusMessage(
                 L"查询内容失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::OpenEntry(std::int64_t entryId)
+    {
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法打开内容。");
+            return;
+        }
+
+        HideHoverPreview();
+        try
+        {
+            auto const value = m_core->PrepareOpenContent(entryId);
+            auto const plan = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            if (!plan.GetNamedBoolean(L"requires_confirmation"))
+            {
+                LaunchOpenPlan(plan);
+                return;
+            }
+
+            ContentDialog confirmation;
+            confirmation.Title(winrt::box_value(L"确认打开外部内容"));
+            confirmation.PrimaryButtonText(L"继续打开");
+            confirmation.CloseButtonText(L"取消");
+            confirmation.DefaultButton(ContentDialogButton::Close);
+            confirmation.XamlRoot(RootGrid().XamlRoot());
+
+            StackPanel message;
+            message.Spacing(8);
+            TextBlock warning;
+            warning.Text(plan.GetNamedString(L"kind") == L"url"
+                ? L"该记录使用自定义链接协议。继续后，Windows 会把它交给已注册的外部应用。"
+                : L"该富文本记录会作为本地 HTML 临时文件交给默认浏览器。请仅打开你信任的内容。");
+            warning.TextWrapping(TextWrapping::Wrap);
+            TextBlock target;
+            target.Text(plan.GetNamedString(L"target"));
+            target.FontFamily(FontFamily{ L"Consolas" });
+            target.TextWrapping(TextWrapping::Wrap);
+            target.IsTextSelectionEnabled(true);
+            message.Children().Append(warning);
+            message.Children().Append(target);
+            confirmation.Content(message);
+
+            m_suspendLifecycle = true;
+            confirmation.PrimaryButtonClick([this, plan](auto const&, auto const&)
+            {
+                m_suspendLifecycle = false;
+                LaunchOpenPlan(plan);
+            });
+            confirmation.Closed([this](auto const&, auto const&)
+            {
+                m_suspendLifecycle = false;
+            });
+            (void)confirmation.ShowAsync();
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"打开内容失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"打开内容失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::LaunchOpenPlan(JsonObject const& plan)
+    {
+        try
+        {
+            auto const target = plan.GetNamedString(L"target");
+            auto const result = reinterpret_cast<std::intptr_t>(ShellExecuteW(
+                GetWindowHandle(),
+                L"open",
+                target.c_str(),
+                nullptr,
+                nullptr,
+                SW_SHOWNORMAL));
+            if (result <= 32)
+            {
+                throw std::runtime_error(
+                    "ShellExecuteW failed with code " + std::to_string(result));
+            }
+
+            SetStatus(plan.GetNamedBoolean(L"temporary")
+                ? L"已创建受控临时文件，并交给系统默认应用打开。"
+                : L"已交给 Windows 默认应用打开。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetStatus(StatusMessage(L"启动默认应用失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"启动默认应用失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }
@@ -1351,9 +1470,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::AttachCardCommands(
         Border const& card,
         std::int64_t entryId,
-        bool readOnly)
+        bool readOnly,
+        bool isSensitive)
     {
         MenuFlyout flyout;
+        flyout.Items().Append(CommandItem(
+            L"打开",
+            !isSensitive,
+            [this, entryId] { OpenEntry(entryId); }));
         flyout.Items().Append(CommandItem(
             L"纯文本粘贴",
             !readOnly,

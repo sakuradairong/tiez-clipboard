@@ -18,6 +18,7 @@ use tiez_core::clipboard_capture::{
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
 };
+use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
 use tiez_core::native_settings::{
@@ -30,7 +31,7 @@ use tiez_core::runtime_instance::DatabaseInstanceGuard;
 mod win32_paste;
 mod win32_capture;
 
-const ABI_VERSION: u32 = 7;
+const ABI_VERSION: u32 = 8;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -199,6 +200,13 @@ struct SettingMutationResponse<'a> {
     mutation: &'a NativeSettingMutation,
 }
 
+#[derive(Serialize)]
+struct OpenContentResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    plan: &'a OpenContentPlan,
+}
+
 fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
     serde_json::to_string(&SnapshotResponse {
         abi_version: ABI_VERSION,
@@ -242,6 +250,32 @@ fn setting_mutation_json(mutation: &NativeSettingMutation) -> Result<String, Str
         mutation,
     })
     .map_err(|error| format!("failed to serialize native setting mutation: {error}"))
+}
+
+fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
+    serde_json::to_string(&OpenContentResponse {
+        abi_version: ABI_VERSION,
+        plan,
+    })
+    .map_err(|error| format!("failed to serialize open-content plan: {error}"))
+}
+
+fn prepare_history_open(
+    handle: &TiezCoreHandle,
+    entry_id: i64,
+) -> Result<OpenContentPlan, String> {
+    let content = {
+        let history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .content(entry_id)
+            .map_err(|error| error.to_string())?
+    };
+    let temporary_root = std::env::temp_dir().join("TieZ").join("open");
+    prepare_open_content(&content, &temporary_root).map_err(|error| error.to_string())
 }
 
 fn apply_history_action(
@@ -656,6 +690,27 @@ pub unsafe extern "C" fn tiez_core_get_content_json(
 }
 
 #[no_mangle]
+/// Resolve one entry into a validated URL or local-file launch plan.
+///
+/// The returned UTF-8 JSON string is newly allocated and must be released with
+/// `tiez_core_string_free`. Sensitive or unavailable entries are rejected.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_prepare_open_content_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let plan = prepare_history_open(handle, entry_id)?;
+        into_owned_c_string(open_content_json(&plan)?)
+    })
+}
+
+#[no_mangle]
 /// # Safety
 ///
 /// `handle` must point to a live handle returned by `tiez_core_create`.
@@ -855,6 +910,7 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 ///
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
+/// `tiez_core_prepare_open_content_json`,
 /// `tiez_core_apply_action_json`, `tiez_core_update_tags_json`, or
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
 /// `tiez_core_update_setting_json`, or `tiez_core_take_last_error`. A non-null
@@ -928,7 +984,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":7"));
+        assert!(json.contains("\"abi_version\":8"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -964,6 +1020,32 @@ mod tests {
     }
 
     #[test]
+    fn open_content_export_returns_a_validated_plan_and_rejects_sensitive_entries() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+
+        unsafe {
+            let value = tiez_core_prepare_open_content_json(handle, 103);
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"abi_version\":8"));
+            assert!(json.contains("\"kind\":\"url\""));
+            assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
+            assert!(json.contains("\"requires_confirmation\":false"));
+            tiez_core_string_free(value);
+
+            assert!(tiez_core_prepare_open_content_json(handle, 107).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("受隐私保护"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn action_export_serializes_structured_mutation_result() {
         let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
         let pin = CString::new("pin").unwrap();
@@ -973,7 +1055,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":7"));
+            assert!(pin_json.contains("\"abi_version\":8"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1003,7 +1085,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":7"));
+            assert!(json.contains("\"abi_version\":8"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1042,7 +1124,7 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":7"));
+            assert!(initial_json.contains("\"abi_version\":8"));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(!initial_json.contains("mqtt_password"));
             tiez_core_string_free(initial);
@@ -1102,7 +1184,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":7"));
+            assert!(json.contains("\"abi_version\":8"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));

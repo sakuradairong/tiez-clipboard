@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 7,
+    TIEZ_CORE_ABI_VERSION = 8,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -37,6 +37,13 @@ TIEZ_CORE_API char* tiez_core_get_snapshot_json(
 // Returns full content metadata for one stable entry ID as newly allocated
 // UTF-8 JSON. Sensitive or encrypted payloads are returned as unavailable.
 TIEZ_CORE_API char* tiez_core_get_content_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id);
+
+// Returns a validated URL or local-file launch plan as newly allocated JSON.
+// Sensitive and unavailable entries are rejected. The native frontend owns
+// the final OS launch and must release the result with tiez_core_string_free.
+TIEZ_CORE_API char* tiez_core_prepare_open_content_json(
     TiezCoreHandle* handle,
     int64_t entry_id);
 

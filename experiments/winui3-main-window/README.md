@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v7
+        │ dynamic loading + C ABI v8
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  clipboard_history · paste_coordinator · ui_lifecycle
+  clipboard_history · content_opening · paste_coordinator · ui_lifecycle
     - synthetic in-memory data (default)
     - production-schema SQLite history (opt-in, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
 ```
@@ -45,6 +45,7 @@ The C ABI interface is deliberately small:
 - create/destroy one core handle;
 - fetch a UTF-8 JSON snapshot for a search query;
 - fetch full content metadata for one stable entry ID;
+- prepare a validated URL or local-file launch plan without invoking a command shell;
 - report the active adapter and whether it is read-only;
 - apply `pin`, `delete`, `paste-plain`, or `paste-rich` (memory or writable SQLite);
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
@@ -84,6 +85,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, and window pinning;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
+- Chinese “打开” actions for validated links/files and controlled temporary text, rich-text, or image files;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -280,7 +282,7 @@ adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 7`.
+- [ ] Status shows `Rust ABI 8`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
@@ -297,7 +299,7 @@ adapter with every result.
 - [ ] Enter in the search box does not paste while an IME composition is being confirmed.
 - [ ] Up/Down moves the selected card; Enter pastes plain text; Ctrl+Enter pastes rich; Esc hides.
 - [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
-- [ ] Right-click a card for paste/copy/pin/delete; double-click pastes plain text.
+- [ ] Right-click a card for open/paste/copy/pin/delete; double-click pastes plain text.
 - [ ] Alt+C toggles visibility and captures the last foreground window.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
 - [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
@@ -320,13 +322,16 @@ adapter with every result.
 - [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
 - [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
 - [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
+- [ ] HTTP/HTTPS and existing files open through the Windows default handler without `cmd` or PowerShell.
+- [ ] Custom URL protocols and local rich-text HTML require Chinese confirmation; dangerous URL protocols and sensitive entries are rejected.
+- [ ] Text and embedded images open from uniquely named files under the TieZ temporary directory without changing the stored clipboard entry.
 
 ### Copied production history
 
 - [ ] `TIEZ_WINUI_DB_PATH` with `TIEZ_WINUI_DB_READ_ONLY=1` switches the badge to `sqlite-read-only`.
 - [ ] The newest persisted items match the production TieZ history ordering.
 - [ ] Search matches preview, source app, and content type without writing.
-- [ ] All item action buttons are disabled in read-only mode.
+- [ ] Mutation/paste/copy buttons are disabled in read-only mode; details and safe opening remain available for non-sensitive content.
 - [ ] Sensitive-tagged and encrypted previews show the sensitive-entry label.
 - [ ] Sensitive-tagged and encrypted details remain metadata-only.
 - [ ] The copied database and optional WAL/SHM files remain byte-identical.
@@ -367,7 +372,7 @@ window should call, and which extraction phase owns it.
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
 | Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
-| Open URL/file | `open_content` | later | 4 |
+| Open URL/file/text/rich/image | `open_content` | `tiez_core_prepare_open_content_json` + native `ShellExecuteW`, without command shells | 4 |
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
 | Emoji, tag manager, file transfer, cloud, advanced theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
 
@@ -404,11 +409,17 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
    worker that never reads the clipboard in WndProc. Configured privacy tagging
    and protected persistence are connected; OCR generation and cloud
-   distribution remain later.
+   distribution remain later;
+6. `ContentOpening` — **WinUI native shell connected**: the shared core rejects
+   sensitive/unavailable payloads and dangerous URL protocols, normalizes web
+   links, resolves existing files, and creates unique UTF-8/HTML/image temporary
+   files. WinUI confirms custom protocols or local HTML, then calls
+   `ShellExecuteW` directly without `cmd` or PowerShell. Editing temporary files
+   back into history remains a later parity item.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs the remaining phase-4 open-content shell work, plus the release-critical
-backup/sync/update surfaces.
+needs release-critical backup/sync/update surfaces plus manual Windows 10/11,
+DPI, IME, accessibility, and long-run lifecycle acceptance.
 
 ## Primary references
 

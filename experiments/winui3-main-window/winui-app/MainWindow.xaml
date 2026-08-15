@@ -106,12 +106,25 @@
                         x:Name="DetailsTitleText"
                         Text="剪贴板详情"
                         Style="{ThemeResource SubtitleTextBlockStyle}" />
-                    <TextBlock
-                        x:Name="DetailsMetadataText"
-                        Grid.Row="1"
-                        Text="请选择记录并点击“查看详情”"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        TextWrapping="Wrap" />
+                    <Grid Grid.Row="1" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock
+                            x:Name="DetailsMetadataText"
+                            VerticalAlignment="Center"
+                            Text="请选择记录并点击“查看详情”"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap" />
+                        <Button
+                            x:Name="OpenSelectedButton"
+                            Grid.Column="1"
+                            AutomationProperties.Name="用系统默认应用打开当前记录"
+                            Click="OpenSelectedButton_Click"
+                            Content="打开"
+                            IsEnabled="False" />
+                    </Grid>
                     <StackPanel Grid.Row="2" Spacing="6">
                         <TextBlock Text="标签（用逗号分隔）" />
                         <Grid ColumnSpacing="8">

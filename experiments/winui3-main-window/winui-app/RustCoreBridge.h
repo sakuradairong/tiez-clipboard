@@ -15,6 +15,7 @@ namespace tiez::probe
 
         [[nodiscard]] std::string Snapshot(std::string_view query) const;
         [[nodiscard]] std::string Content(std::int64_t entryId) const;
+        [[nodiscard]] std::string PrepareOpenContent(std::int64_t entryId) const;
         [[nodiscard]] std::string ApplyAction(
             std::int64_t entryId,
             std::string_view action) const;
@@ -38,6 +39,7 @@ namespace tiez::probe
         using DestroyFn = void(__cdecl*)(TiezCoreHandle*);
         using SnapshotFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
+        using PrepareOpenContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdateTagsJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdatePinnedOrderJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
@@ -62,6 +64,7 @@ namespace tiez::probe
         DestroyFn m_destroy{};
         SnapshotFn m_snapshot{};
         ContentFn m_content{};
+        PrepareOpenContentFn m_prepareOpenContent{};
         ApplyActionJsonFn m_applyActionJson{};
         UpdateTagsJsonFn m_updateTagsJson{};
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
