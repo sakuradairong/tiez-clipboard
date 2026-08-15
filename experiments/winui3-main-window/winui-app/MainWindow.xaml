@@ -44,6 +44,7 @@
                     Content="固定窗口"
                     Checked="PinWindowCheck_Changed"
                     Unchecked="PinWindowCheck_Changed" />
+                <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />
                 <Button Click="RefreshButton_Click" Content="刷新" />
                 <Button Click="HideButton_Click" Content="隐藏 5 秒" />
             </StackPanel>

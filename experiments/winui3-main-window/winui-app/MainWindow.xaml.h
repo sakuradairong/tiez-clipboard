@@ -25,6 +25,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void HideButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void SettingsButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void PinWindowCheck_Changed(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -60,6 +63,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetupTrayIcon();
         void AddTrayIcon();
         void RemoveTrayIcon();
+        void SetTrayVisible(bool visible);
         void ShowTrayMenu();
         void RequestExit();
         void HideMainWindow();
@@ -85,6 +89,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SelectEntry(std::int64_t entryId);
         void SetTypeFilter(std::string filter);
         void SetupImeGuards();
+        void EnsureSettingsDialog();
+        void LoadSettings();
+        bool PersistSetting(
+            std::string_view key,
+            std::string_view value,
+            winrt::hstring const& label);
+        void ApplyColorMode(std::string_view mode);
+        void ApplyPinnedWindow(bool pinned);
         void ShowDetailsImage(winrt::hstring const& contentType, winrt::hstring const& content);
         static void __cdecl OnHistoryChanged(void* userData, std::uint64_t generation);
 
@@ -98,6 +110,19 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::unique_ptr<tiez::probe::RustCoreBridge> m_core;
         std::shared_ptr<HistoryRefreshSink> m_refreshSink;
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_showTimer{ nullptr };
+        Microsoft::UI::Xaml::Controls::ContentDialog m_settingsDialog{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel m_settingsPanel{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_colorModeCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_compactModeToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_persistentToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_persistentLimitEnabledToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::NumberBox m_persistentLimitNumber{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_deduplicateToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_captureFilesToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_captureRichTextToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_privacyProtectionToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_trayVisibleToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_windowPinnedToggle{ nullptr };
         HWND m_hwnd{};
         HWND m_hotkeyHwnd{};
         HWND m_lastHwnd{};
@@ -111,6 +136,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
         bool m_readOnly{};
+        bool m_settingsReadOnly{};
+        bool m_settingsLoading{};
+        bool m_compactMode{};
+        bool m_trayVisible{ true };
         bool m_canReorderPinned{};
         std::string m_typeFilter;
         std::vector<std::int64_t> m_entryIds;

@@ -10,7 +10,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         InitializeComponent();
 
 #if defined(_DEBUG) && !defined(DISABLE_XAML_GENERATED_BREAK_ON_UNHANDLED_EXCEPTION)
-        UnhandledException([](winrt::IInspectable const&, winrt::UnhandledExceptionEventArgs const& event)
+        UnhandledException([](
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::UnhandledExceptionEventArgs const& event)
         {
             if (IsDebuggerPresent())
             {

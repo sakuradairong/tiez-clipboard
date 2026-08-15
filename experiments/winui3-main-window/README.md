@@ -28,7 +28,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 Tiez.WinUIProbe.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v6
+        │ dynamic loading + C ABI v7
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -49,6 +49,7 @@ The C ABI interface is deliberately small:
 - apply `pin`, `delete`, `paste-plain`, or `paste-rich` (memory or writable SQLite);
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
+- read and update a strict allowlist of non-secret daily-use settings;
 - return a structured mutation result with requested/effective/replacement IDs,
   removal state, generation, and a display message;
 - retrieve per-thread errors and free returned strings.
@@ -80,6 +81,8 @@ versioned request/response structs or another explicitly versioned wire format.
 - card context menu and double-click paste;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
+- a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, and window pinning;
+- immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -261,8 +264,9 @@ It records requested-to-ready time plus one-second samples of private bytes,
 working set, handles, and thread count. Use the **Hide for 5 seconds** button for
 manual visible/hidden comparison.
 
-Live capture is on for Unicode text, CF_HTML, PNG/DIB images, and Explorer
-files (consecutive-copy dedup, paste-echo skip, configured privacy detection).
+Live capture is always on for Unicode text. CF_HTML and Explorer files follow
+the native capture settings; images remain supported by the format pipeline
+(consecutive-copy dedup, paste-echo skip, configured privacy detection).
 Do not point
 `TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
 running. OCR analysis/search and cloud sync are still omitted; applying a
@@ -275,7 +279,7 @@ adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 6`.
+- [ ] Status shows `Rust ABI 7`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
@@ -311,6 +315,9 @@ adapter with every result.
 - [ ] Tagging a negative session ID follows the positive replacement ID without losing selection.
 - [ ] Pinned cards reorder by drag-and-drop and by “上移”/“下移”, then retain that order after restart.
 - [ ] Pinned reordering is unavailable in searched, type-filtered, or read-only views.
+- [ ] The Chinese settings dialog reads existing TieZ values and never exposes secret keys.
+- [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
+- [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
 
 ### Copied production history
 
@@ -359,7 +366,8 @@ window should call, and which extraction phase owns it.
 | Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
 | Open URL/file | `open_content` | later | 4 |
-| Settings, emoji, tag manager, file transfer, cloud, theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
+| Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
+| Emoji, tag manager, file transfer, cloud, advanced theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -397,8 +405,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    distribution remain later.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs the remaining phase-4 shell work (compact preview and settings entry)
-and the release-critical backup/sync/update surfaces.
+needs the remaining phase-4 native hover preview and open-content shell work,
+plus the release-critical backup/sync/update surfaces.
 
 ## Primary references
 

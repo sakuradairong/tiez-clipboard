@@ -48,6 +48,9 @@ namespace tiez::probe
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
                 "tiez_core_update_pinned_order_json");
+            m_settingsJson = Resolve<SettingsJsonFn>("tiez_core_get_settings_json");
+            m_updateSettingJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_update_setting_json");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -151,6 +154,35 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust pinned reorder failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::Settings() const
+    {
+        auto* result = m_settingsJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust settings lookup failed: " + TakeLastError());
+        }
+
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateSetting(
+        std::string_view key,
+        std::string_view value) const
+    {
+        std::string keyValue{ key };
+        std::string settingValue{ value };
+        auto* result = m_updateSettingJson(
+            m_handle,
+            keyValue.c_str(),
+            settingValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust setting update failed: " + TakeLastError());
         }
 
         return ConsumeString(result);

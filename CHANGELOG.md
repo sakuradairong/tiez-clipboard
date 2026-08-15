@@ -19,6 +19,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI pinned cards can now be reordered by drag-and-drop or the Chinese “上移”/“下移” controls; writable SQLite updates the complete pinned order atomically and rejects stale or filtered partial lists.
 - WinUI now owns a native TieZ system-tray icon with Chinese show/exit commands, restores it after Explorer restarts, hides instead of exiting when the main window closes, and exits only from the explicit tray command.
 - The native WinUI build no longer imports WebView2 build targets, links its loader, or ships its runtime files; only the compile-time WinMD needed to project Windows App SDK's `IWebView2` declaration remains. The build helper now recreates validated generated-output directories so removed runtime files cannot survive as stale artifacts.
+- WinUI ABI v7 exposes an allowlisted, non-secret native settings surface with SQLite and memory adapters. The Chinese settings dialog can immediately apply theme, compact-list, persistence, history-limit, deduplication, file/rich-text capture, privacy, tray visibility, and real always-on-top window behavior.
 
 ### Changed
 
@@ -27,6 +28,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Writable WinUI capture now follows the production persistence and deduplication settings: session-only entries use replaceable negative IDs with a 500-item cap, while persisted captures reuse matching rows and enforce the configured unprotected-history limit.
 - Tauri and the WinUI candidate now share the same default, redirected, and portable data-directory selection policy; WinUI can opt into the production directory with `TIEZ_WINUI_USE_PRODUCTION_DATA=1` while synthetic data remains the safe default.
 - WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
+- WinUI Debug builds now use the correct C++/WinRT namespaces in the generated-XAML unhandled-exception hook.
 
 - Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
 

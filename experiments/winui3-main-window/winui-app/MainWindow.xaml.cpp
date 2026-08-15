@@ -191,6 +191,21 @@ namespace
         return item;
     }
 
+    winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch SettingToggle(
+        winrt::hstring const& label,
+        winrt::hstring const& description)
+    {
+        winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch toggle;
+        toggle.Header(winrt::box_value(label));
+        toggle.OnContent(winrt::box_value(L"已开启"));
+        toggle.OffContent(winrt::box_value(L"已关闭"));
+        winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(toggle, label);
+        winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetHelpText(
+            toggle,
+            description);
+        return toggle;
+    }
+
     LRESULT CALLBACK HotkeySubclassProc(
         HWND hwnd,
         UINT message,
@@ -238,6 +253,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_refreshSink->dispatcher = DispatcherQueue();
             m_core = std::make_unique<tiez::probe::RustCoreBridge>();
             m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
+            LoadSettings();
             m_core->StartCapture();
             RefreshItems();
         }
@@ -357,12 +373,54 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ShowWindow(GetWindowHandle(), SW_HIDE);
     }
 
+    void MainWindow::SettingsButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法加载设置。");
+            return;
+        }
+
+        try
+        {
+            EnsureSettingsDialog();
+            LoadSettings();
+            m_suspendLifecycle = true;
+            m_settingsDialog.XamlRoot(RootGrid().XamlRoot());
+            (void)m_settingsDialog.ShowAsync();
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"打开设置失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"打开设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
     void MainWindow::PinWindowCheck_Changed(IInspectable const&, RoutedEventArgs const&)
     {
-        m_pinned = PinWindowCheck().IsChecked().Value();
-        SetStatus(m_pinned
-            ? L"窗口已固定，失去焦点时不会隐藏。"
-            : L"窗口已取消固定，失去焦点时将自动隐藏。");
+        if (m_settingsLoading)
+        {
+            return;
+        }
+        auto const pinned = PinWindowCheck().IsChecked().Value();
+        if (PersistSetting(
+            "app.window_pinned",
+            pinned ? "true" : "false",
+            L"固定窗口"))
+        {
+            ApplyPinnedWindow(pinned);
+        }
+        else
+        {
+            LoadSettings();
+        }
     }
 
     void MainWindow::TypeAllButton_Click(IInspectable const&, RoutedEventArgs const&)
@@ -451,6 +509,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 ? std::optional<std::int64_t>{ m_entryIds[static_cast<std::size_t>(m_selectedIndex)] }
                 : std::nullopt;
 
+            ItemsPanel().Spacing(m_compactMode ? 6 : 12);
             ItemsPanel().Children().Clear();
             m_entryIds.clear();
             m_pinnedIds.clear();
@@ -552,6 +611,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Border card;
         card.Style(Application::Current().Resources()
             .Lookup(winrt::box_value(L"ClipboardCardStyle")).as<Style>());
+        card.Padding(m_compactMode
+            ? ThicknessHelper::FromLengths(12, 8, 12, 8)
+            : ThicknessHelper::FromLengths(16, 16, 16, 16));
         card.PointerPressed([this, entryId, index](auto const&, auto const&)
         {
             m_selectedIndex = static_cast<int>(index);
@@ -571,7 +633,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_cards.push_back(card);
 
         StackPanel content;
-        content.Spacing(10);
+        content.Spacing(m_compactMode ? 5 : 10);
 
         Grid metadata;
         metadata.ColumnSpacing(12);
@@ -641,7 +703,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         preview.Text(item.GetNamedString(L"preview"));
         preview.TextWrapping(TextWrapping::WrapWholeWords);
         preview.IsTextSelectionEnabled(true);
-        preview.MaxHeight(112);
+        preview.MaxHeight(m_compactMode ? 48 : 112);
 
         StackPanel actions;
         actions.Orientation(Orientation::Horizontal);
@@ -708,7 +770,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
         content.Children().Append(metadata);
         content.Children().Append(preview);
-        content.Children().Append(actions);
+        if (!m_compactMode)
+        {
+            content.Children().Append(actions);
+        }
         card.Child(content);
         return card;
     }
@@ -958,7 +1023,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             m_trayIcon = CopyIcon(LoadIconW(nullptr, IDI_APPLICATION));
         }
-        AddTrayIcon();
+        if (m_trayVisible)
+        {
+            AddTrayIcon();
+        }
     }
 
     void MainWindow::AddTrayIcon()
@@ -1008,6 +1076,26 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             DestroyIcon(m_trayIcon);
             m_trayIcon = nullptr;
+        }
+    }
+
+    void MainWindow::SetTrayVisible(bool visible)
+    {
+        m_trayVisible = visible;
+        if (visible)
+        {
+            AddTrayIcon();
+            return;
+        }
+
+        if (m_trayAdded && m_hotkeyHwnd != nullptr)
+        {
+            NOTIFYICONDATAW data{};
+            data.cbSize = sizeof(data);
+            data.hWnd = m_hotkeyHwnd;
+            data.uID = kTrayIconId;
+            Shell_NotifyIconW(NIM_DELETE, &data);
+            m_trayAdded = false;
         }
     }
 
@@ -1076,7 +1164,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
             && message == m_taskbarCreatedMessage)
         {
             m_trayAdded = false;
-            AddTrayIcon();
+            if (m_trayVisible)
+            {
+                AddTrayIcon();
+            }
             return true;
         }
         if (hwnd == m_hotkeyHwnd && message == kTrayCallbackMessage)
@@ -1504,6 +1595,383 @@ namespace winrt::Tiez::WinUIProbe::implementation
         TypeCodeButton().IsChecked(m_typeFilter == "code");
         TypeFilesButton().IsChecked(m_typeFilter == "file");
         RefreshItems();
+    }
+
+    void MainWindow::EnsureSettingsDialog()
+    {
+        if (m_settingsDialog)
+        {
+            return;
+        }
+
+        m_settingsDialog = ContentDialog();
+        m_settingsDialog.Title(winrt::box_value(L"TieZ 设置"));
+        m_settingsDialog.CloseButtonText(L"完成");
+        m_settingsDialog.DefaultButton(ContentDialogButton::Close);
+
+        m_settingsPanel = StackPanel();
+        m_settingsPanel.Spacing(14);
+        m_settingsPanel.MaxWidth(520);
+
+        TextBlock introduction;
+        introduction.Text(L"这些设置直接写入 TieZ 数据库，并立即作用于原生主窗口。敏感密钥不会在此界面读取或显示。");
+        introduction.TextWrapping(TextWrapping::Wrap);
+        introduction.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(introduction);
+
+        TextBlock appearanceTitle;
+        appearanceTitle.Text(L"外观与窗口");
+        appearanceTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(appearanceTitle);
+
+        m_colorModeCombo = ComboBox();
+        m_colorModeCombo.Header(winrt::box_value(L"界面主题"));
+        m_colorModeCombo.Items().Append(winrt::box_value(L"跟随系统"));
+        m_colorModeCombo.Items().Append(winrt::box_value(L"浅色"));
+        m_colorModeCombo.Items().Append(winrt::box_value(L"深色"));
+        AutomationProperties::SetName(m_colorModeCombo, L"界面主题");
+        m_settingsPanel.Children().Append(m_colorModeCombo);
+
+        m_compactModeToggle = SettingToggle(
+            L"紧凑列表",
+            L"减少卡片间距并隐藏卡片按钮；仍可双击、使用键盘或右键菜单操作。");
+        m_windowPinnedToggle = SettingToggle(
+            L"固定窗口",
+            L"让主窗口保持置顶，并在失去焦点时继续显示。");
+        m_trayVisibleToggle = SettingToggle(
+            L"显示系统托盘图标",
+            L"关闭后仍可使用 Alt+C 显示 TieZ。");
+        m_settingsPanel.Children().Append(m_compactModeToggle);
+        m_settingsPanel.Children().Append(m_windowPinnedToggle);
+        m_settingsPanel.Children().Append(m_trayVisibleToggle);
+
+        TextBlock historyTitle;
+        historyTitle.Text(L"历史与捕获");
+        historyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(historyTitle);
+
+        m_persistentToggle = SettingToggle(
+            L"持久保存历史",
+            L"关闭时新记录只保存在当前会话，置顶或添加标签后才会写入数据库。");
+        m_persistentLimitEnabledToggle = SettingToggle(
+            L"限制持久历史数量",
+            L"仅清理未置顶、未加标签且未受保护的较旧记录。");
+        m_persistentLimitNumber = NumberBox();
+        m_persistentLimitNumber.Header(winrt::box_value(L"最多保留记录数"));
+        m_persistentLimitNumber.Minimum(0);
+        m_persistentLimitNumber.Maximum(100000);
+        m_persistentLimitNumber.SmallChange(50);
+        m_persistentLimitNumber.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Inline);
+        AutomationProperties::SetName(m_persistentLimitNumber, L"最多保留记录数");
+        m_deduplicateToggle = SettingToggle(
+            L"自动去重",
+            L"忽略与最近记录相同的剪贴板内容。");
+        m_captureFilesToggle = SettingToggle(
+            L"捕获文件",
+            L"记录从资源管理器等应用复制的文件路径。");
+        m_captureRichTextToggle = SettingToggle(
+            L"捕获富文本",
+            L"保留 HTML 富文本；关闭时仍会按纯文本记录。");
+        m_privacyProtectionToggle = SettingToggle(
+            L"隐私保护",
+            L"按现有规则识别敏感内容并加密持久数据。");
+        m_settingsPanel.Children().Append(m_persistentToggle);
+        m_settingsPanel.Children().Append(m_persistentLimitEnabledToggle);
+        m_settingsPanel.Children().Append(m_persistentLimitNumber);
+        m_settingsPanel.Children().Append(m_deduplicateToggle);
+        m_settingsPanel.Children().Append(m_captureFilesToggle);
+        m_settingsPanel.Children().Append(m_captureRichTextToggle);
+        m_settingsPanel.Children().Append(m_privacyProtectionToggle);
+
+        ScrollViewer scroller;
+        scroller.MaxHeight(620);
+        scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroller.Content(m_settingsPanel);
+        m_settingsDialog.Content(scroller);
+        m_settingsDialog.Closed([this](auto const&, auto const&)
+        {
+            m_suspendLifecycle = false;
+            SearchBox().Focus(FocusState::Programmatic);
+        });
+
+        m_colorModeCombo.SelectionChanged([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading)
+            {
+                return;
+            }
+            auto const index = m_colorModeCombo.SelectedIndex();
+            auto const mode = index == 1 ? "light" : index == 2 ? "dark" : "system";
+            if (PersistSetting("app.color_mode", mode, L"界面主题"))
+            {
+                ApplyColorMode(mode);
+            }
+            else
+            {
+                LoadSettings();
+            }
+        });
+        m_compactModeToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_compactModeToggle.IsOn();
+            if (PersistSetting(
+                "app.compact_mode",
+                enabled ? "true" : "false",
+                L"紧凑列表"))
+            {
+                m_compactMode = enabled;
+                RefreshItems();
+            }
+            else LoadSettings();
+        });
+        m_windowPinnedToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_windowPinnedToggle.IsOn();
+            if (PersistSetting(
+                "app.window_pinned",
+                enabled ? "true" : "false",
+                L"固定窗口"))
+            {
+                ApplyPinnedWindow(enabled);
+            }
+            else LoadSettings();
+        });
+        m_trayVisibleToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const visible = m_trayVisibleToggle.IsOn();
+            if (PersistSetting(
+                "app.hide_tray_icon",
+                visible ? "false" : "true",
+                L"系统托盘"))
+            {
+                SetTrayVisible(visible);
+            }
+            else LoadSettings();
+        });
+        m_persistentToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_persistentToggle.IsOn();
+            if (!PersistSetting(
+                "app.persistent",
+                enabled ? "true" : "false",
+                L"持久保存历史"))
+            {
+                LoadSettings();
+            }
+        });
+        m_persistentLimitEnabledToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_persistentLimitEnabledToggle.IsOn();
+            if (PersistSetting(
+                "app.persistent_limit_enabled",
+                enabled ? "true" : "false",
+                L"历史数量限制"))
+            {
+                m_persistentLimitNumber.IsEnabled(enabled && !m_settingsReadOnly);
+            }
+            else LoadSettings();
+        });
+        m_persistentLimitNumber.ValueChanged([this](auto const&, auto const& args)
+        {
+            if (m_settingsLoading || !std::isfinite(args.NewValue())) return;
+            auto const limit = static_cast<std::int64_t>(std::llround(args.NewValue()));
+            if (!PersistSetting(
+                "app.persistent_limit",
+                std::to_string(limit),
+                L"历史数量上限"))
+            {
+                LoadSettings();
+            }
+        });
+        m_deduplicateToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_deduplicateToggle.IsOn();
+            if (!PersistSetting(
+                "app.deduplicate",
+                enabled ? "true" : "false",
+                L"自动去重"))
+            {
+                LoadSettings();
+            }
+        });
+        m_captureFilesToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_captureFilesToggle.IsOn();
+            if (!PersistSetting(
+                "app.capture_files",
+                enabled ? "true" : "false",
+                L"文件捕获"))
+            {
+                LoadSettings();
+            }
+        });
+        m_captureRichTextToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_captureRichTextToggle.IsOn();
+            if (!PersistSetting(
+                "app.capture_rich_text",
+                enabled ? "true" : "false",
+                L"富文本捕获"))
+            {
+                LoadSettings();
+            }
+        });
+        m_privacyProtectionToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading) return;
+            auto const enabled = m_privacyProtectionToggle.IsOn();
+            if (!PersistSetting(
+                "app.privacy_protection",
+                enabled ? "true" : "false",
+                L"隐私保护"))
+            {
+                LoadSettings();
+            }
+        });
+    }
+
+    void MainWindow::LoadSettings()
+    {
+        if (!m_core)
+        {
+            return;
+        }
+
+        auto const value = m_core->Settings();
+        auto const root = JsonObject::Parse(tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+        auto const values = root.GetNamedObject(L"values");
+        auto const getValue = [&values](wchar_t const* key, wchar_t const* fallback)
+        {
+            return values.HasKey(key) ? values.GetNamedString(key) : winrt::hstring{ fallback };
+        };
+        auto const getBool = [&getValue](wchar_t const* key, bool fallback)
+        {
+            auto const value = getValue(key, fallback ? L"true" : L"false");
+            return value == L"true" || value == L"1";
+        };
+
+        auto const colorMode = getValue(L"app.color_mode", L"system");
+        auto const compactMode = getBool(L"app.compact_mode", false);
+        auto const persistent = getBool(L"app.persistent", false);
+        auto const limitEnabled = getBool(L"app.persistent_limit_enabled", true);
+        auto const deduplicate = getBool(L"app.deduplicate", true);
+        auto const captureFiles = getBool(L"app.capture_files", false);
+        auto const captureRichText = getBool(L"app.capture_rich_text", false);
+        auto const privacyProtection = getBool(L"app.privacy_protection", true);
+        auto const trayVisible = !getBool(L"app.hide_tray_icon", false);
+        auto const pinned = getBool(L"app.window_pinned", false);
+        double persistentLimit = 500;
+        try
+        {
+            persistentLimit = std::stod(std::wstring{
+                getValue(L"app.persistent_limit", L"500").c_str() });
+        }
+        catch (std::exception const&)
+        {
+            persistentLimit = 500;
+        }
+
+        auto const compactChanged = m_compactMode != compactMode;
+        m_settingsReadOnly = root.GetNamedBoolean(L"read_only");
+        m_settingsLoading = true;
+        m_compactMode = compactMode;
+        if (m_settingsPanel)
+        {
+            m_settingsPanel.IsHitTestVisible(!m_settingsReadOnly);
+            m_settingsPanel.Opacity(m_settingsReadOnly ? 0.65 : 1.0);
+            m_colorModeCombo.SelectedIndex(colorMode == L"light" ? 1 : colorMode == L"dark" ? 2 : 0);
+            m_compactModeToggle.IsOn(compactMode);
+            m_persistentToggle.IsOn(persistent);
+            m_persistentLimitEnabledToggle.IsOn(limitEnabled);
+            m_persistentLimitNumber.Value(persistentLimit);
+            m_persistentLimitNumber.IsEnabled(limitEnabled && !m_settingsReadOnly);
+            m_deduplicateToggle.IsOn(deduplicate);
+            m_captureFilesToggle.IsOn(captureFiles);
+            m_captureRichTextToggle.IsOn(captureRichText);
+            m_privacyProtectionToggle.IsOn(privacyProtection);
+            m_trayVisibleToggle.IsOn(trayVisible);
+            m_windowPinnedToggle.IsOn(pinned);
+        }
+        m_settingsLoading = false;
+
+        ApplyColorMode(winrt::to_string(colorMode));
+        ApplyPinnedWindow(pinned);
+        SetTrayVisible(trayVisible);
+        if (compactChanged && m_core)
+        {
+            RefreshItems();
+        }
+    }
+
+    bool MainWindow::PersistSetting(
+        std::string_view key,
+        std::string_view value,
+        winrt::hstring const& label)
+    {
+        if (!m_core || m_settingsReadOnly)
+        {
+            SetStatus(m_settingsReadOnly
+                ? L"当前数据库以只读方式打开，无法保存设置。"
+                : L"Rust 核心尚未就绪，无法保存设置。");
+            return false;
+        }
+
+        try
+        {
+            (void)m_core->UpdateSetting(key, value);
+            std::wstring status{ label.c_str(), label.size() };
+            status.append(L"已保存并立即生效。");
+            SetStatus(winrt::hstring{ status });
+            return true;
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"保存设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+            return false;
+        }
+    }
+
+    void MainWindow::ApplyColorMode(std::string_view mode)
+    {
+        RootGrid().RequestedTheme(
+            mode == "light" ? ElementTheme::Light
+            : mode == "dark" ? ElementTheme::Dark
+            : ElementTheme::Default);
+    }
+
+    void MainWindow::ApplyPinnedWindow(bool pinned)
+    {
+        m_pinned = pinned;
+        auto const wasLoading = m_settingsLoading;
+        m_settingsLoading = true;
+        PinWindowCheck().IsChecked(pinned);
+        if (m_windowPinnedToggle)
+        {
+            m_windowPinnedToggle.IsOn(pinned);
+        }
+        m_settingsLoading = wasLoading;
+        SetWindowPos(
+            GetWindowHandle(),
+            pinned ? HWND_TOPMOST : HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     void MainWindow::SetupImeGuards()
