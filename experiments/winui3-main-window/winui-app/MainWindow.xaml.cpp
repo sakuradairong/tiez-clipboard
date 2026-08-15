@@ -23,12 +23,75 @@ namespace
         return winrt::hstring{ message };
     }
 
+    winrt::hstring AdapterLabel(winrt::hstring const& adapter)
+    {
+        if (adapter == L"memory")
+        {
+            return L"内存";
+        }
+        if (adapter == L"sqlite-read-only")
+        {
+            return L"SQLite 只读";
+        }
+        if (adapter == L"sqlite")
+        {
+            return L"SQLite";
+        }
+        return adapter;
+    }
+
+    winrt::hstring ContentTypeLabel(winrt::hstring const& contentType)
+    {
+        if (contentType == L"text") return L"文本";
+        if (contentType == L"image") return L"图片";
+        if (contentType == L"url") return L"链接";
+        if (contentType == L"code") return L"代码";
+        if (contentType == L"files") return L"文件";
+        if (contentType == L"html") return L"富文本";
+        return contentType;
+    }
+
+    winrt::hstring CapturedAtLabel(winrt::hstring const& capturedAt)
+    {
+        if (capturedAt == L"Just now")
+        {
+            return L"刚刚";
+        }
+
+        std::wistringstream stream{ std::wstring{ capturedAt.c_str() } };
+        std::uint64_t amount{};
+        std::wstring unit;
+        std::wstring ago;
+        if (stream >> amount >> unit >> ago && ago == L"ago")
+        {
+            std::wstringstream label;
+            label << amount;
+            if (unit == L"minute" || unit == L"minutes") label << L" 分钟前";
+            else if (unit == L"hour" || unit == L"hours") label << L" 小时前";
+            else if (unit == L"day" || unit == L"days") label << L" 天前";
+            else return capturedAt;
+            return winrt::hstring{ label.str() };
+        }
+        return capturedAt;
+    }
+
+    winrt::hstring ActionStatus(std::string_view action)
+    {
+        if (action == "pin") return L"置顶状态已更新";
+        if (action == "delete") return L"记录已删除";
+        if (action == "paste-plain") return L"已执行纯文本粘贴";
+        if (action == "paste-rich") return L"已执行富文本粘贴";
+        if (action == "copy-plain") return L"已复制到剪贴板";
+        return L"操作已完成";
+    }
+
     winrt::Microsoft::UI::Xaml::Controls::Button ActionButton(
         winrt::hstring const& label,
         std::function<void()> action)
     {
         winrt::Microsoft::UI::Xaml::Controls::Button button;
         button.Content(winrt::box_value(label));
+        button.Padding(winrt::Microsoft::UI::Xaml::ThicknessHelper::FromLengths(6, 5, 6, 5));
         winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(button, label);
         button.Click([action = std::move(action)](auto const&, auto const&)
         {
@@ -87,7 +150,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
     MainWindow::MainWindow()
     {
         InitializeComponent();
-        Title(L"TieZ · WinUI 3 main-window experiment");
+        Title(L"TieZ · WinUI 3 原生主窗口实验");
         SetInitialWindowSize();
         SetupLifecycle();
         SetupImeGuards();
@@ -106,7 +169,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         catch (std::exception const& error)
         {
             SetStatus(StatusMessage(
-                L"Startup failed: ",
+                L"启动失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }
@@ -209,12 +272,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 m_suspendLifecycle = false;
                 ShowWindow(GetWindowHandle(), SW_SHOW);
                 Activate();
-                SetStatus(L"Window restored after 5 seconds; the Rust core remained in-process.");
+                SetStatus(L"窗口已在 5 秒后恢复，Rust 核心始终保持在当前进程中。");
             });
         }
 
         m_suspendLifecycle = true;
-        SetStatus(L"Window hidden for 5 seconds. Sample the process now to compare idle memory.");
+        SetStatus(L"窗口将隐藏 5 秒，可在此期间采样进程并比较空闲内存。");
         m_showTimer.Start();
         ShowWindow(GetWindowHandle(), SW_HIDE);
     }
@@ -223,8 +286,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
     {
         m_pinned = PinWindowCheck().IsChecked().Value();
         SetStatus(m_pinned
-            ? L"Window pinned. Deactivate will not hide the probe."
-            : L"Window unpinned. Deactivate hides the probe.");
+            ? L"窗口已固定，失去焦点时不会隐藏。"
+            : L"窗口已取消固定，失去焦点时将自动隐藏。");
     }
 
     void MainWindow::TypeAllButton_Click(IInspectable const&, RoutedEventArgs const&)
@@ -270,18 +333,18 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const adapter = root.GetNamedString(L"adapter");
             auto const readOnly = root.GetNamedBoolean(L"read_only");
 
-            AdapterText().Text(adapter);
+            AdapterText().Text(AdapterLabel(adapter));
             if (readOnly)
             {
-                ReadOnlyText().Text(L"Real TieZ history · actions disabled");
+                ReadOnlyText().Text(L"真实 TieZ 历史 · 操作已禁用");
             }
             else if (adapter == L"sqlite")
             {
-                ReadOnlyText().Text(L"Real TieZ history · write enabled");
+                ReadOnlyText().Text(L"真实 TieZ 历史 · 可写");
             }
             else
             {
-                ReadOnlyText().Text(L"Synthetic data · actions enabled");
+                ReadOnlyText().Text(L"示例数据 · 操作已启用");
             }
 
             auto const previousId = (m_selectedIndex >= 0
@@ -321,23 +384,22 @@ namespace winrt::Tiez::WinUIProbe::implementation
             EmptyState().Visibility(items.Size() == 0 ? Visibility::Visible : Visibility::Collapsed);
 
             std::wstringstream status;
-            status << adapter.c_str()
-                   << (readOnly ? L" · read-only · " : L" · mutable · ")
+            status << AdapterLabel(adapter).c_str()
+                   << (readOnly ? L" · 只读 · " : L" · 可写 · ")
                    << L"Rust ABI " << static_cast<std::uint32_t>(root.GetNamedNumber(L"abi_version"))
-                   << L" · generation " << static_cast<std::uint64_t>(root.GetNamedNumber(L"generation"))
-                   << L" · " << items.Size() << L" visible entries · "
-                   << root.GetNamedString(L"last_action").c_str();
+                   << L" · 第 " << static_cast<std::uint64_t>(root.GetNamedNumber(L"generation"))
+                   << L" 代 · " << items.Size() << L" 条可见记录 · 适配器已就绪";
             SetStatus(winrt::hstring{ status.str() });
             WriteReadyMarker();
         }
         catch (winrt::hresult_error const& error)
         {
-            SetStatus(StatusMessage(L"Refresh failed: ", error.message()));
+            SetStatus(StatusMessage(L"刷新失败：", error.message()));
         }
         catch (std::exception const& error)
         {
             SetStatus(StatusMessage(
-                L"Refresh failed: ",
+                L"刷新失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }
@@ -384,7 +446,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         metadata.ColumnDefinitions().Append(timeColumn);
 
         TextBlock type;
-        type.Text(item.GetNamedString(L"content_type"));
+        type.Text(ContentTypeLabel(item.GetNamedString(L"content_type")));
         type.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
 
         TextBlock source;
@@ -393,7 +455,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Grid::SetColumn(source, 1);
 
         TextBlock capturedAt;
-        capturedAt.Text(item.GetNamedString(L"captured_at"));
+        capturedAt.Text(CapturedAtLabel(item.GetNamedString(L"captured_at")));
         capturedAt.Opacity(0.72);
         Grid::SetColumn(capturedAt, 2);
 
@@ -404,7 +466,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (isSensitive)
         {
             TextBlock sensitive;
-            sensitive.Text(L"Sensitive · preview redacted");
+            sensitive.Text(L"敏感内容 · 预览已隐藏");
             sensitive.Foreground(SolidColorBrush{ Windows::UI::Color{ 255, 196, 43, 28 } });
             content.Children().Append(sensitive);
         }
@@ -419,7 +481,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         actions.Orientation(Orientation::Horizontal);
         actions.Spacing(8);
         auto openButton = ActionButton(
-            L"Open details",
+            L"查看详情",
             [this, entryId, index]
             {
                 m_selectedIndex = static_cast<int>(index);
@@ -427,19 +489,19 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 ShowContent(entryId);
             });
         auto pinButton = ActionButton(
-            isPinned ? L"Unpin" : L"Pin",
+            isPinned ? L"取消置顶" : L"置顶",
             [this, entryId] { ApplyAction(entryId, "pin"); });
         auto pastePlainButton = ActionButton(
-            L"Paste plain",
+            L"纯文本粘贴",
             [this, entryId] { ApplyAction(entryId, "paste-plain"); });
         auto pasteRichButton = ActionButton(
-            L"Paste rich",
+            L"富文本粘贴",
             [this, entryId] { ApplyAction(entryId, "paste-rich"); });
         auto copyButton = ActionButton(
-            L"Copy",
+            L"复制",
             [this, entryId] { ApplyAction(entryId, "copy-plain"); });
         auto deleteButton = ActionButton(
-            L"Delete",
+            L"删除",
             [this, entryId] { ApplyAction(entryId, "delete"); });
 
         pinButton.IsEnabled(!readOnly);
@@ -478,11 +540,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const isSensitive = content.GetNamedBoolean(L"is_sensitive");
 
             std::wstringstream title;
-            title << L"Entry " << entryId;
+            title << L"记录 " << entryId;
             DetailsTitleText().Text(winrt::hstring{ title.str() });
 
-            std::wstring metadata{ contentType.c_str() };
-            metadata.append(isSensitive ? L" · sensitive" : L" · available");
+            std::wstring metadata{ ContentTypeLabel(contentType).c_str() };
+            metadata.append(isSensitive ? L" · 敏感内容" : L" · 内容可用");
             DetailsMetadataText().Text(metadata);
 
             if (available)
@@ -499,23 +561,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
                 DetailsContentText().Text(displayContent);
                 ShowDetailsImage(contentType, displayContent);
-                SetStatus(L"Full content loaded from the Tauri-independent Rust core.");
+                SetStatus(L"已从独立于 Tauri 的 Rust 核心加载完整内容。");
             }
             else
             {
-                DetailsContentText().Text(content.GetNamedString(L"unavailable_reason"));
+                DetailsContentText().Text(isSensitive
+                    ? L"此内容受隐私保护，无法显示。"
+                    : L"此内容当前不可用。");
                 ShowDetailsImage(contentType, {});
-                SetStatus(L"Content metadata loaded; the payload remains protected.");
+                SetStatus(L"已加载内容元数据，原始内容仍受保护。");
             }
         }
         catch (winrt::hresult_error const& error)
         {
-            SetStatus(StatusMessage(L"Content lookup failed: ", error.message()));
+            SetStatus(StatusMessage(L"查询内容失败：", error.message()));
         }
         catch (std::exception const& error)
         {
             SetStatus(StatusMessage(
-                L"Content lookup failed: ",
+                L"查询内容失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }
@@ -536,21 +600,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
             RefreshItems();
 
             std::wstringstream status;
-            status << mutation.GetNamedString(L"message").c_str()
-                   << L" · generation "
+            status << ActionStatus(action).c_str()
+                   << L" · 第 "
                    << static_cast<std::uint64_t>(mutation.GetNamedNumber(L"generation"));
             auto const replacement = mutation.GetNamedValue(L"replacement_id");
             if (replacement.ValueType() == JsonValueType::Number)
             {
-                status << L" · replacement ID "
+                status << L" 代 · 替换记录 ID "
                        << static_cast<std::int64_t>(replacement.GetNumber());
+            }
+            else
+            {
+                status << L" 代";
             }
             SetStatus(winrt::hstring{ status.str() });
         }
         catch (std::exception const& error)
         {
             SetStatus(StatusMessage(
-                L"Action failed: ",
+                L"操作失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
 
@@ -639,7 +707,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             nullptr);
         if (m_hotkeyHwnd == nullptr)
         {
-            SetStatus(L"Message-only hotkey window could not be created.");
+            SetStatus(L"无法创建全局快捷键消息窗口。");
             return;
         }
 
@@ -650,7 +718,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             reinterpret_cast<DWORD_PTR>(this));
         if (!RegisterHotKey(m_hotkeyHwnd, kToggleHotkeyId, MOD_ALT | MOD_NOREPEAT, 0x43))
         {
-            SetStatus(L"Alt+C is already registered. Use Esc to hide and the taskbar to show.");
+            SetStatus(L"Alt+C 已被其他程序占用，可按 Esc 隐藏并通过任务栏重新显示。");
         }
     }
 
@@ -668,7 +736,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::HideMainWindow()
     {
         ShowWindow(GetWindowHandle(), SW_HIDE);
-        SetStatus(L"Window hidden. Press Alt+C to show.");
+        SetStatus(L"窗口已隐藏，按 Alt+C 可重新显示。");
     }
 
     void MainWindow::ShowMainWindow(bool captureForeground)
@@ -684,7 +752,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ShowWindow(GetWindowHandle(), SW_SHOW);
         Activate();
         SearchBox().Focus(FocusState::Programmatic);
-        SetStatus(L"Shown via Alt+C. Last foreground window captured for paste.");
+        SetStatus(L"已通过 Alt+C 显示窗口，并记录粘贴目标窗口。");
     }
 
     void MainWindow::PreparePasteTarget()
@@ -776,27 +844,27 @@ namespace winrt::Tiez::WinUIProbe::implementation
     {
         MenuFlyout flyout;
         flyout.Items().Append(CommandItem(
-            L"Paste plain",
+            L"纯文本粘贴",
             !readOnly,
             [this, entryId] { ApplyAction(entryId, "paste-plain"); }));
         flyout.Items().Append(CommandItem(
-            L"Paste rich",
+            L"富文本粘贴",
             !readOnly,
             [this, entryId] { ApplyAction(entryId, "paste-rich"); }));
         flyout.Items().Append(CommandItem(
-            L"Copy",
+            L"复制",
             !readOnly,
             [this, entryId] { ApplyAction(entryId, "copy-plain"); }));
         flyout.Items().Append(CommandItem(
-            L"Pin / unpin",
+            L"置顶 / 取消置顶",
             !readOnly,
             [this, entryId] { ApplyAction(entryId, "pin"); }));
         flyout.Items().Append(CommandItem(
-            L"Delete",
+            L"删除",
             !readOnly,
             [this, entryId] { ApplyAction(entryId, "delete"); }));
         flyout.Items().Append(CommandItem(
-            L"Open details",
+            L"查看详情",
             true,
             [this, entryId] { ShowContent(entryId); }));
         card.ContextFlyout(flyout);

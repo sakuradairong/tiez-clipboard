@@ -21,15 +21,15 @@
             <StackPanel Spacing="6">
                 <TextBlock Text="TieZ" Style="{ThemeResource TitleTextBlockStyle}" />
                 <TextBlock
-                    Text="WinUI 3 main-window slice · C++/WinRT + switchable Rust adapter"
+                    Text="WinUI 3 原生主窗口 · C++/WinRT + 可切换 Rust 适配器"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <StackPanel Orientation="Horizontal" Spacing="8">
-                    <TextBlock Text="Adapter" VerticalAlignment="Center" />
+                    <TextBlock Text="适配器" VerticalAlignment="Center" />
                     <Border
                         Padding="8,3"
                         Background="{ThemeResource AccentFillColorSecondaryBrush}"
                         CornerRadius="10">
-                        <TextBlock x:Name="AdapterText" Text="loading" />
+                        <TextBlock x:Name="AdapterText" Text="加载中" />
                     </Border>
                     <TextBlock
                         x:Name="ReadOnlyText"
@@ -41,19 +41,19 @@
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <CheckBox
                     x:Name="PinWindowCheck"
-                    Content="Pin window"
+                    Content="固定窗口"
                     Checked="PinWindowCheck_Changed"
                     Unchecked="PinWindowCheck_Changed" />
-                <Button Click="RefreshButton_Click" Content="Refresh" />
-                <Button Click="HideButton_Click" Content="Hide for 5 seconds" />
+                <Button Click="RefreshButton_Click" Content="刷新" />
+                <Button Click="HideButton_Click" Content="隐藏 5 秒" />
             </StackPanel>
         </Grid>
 
         <TextBox
             x:Name="SearchBox"
             Grid.Row="1"
-            PlaceholderText="Search by text or source app · type chips filter content type"
-            AutomationProperties.Name="Search clipboard history"
+            PlaceholderText="搜索文本或来源应用 · 使用类型按钮筛选内容"
+            AutomationProperties.Name="搜索剪贴板历史"
             KeyDown="SearchBox_KeyDown"
             TextChanged="SearchBox_TextChanged" />
 
@@ -62,12 +62,12 @@
             Grid.Row="2"
             Orientation="Horizontal"
             Spacing="8">
-            <ToggleButton x:Name="TypeAllButton" Content="All" AutomationProperties.Name="Show all types" IsChecked="True" Click="TypeAllButton_Click" />
-            <ToggleButton x:Name="TypeTextButton" Content="text" AutomationProperties.Name="Filter text" Click="TypeChip_Click" Tag="text" />
-            <ToggleButton x:Name="TypeImageButton" Content="image" AutomationProperties.Name="Filter image" Click="TypeChip_Click" Tag="image" />
-            <ToggleButton x:Name="TypeUrlButton" Content="url" AutomationProperties.Name="Filter url" Click="TypeChip_Click" Tag="url" />
-            <ToggleButton x:Name="TypeCodeButton" Content="code" AutomationProperties.Name="Filter code" Click="TypeChip_Click" Tag="code" />
-            <ToggleButton x:Name="TypeFilesButton" Content="files" AutomationProperties.Name="Filter files" Click="TypeChip_Click" Tag="files" />
+            <ToggleButton x:Name="TypeAllButton" Content="全部" AutomationProperties.Name="显示全部类型" IsChecked="True" Click="TypeAllButton_Click" />
+            <ToggleButton x:Name="TypeTextButton" Content="文本" AutomationProperties.Name="筛选文本" Click="TypeChip_Click" Tag="text" />
+            <ToggleButton x:Name="TypeImageButton" Content="图片" AutomationProperties.Name="筛选图片" Click="TypeChip_Click" Tag="image" />
+            <ToggleButton x:Name="TypeUrlButton" Content="链接" AutomationProperties.Name="筛选链接" Click="TypeChip_Click" Tag="url" />
+            <ToggleButton x:Name="TypeCodeButton" Content="代码" AutomationProperties.Name="筛选代码" Click="TypeChip_Click" Tag="code" />
+            <ToggleButton x:Name="TypeFilesButton" Content="文件" AutomationProperties.Name="筛选文件" Click="TypeChip_Click" Tag="files" />
         </StackPanel>
 
         <Grid Grid.Row="3" ColumnSpacing="16">
@@ -84,7 +84,7 @@
                     x:Name="EmptyState"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center"
-                    Text="No clipboard entries match this query."
+                    Text="没有符合当前条件的剪贴板记录。"
                     Visibility="Collapsed" />
             </Grid>
 
@@ -102,12 +102,12 @@
 
                     <TextBlock
                         x:Name="DetailsTitleText"
-                        Text="Clipboard details"
+                        Text="剪贴板详情"
                         Style="{ThemeResource SubtitleTextBlockStyle}" />
                     <TextBlock
                         x:Name="DetailsMetadataText"
                         Grid.Row="1"
-                        Text="Select Open details on an entry"
+                        Text="请选择记录并点击“查看详情”"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                         TextWrapping="Wrap" />
                     <ScrollViewer
@@ -120,12 +120,12 @@
                                 MaxHeight="240"
                                 Stretch="Uniform"
                                 Visibility="Collapsed"
-                                AutomationProperties.Name="Clipboard image preview" />
+                                AutomationProperties.Name="剪贴板图片预览" />
                             <TextBlock
                                 x:Name="DetailsContentText"
                                 FontFamily="Consolas"
                                 IsTextSelectionEnabled="True"
-                                Text="Full clipboard content will appear here without WebView2."
+                                Text="完整剪贴板内容将在此显示，无需 WebView2。"
                                 TextWrapping="Wrap" />
                         </StackPanel>
                     </ScrollViewer>
@@ -138,7 +138,7 @@
             Padding="12"
             Background="{ThemeResource LayerFillColorAltBrush}"
             CornerRadius="8">
-            <TextBlock x:Name="StatusText" AutomationProperties.LiveSetting="Assertive" Text="Loading Rust core…" TextWrapping="Wrap" />
+            <TextBlock x:Name="StatusText" AutomationProperties.LiveSetting="Assertive" Text="正在加载 Rust 核心…" TextWrapping="Wrap" />
         </Border>
     </Grid>
 </Window>
