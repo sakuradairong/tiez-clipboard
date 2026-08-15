@@ -266,7 +266,7 @@ active adapter with every result.
 ### Interaction
 
 - [ ] Search filters by preview, source app, and content type.
-- [ ] Type chips send `type:text` / `type:image` / `type:url` / `type:code` / `type:files`.
+- [ ] Type chips send `type:text` / `type:image` / `type:url` / `type:code` / `type:file`.
 - [ ] Pin/unpin changes the card and generation.
 - [ ] Delete removes an entry.
 - [ ] Mutation status shows the Rust result message and generation.
@@ -315,7 +315,7 @@ window should call, and which extraction phase owns it.
 | WebView2 capability | Today's command / event | Native seam | Phase |
 | --- | --- | --- | --- |
 | Search by preview, source, type | `search_clipboard_history` / client `useFilteredHistory` | `tiez_core_get_snapshot_json` (`type:` prefix or free text) | 1 |
-| Type chips (`text`, `image`, `url`, `code`, `files`) | header chips in `AppHeader.tsx` | same snapshot query (`type:<name>`) | 1 |
+| Type chips (`text`, `image`, `url`, `code`, `file`) | header chips in `AppHeader.tsx` | same snapshot query (`type:<name>`) | 1 |
 | Open details / full content | `get_clipboard_content` (unused by UI; paste loads by id) | `tiez_core_get_content_json` | 1 |
 | Sensitive preview + metadata-only details | renderer blur + `sensitive`/`密码`/`password` | snapshot `is_sensitive` + redacted `HistoryContent` | 1 |
 | Pin / unpin | `toggle_clipboard_pin` | `tiez_core_apply_action_json` `pin` (SQLite write adapter) | 1 |

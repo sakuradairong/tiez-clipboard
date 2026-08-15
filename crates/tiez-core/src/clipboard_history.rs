@@ -1,4 +1,9 @@
 use crate::clipboard_capture::{classify_snapshot, CapturedPayload, ClipboardSnapshot};
+use crate::content_identity::{calc_image_hash, calc_text_hash, uses_text_content_hash};
+use crate::database_mutation::{
+    delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
+    PreparedClipboardRecord,
+};
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -520,12 +525,7 @@ impl SqliteHistory {
                 (Some(entry_id), false, None)
             }
             "delete" => {
-                let deleted = connection
-                    .execute("DELETE FROM clipboard_history WHERE id = ?1", [entry_id])
-                    .map_err(|error| storage_error("failed to delete clipboard entry", error))?;
-                if deleted == 0 {
-                    return Err(entry_not_found(entry_id));
-                }
+                self.delete(&connection, entry_id)?;
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true, None)
             }
@@ -573,15 +573,42 @@ impl SqliteHistory {
         let content = payload.content();
         let content_type = payload.content_type();
         let html = payload.html();
-        connection
-            .execute(
-                "INSERT INTO clipboard_history
-                    (content_type, content, html_content, source_app, timestamp, preview, is_pinned, pinned_order, tags)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, '[]')",
-                rusqlite::params![content_type, content, html, source_app, timestamp, preview],
+        let content_hash = if content_type == "image" {
+            calc_image_hash(&content).unwrap_or(0)
+        } else {
+            calc_text_hash(&content) as i64
+        };
+        let is_external = match content_type {
+            "file" | "video" => true,
+            "image" => !content.trim_start().starts_with("data:"),
+            _ => false,
+        };
+        let tags = Vec::new();
+        let entry_id = save_prepared_record(
+            &connection,
+            &PreparedClipboardRecord {
+                id: 0,
+                content_type,
+                content: &content,
+                identity_content: &content,
+                html_content: html,
+                source_app: &source_app,
+                source_app_path: None,
+                timestamp,
+                preview: &preview,
+                is_pinned: false,
+                content_hash,
+                tags: &tags,
+                is_external,
+                pinned_order: 0,
+            },
+        )
+        .map_err(|error| {
+            HistoryError::new(
+                HistoryErrorKind::Storage,
+                format!("failed to ingest clipboard payload: {error}"),
             )
-            .map_err(|error| storage_error("failed to ingest clipboard payload", error))?;
-        let entry_id = connection.last_insert_rowid();
+        })?;
         self.generation = self.generation.saturating_add(1);
         self.last_action = format!("Captured {content_type} from {source_app}");
         Ok(HistoryMutationResult {
@@ -596,11 +623,7 @@ impl SqliteHistory {
         })
     }
 
-    fn toggle_pin(
-        &mut self,
-        connection: &Connection,
-        entry_id: i64,
-    ) -> Result<(), HistoryError> {
+    fn toggle_pin(&mut self, connection: &Connection, entry_id: i64) -> Result<(), HistoryError> {
         let current: i32 = match connection.query_row(
             "SELECT is_pinned FROM clipboard_history WHERE id = ?1",
             [entry_id],
@@ -614,29 +637,60 @@ impl SqliteHistory {
         };
 
         let new_pinned = current == 0;
-        let pinned_order: i64 = if new_pinned {
-            connection
-                .query_row(
-                    "SELECT COALESCE(MAX(pinned_order), 0) + 1 FROM clipboard_history WHERE is_pinned = 1",
-                    [],
-                    |row| row.get(0),
+        let updated =
+            set_pinned(connection, entry_id, new_pinned, now_unix_ms()).map_err(|error| {
+                HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to update pin state: {error}"),
                 )
-                .unwrap_or(1)
-        } else {
-            0
-        };
-
-        connection
-            .execute(
-                "UPDATE clipboard_history SET is_pinned = ?1, pinned_order = ?2 WHERE id = ?3",
-                rusqlite::params![i32::from(new_pinned), pinned_order, entry_id],
-            )
-            .map_err(|error| storage_error("failed to update pin state", error))?;
+            })?;
+        if !updated {
+            return Err(entry_not_found(entry_id));
+        }
 
         self.last_action = format!(
             "Entry {entry_id} {}",
             if new_pinned { "pinned" } else { "unpinned" }
         );
+        Ok(())
+    }
+
+    fn delete(&self, connection: &Connection, entry_id: i64) -> Result<(), HistoryError> {
+        let entry = load_stored_record(connection, entry_id)
+            .map_err(|error| {
+                HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to read clipboard entry before deletion: {error}"),
+                )
+            })?
+            .ok_or_else(|| entry_not_found(entry_id))?;
+        let (content_hash, content_hash_version) = if uses_text_content_hash(&entry.content_type)
+            && !entry.content.starts_with(ENCRYPT_PREFIX)
+        {
+            (calc_text_hash(&entry.content) as i64, 2)
+        } else {
+            (entry.content_hash, entry.content_hash_version)
+        };
+
+        let deleted = delete_record(
+            connection,
+            DeleteRecordPlan {
+                id: entry_id,
+                content_type: &entry.content_type,
+                content_hash,
+                content_hash_version,
+                deleted_at: now_unix_ms(),
+            },
+        )
+        .map_err(|error| {
+            HistoryError::new(
+                HistoryErrorKind::Storage,
+                format!("failed to delete clipboard entry: {error}"),
+            )
+        })?;
+        if !deleted {
+            return Err(entry_not_found(entry_id));
+        }
         Ok(())
     }
 }
@@ -1028,7 +1082,7 @@ fn sample_items() -> Vec<HistoryItem> {
         },
         HistoryItem {
             id: 106,
-            content_type: "files".to_owned(),
+            content_type: "file".to_owned(),
             preview: "release-notes.md\nTieZ-setup.exe".to_owned(),
             source_app: "File Explorer".to_owned(),
             captured_at: "12 minutes ago".to_owned(),
@@ -1063,20 +1117,12 @@ mod tests {
 
     fn create_test_database(path: &Path) {
         let connection = Connection::open(path).unwrap();
+        crate::database_migrations::run_migrations(&connection).unwrap();
         connection
-            .execute_batch(
-                "CREATE TABLE clipboard_history (
-                    id INTEGER PRIMARY KEY,
-                    content_type TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    html_content TEXT,
-                    source_app TEXT NOT NULL,
-                    timestamp INTEGER NOT NULL,
-                    preview TEXT NOT NULL,
-                    is_pinned INTEGER NOT NULL DEFAULT 0,
-                    pinned_order INTEGER NOT NULL DEFAULT 0,
-                    tags TEXT NOT NULL DEFAULT '[]'
-                );",
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value)
+                 VALUES ('app.anon_id', 'winui-test')",
+                [],
             )
             .unwrap();
         connection
@@ -1367,6 +1413,17 @@ mod tests {
                 .unwrap()
                 .is_pinned
         );
+        let connection = Connection::open(&path).unwrap();
+        let sync_revision: (i64, String) = connection
+            .query_row(
+                "SELECT sync_updated_at, sync_updated_by FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(sync_revision.0 > 0);
+        assert_eq!(sync_revision.1, "winui-test");
+        drop(connection);
 
         drop(history);
         let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
@@ -1393,6 +1450,19 @@ mod tests {
             .any(|item| item.id == 1));
 
         drop(history);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT hash_version FROM cloud_sync_tombstones
+                     WHERE content_type = 'text' AND content_hash = ?1",
+                    [calc_text_hash("hello\nfull content") as i64],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        drop(connection);
         let history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
         assert!(!history
             .snapshot("")
@@ -1453,6 +1523,20 @@ mod tests {
             .items
             .iter()
             .any(|item| item.id == id));
+        let connection = Connection::open(&path).unwrap();
+        let identity: (i64, i64, i64, String) = connection
+            .query_row(
+                "SELECT content_hash, content_hash_version, sync_updated_at, sync_updated_by
+                 FROM clipboard_history WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(identity.0, calc_text_hash("live copy\nsecond") as i64);
+        assert_eq!(identity.1, 2);
+        assert!(identity.2 > 0);
+        assert_eq!(identity.3, "winui-test");
+        drop(connection);
 
         drop(history);
         let mut read_only = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();

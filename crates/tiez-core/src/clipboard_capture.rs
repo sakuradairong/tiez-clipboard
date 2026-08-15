@@ -142,7 +142,7 @@ impl CapturedPayload {
             Self::Text { content_type, .. } => content_type,
             Self::RichText { .. } => "rich_text",
             Self::Image { .. } => "image",
-            Self::Files { .. } => "files",
+            Self::Files { .. } => "file",
         }
     }
 

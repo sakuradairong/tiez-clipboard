@@ -542,6 +542,7 @@ mod tests {
                 preview TEXT NOT NULL,
                 is_pinned INTEGER NOT NULL DEFAULT 0,
                 content_hash INTEGER NOT NULL DEFAULT 0,
+                content_hash_version INTEGER NOT NULL DEFAULT 2,
                 tags TEXT NOT NULL DEFAULT '[]',
                 use_count INTEGER NOT NULL DEFAULT 0,
                 is_external INTEGER NOT NULL DEFAULT 0,
@@ -586,6 +587,17 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn shared_image_identity_matches_tauri_repository_identity() {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lW2ZAAAAAElFTkSuQmCC";
+        let data_url = format!("data:image/png;base64,{png}");
+
+        assert_eq!(
+            calc_image_hash(&data_url),
+            tiez_core::content_identity::calc_image_hash(&data_url)
+        );
     }
 
     #[test]

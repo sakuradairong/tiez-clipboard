@@ -1,6 +1,6 @@
 use crate::database::{
-    calc_image_hash, calc_legacy_text_hash, calc_text_hash, has_sensitive_tag, is_text_type,
-    save_image_to_file, uses_text_content_hash, ENCRYPT_PREFIX,
+    calc_image_hash, calc_text_hash, has_sensitive_tag, is_text_type, save_image_to_file,
+    uses_text_content_hash, ENCRYPT_PREFIX,
 };
 use crate::domain::models::ClipboardEntry;
 use crate::infrastructure::encryption;
@@ -11,6 +11,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tiez_core::database_mutation::{
+    delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
+    PreparedClipboardRecord,
+};
 use urlencoding::decode;
 
 const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--TIEZ_RICH_IMAGE:";
@@ -21,50 +25,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
-}
-
-fn with_repository_savepoint<T, F>(conn: &Connection, operation: F) -> Result<T, String>
-where
-    F: FnOnce() -> Result<T, String>,
-{
-    const SAVEPOINT: &str = "tiez_clipboard_repository_write";
-    conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT};"))
-        .map_err(|e| e.to_string())?;
-
-    match operation() {
-        Ok(value) => match conn.execute_batch(&format!("RELEASE SAVEPOINT {SAVEPOINT};")) {
-            Ok(()) => Ok(value),
-            Err(release_error) => {
-                let rollback = conn.execute_batch(&format!(
-                    "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
-                ));
-                match rollback {
-                    Ok(()) => Err(release_error.to_string()),
-                    Err(rollback_error) => Err(format!(
-                        "{release_error}; savepoint rollback also failed: {rollback_error}"
-                    )),
-                }
-            }
-        },
-        Err(operation_error) => {
-            let rollback = conn.execute_batch(&format!(
-                "ROLLBACK TO SAVEPOINT {SAVEPOINT}; RELEASE SAVEPOINT {SAVEPOINT};"
-            ));
-            match rollback {
-                Ok(()) => Err(operation_error),
-                Err(rollback_error) => Err(format!(
-                    "{operation_error}; savepoint rollback also failed: {rollback_error}"
-                )),
-            }
-        }
-    }
-}
-
-fn is_syncable_content_type(content_type: &str) -> bool {
-    matches!(
-        content_type,
-        "text" | "code" | "url" | "rich_text" | "image" | "file" | "video" | "emoji_sync"
-    )
 }
 
 pub trait ClipboardRepository {
@@ -263,82 +223,6 @@ impl SqliteClipboardRepository {
                 new_hash_version,
                 id
             ],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    fn sync_entry_tags_with_conn(
-        &self,
-        conn: &Connection,
-        entry_id: i64,
-        tags: &[String],
-    ) -> Result<(), String> {
-        conn.execute(
-            "DELETE FROM entry_tags WHERE entry_id = ?",
-            params![entry_id],
-        )
-        .map_err(|e| e.to_string())?;
-        for tag in tags {
-            let clean = tag.trim();
-            if clean.is_empty() {
-                continue;
-            }
-            conn.execute(
-                "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?1, ?2)",
-                params![entry_id, clean],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-
-    fn upsert_tombstone_with_conn(
-        &self,
-        conn: &Connection,
-        content_type: &str,
-        content_hash: i64,
-        hash_version: i64,
-        deleted_at: i64,
-    ) -> Result<(), String> {
-        if !is_syncable_content_type(content_type) || content_hash == 0 {
-            return Ok(());
-        }
-
-        conn.execute(
-            "INSERT INTO cloud_sync_tombstones
-                (content_type, content_hash, hash_version, deleted_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(content_type, content_hash, hash_version)
-             DO UPDATE SET deleted_at = MAX(cloud_sync_tombstones.deleted_at, excluded.deleted_at)",
-            params![content_type, content_hash, hash_version.max(1), deleted_at],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-
-    fn clear_tombstone_with_conn(
-        &self,
-        conn: &Connection,
-        content_type: &str,
-        content: &str,
-        content_hash: i64,
-    ) -> Result<(), String> {
-        if !is_syncable_content_type(content_type) || content_hash == 0 {
-            return Ok(());
-        }
-
-        let legacy_hash = if uses_text_content_hash(content_type) {
-            calc_legacy_text_hash(content) as i64
-        } else {
-            content_hash
-        };
-        conn.execute(
-            "DELETE FROM cloud_sync_tombstones
-             WHERE content_type = ?1
-               AND ((hash_version <= 1 AND content_hash IN (?2, ?3))
-                 OR (hash_version >= 2 AND content_hash = ?3))",
-            params![content_type, legacy_hash, content_hash],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -581,105 +465,25 @@ impl SqliteClipboardRepository {
             )
         };
 
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut cleaned_tags: Vec<String> = Vec::new();
-        for tag in &entry.tags {
-            let t = tag.trim();
-            if t.is_empty() {
-                continue;
-            }
-            let t_owned = t.to_string();
-            if seen.insert(t_owned.clone()) {
-                cleaned_tags.push(t_owned);
-            }
-        }
-
-        let tags_json = serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string());
-
-        with_repository_savepoint(conn, || {
-            // Re-adding an item must clear an older delete tombstone in the same
-            // database unit as the history row and normalized tags. Version-1
-            // tombstones are ambiguous because pre-version peers emitted both
-            // trimmed and exact hashes, so clear either predecessor representation.
-            self.clear_tombstone_with_conn(
-                conn,
-                &entry.content_type,
-                &final_content,
-                calculated_hash,
-            )?;
-
-            if entry.id > 0 {
-                // Update existing entry (Move to top logic)
-                let affected = conn
-                    .execute(
-                        "UPDATE clipboard_history SET
-                            content_type = ?1,
-                            content = ?2,
-                            html_content = ?3,
-                            source_app = ?4,
-                            timestamp = ?5,
-                            preview = ?6,
-                            content_hash = ?7,
-                            content_hash_version = 2,
-                            tags = ?8,
-                            is_external = ?9,
-                            source_app_path = ?10,
-                            use_count = use_count + 1,
-                            sync_updated_at = ?11,
-                            sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
-                         WHERE id = ?12",
-                        params![
-                            entry.content_type,
-                            content,
-                            html_content,
-                            entry.source_app,
-                            entry.timestamp,
-                            preview,
-                            content_hash,
-                            tags_json,
-                            if final_is_external { 1 } else { 0 },
-                            entry.source_app_path.as_deref(),
-                            entry.timestamp,
-                            entry.id
-                        ],
-                    )
-                    .map_err(|e| e.to_string())?;
-                if affected != 1 {
-                    return Err(format!(
-                        "clipboard entry {} was not found for update",
-                        entry.id
-                    ));
-                }
-                self.sync_entry_tags_with_conn(conn, entry.id, &cleaned_tags)?;
-                Ok(entry.id)
-            } else {
-                // Insert new entry
-                conn.execute(
-                    "INSERT INTO clipboard_history (content_type, content, html_content, source_app, timestamp, preview, is_pinned, content_hash, tags, is_external, pinned_order, source_app_path, sync_updated_at, sync_updated_by)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), ''))",
-                    params![
-                        entry.content_type,
-                        content,
-                        html_content,
-                        entry.source_app,
-                        entry.timestamp,
-                        preview,
-                        if entry.is_pinned { 1 } else { 0 },
-                        content_hash,
-                        tags_json,
-                        if final_is_external { 1 } else { 0 },
-                        entry.pinned_order,
-                        entry.source_app_path.as_deref(),
-                        entry.timestamp
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-
-                let new_id = conn.last_insert_rowid();
-                self.sync_entry_tags_with_conn(conn, new_id, &cleaned_tags)?;
-                Ok(new_id)
-            }
-        })
+        save_prepared_record(
+            conn,
+            &PreparedClipboardRecord {
+                id: entry.id,
+                content_type: &entry.content_type,
+                content: &content,
+                identity_content: &final_content,
+                html_content: html_content.as_deref(),
+                source_app: &entry.source_app,
+                source_app_path: entry.source_app_path.as_deref(),
+                timestamp: entry.timestamp,
+                preview: &preview,
+                is_pinned: entry.is_pinned,
+                content_hash,
+                tags: &entry.tags,
+                is_external: final_is_external,
+                pinned_order: entry.pinned_order,
+            },
+        )
     }
 
     pub fn delete_with_conn(
@@ -688,65 +492,48 @@ impl SqliteClipboardRepository {
         id: i64,
         data_dir: Option<&std::path::Path>,
     ) -> Result<(), String> {
-        let entry = conn
-            .query_row(
-                "SELECT content, html_content, is_external, content_type, content_hash,
-                        content_hash_version
-                 FROM clipboard_history WHERE id = ?",
-                [id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i32>(2)? == 1,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                    ))
-                },
-            )
-            .map_err(|e| e.to_string())?;
+        let entry = load_stored_record(conn, id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows.to_string())?;
 
         let cleanup_paths = data_dir
             .map(|dir| {
                 self.collect_attachment_paths_for_cleanup(
-                    &entry.0,
-                    entry.1.as_deref(),
-                    entry.2,
+                    &entry.content,
+                    entry.html_content.as_deref(),
+                    entry.is_external,
                     &dir.join("attachments"),
                 )
             })
             .unwrap_or_default();
         let may_cleanup_after_savepoint = conn.is_autocommit();
 
-        let readable_content = self.try_decrypt_text(&entry.0);
-        let (tombstone_hash, tombstone_hash_version) = if uses_text_content_hash(&entry.3) {
-            if let Some(content_plain) = readable_content.as_deref() {
-                (calc_text_hash(content_plain) as i64, 2)
+        let readable_content = self.try_decrypt_text(&entry.content);
+        let (tombstone_hash, tombstone_hash_version) =
+            if uses_text_content_hash(&entry.content_type) {
+                if let Some(content_plain) = readable_content.as_deref() {
+                    (calc_text_hash(content_plain) as i64, 2)
+                } else {
+                    (entry.content_hash, entry.content_hash_version)
+                }
             } else {
-                (entry.4, entry.5)
-            }
-        } else {
-            (entry.4, entry.5)
-        };
+                (entry.content_hash, entry.content_hash_version)
+            };
 
-        with_repository_savepoint(conn, || {
-            // Tombstone, history, and normalized tags are one database unit. If
-            // legacy ciphertext cannot be decrypted, retain its stored hash
-            // semantics rather than manufacturing a v2 hash from ciphertext bytes.
-            self.upsert_tombstone_with_conn(
-                conn,
-                &entry.3,
-                tombstone_hash,
-                tombstone_hash_version,
-                now_ms(),
-            )?;
-            conn.execute("DELETE FROM clipboard_history WHERE id = ?", [id])
-                .map_err(|e| e.to_string())?;
-            conn.execute("DELETE FROM entry_tags WHERE entry_id = ?", params![id])
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        })?;
+        // Tombstone, history, and normalized tags are one database unit. If
+        // legacy ciphertext cannot be decrypted, retain its stored hash
+        // semantics rather than manufacturing a v2 hash from ciphertext bytes.
+        if !delete_record(
+            conn,
+            DeleteRecordPlan {
+                id,
+                content_type: &entry.content_type,
+                content_hash: tombstone_hash,
+                content_hash_version: tombstone_hash_version,
+                deleted_at: now_ms(),
+            },
+        )? {
+            return Err(rusqlite::Error::QueryReturnedNoRows.to_string());
+        }
 
         // Releasing the outermost savepoint commits the database operation. When
         // called inside an owner transaction (the global-tag path), that owner must
@@ -891,30 +678,7 @@ impl SqliteClipboardRepository {
         id: i64,
         is_pinned: bool,
     ) -> Result<(), String> {
-        let updated_at = now_ms();
-        if is_pinned {
-            // Set pinned_order to max + 1 so it appears at top
-            conn.execute(
-                "UPDATE clipboard_history 
-                 SET is_pinned = 1, 
-                     pinned_order = (SELECT COALESCE(MAX(pinned_order), 0) + 1 FROM clipboard_history WHERE is_pinned = 1),
-                     sync_updated_at = ?2,
-                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
-                 WHERE id = ?1",
-                params![id, updated_at],
-            ).map_err(|e| e.to_string())?;
-        } else {
-            conn.execute(
-                "UPDATE clipboard_history
-                 SET is_pinned = 0,
-                     pinned_order = 0,
-                     sync_updated_at = ?2,
-                     sync_updated_by = COALESCE((SELECT value FROM settings WHERE key = 'app.anon_id'), '')
-                 WHERE id = ?1",
-                params![id, updated_at],
-            )
-            .map_err(|e| e.to_string())?;
-        }
+        let _ = set_pinned(conn, id, is_pinned, now_ms())?;
         Ok(())
     }
 

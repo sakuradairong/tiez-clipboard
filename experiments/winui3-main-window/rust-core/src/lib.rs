@@ -894,7 +894,7 @@ mod tests {
             let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
             let json = CStr::from_ptr(snapshot).to_str().unwrap();
             assert!(json.contains("\"content_type\":\"url\""));
-            assert!(json.contains("\"content_type\":\"files\""));
+            assert!(json.contains("\"content_type\":\"file\""));
             assert!(json.contains("\"content_type\":\"rich_text\""));
             tiez_core_string_free(snapshot);
 

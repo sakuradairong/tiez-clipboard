@@ -67,7 +67,7 @@
             <ToggleButton x:Name="TypeImageButton" Content="图片" AutomationProperties.Name="筛选图片" Click="TypeChip_Click" Tag="image" />
             <ToggleButton x:Name="TypeUrlButton" Content="链接" AutomationProperties.Name="筛选链接" Click="TypeChip_Click" Tag="url" />
             <ToggleButton x:Name="TypeCodeButton" Content="代码" AutomationProperties.Name="筛选代码" Click="TypeChip_Click" Tag="code" />
-            <ToggleButton x:Name="TypeFilesButton" Content="文件" AutomationProperties.Name="筛选文件" Click="TypeChip_Click" Tag="files" />
+            <ToggleButton x:Name="TypeFilesButton" Content="文件" AutomationProperties.Name="筛选文件" Click="TypeChip_Click" Tag="file" />
         </StackPanel>
 
         <Grid Grid.Row="3" ColumnSpacing="16">

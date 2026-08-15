@@ -46,7 +46,7 @@ namespace
         if (contentType == L"image") return L"图片";
         if (contentType == L"url") return L"链接";
         if (contentType == L"code") return L"代码";
-        if (contentType == L"files") return L"文件";
+        if (contentType == L"file" || contentType == L"files") return L"文件";
         if (contentType == L"html") return L"富文本";
         return contentType;
     }
@@ -929,7 +929,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         TypeImageButton().IsChecked(m_typeFilter == "image");
         TypeUrlButton().IsChecked(m_typeFilter == "url");
         TypeCodeButton().IsChecked(m_typeFilter == "code");
-        TypeFilesButton().IsChecked(m_typeFilter == "files");
+        TypeFilesButton().IsChecked(m_typeFilter == "file");
         RefreshItems();
     }
 
