@@ -57,6 +57,12 @@
                     Unchecked="PinWindowCheck_Changed" />
                 <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />
                 <Button
+                    x:Name="ClearHistoryButton"
+                    AutomationProperties.Name="清空未保护的剪贴板历史"
+                    AutomationProperties.HelpText="清空前会再次确认；已固定或带标签的记录会保留。"
+                    Click="ClearHistoryButton_Click"
+                    Content="清空历史" />
+                <Button
                     AutomationProperties.Name="刷新剪贴板历史"
                     AutomationProperties.HelpText="重新从 Rust 核心读取当前剪贴板记录。"
                     Click="RefreshButton_Click"

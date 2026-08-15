@@ -337,6 +337,25 @@ impl MemoryHistory {
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true)
             }
+            "clear" => {
+                let removed_ids = self
+                    .items
+                    .iter()
+                    .filter(|item| !item.is_pinned && item.tags.is_empty())
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>();
+                self.items
+                    .retain(|item| item.is_pinned || !item.tags.is_empty());
+                for removed_id in &removed_ids {
+                    self.html_by_id.remove(removed_id);
+                    self.payloads.remove(removed_id);
+                }
+                self.last_action = format!(
+                    "Cleared {} unprotected clipboard entries",
+                    removed_ids.len()
+                );
+                (None, !removed_ids.is_empty())
+            }
             "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
                 ensure_item_exists(&self.items, entry_id)?;
                 self.last_action = format!("{action} requested for entry {entry_id}");
@@ -696,6 +715,41 @@ impl SqliteHistory {
                 }
                 self.last_action = format!("Entry {entry_id} deleted");
                 (None, true, None)
+            }
+            "clear" => {
+                let persisted_ids = {
+                    let mut statement = connection
+                        .prepare(
+                            "SELECT id FROM clipboard_history
+                             WHERE is_pinned = 0
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM entry_tags
+                                   WHERE entry_id = clipboard_history.id
+                               )",
+                        )
+                        .map_err(|error| {
+                            storage_error("failed to prepare clipboard clear", error)
+                        })?;
+                    let rows = statement.query_map([], |row| row.get::<_, i64>(0)).map_err(
+                        |error| storage_error("failed to query clearable clipboard entries", error),
+                    )?;
+                    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+                        storage_error("failed to read clearable clipboard entries", error)
+                    })?
+                };
+                for persisted_id in &persisted_ids {
+                    self.delete(&connection, *persisted_id)?;
+                }
+
+                let previous_session_len = self.session.len();
+                self.session
+                    .retain(|entry| entry.is_pinned || !entry.tags.is_empty());
+                let removed_session = previous_session_len - self.session.len();
+                let removed_count = persisted_ids.len() + removed_session;
+                self.last_action = format!(
+                    "Cleared {removed_count} unprotected clipboard entries"
+                );
+                (None, removed_count > 0, None)
             }
             "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
                 if entry_id < 0 {
@@ -2469,6 +2523,27 @@ mod tests {
     }
 
     #[test]
+    fn memory_clear_preserves_pinned_tagged_and_sensitive_entries() {
+        let mut history = ClipboardHistory::synthetic();
+
+        let cleared = history.apply_action(0, "clear").unwrap();
+
+        assert_eq!(cleared.action, "clear");
+        assert_eq!(cleared.requested_id, 0);
+        assert_eq!(cleared.effective_id, None);
+        assert!(cleared.removed);
+        assert_eq!(cleared.generation, 2);
+        let remaining_ids = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_ids, vec![101, 102, 104, 107]);
+    }
+
+    #[test]
     fn memory_history_ingests_full_text_without_trimming() {
         let mut history = ClipboardHistory::in_memory(vec![]);
         let ingested = history
@@ -2860,6 +2935,19 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_read_only_history_rejects_clear() {
+        let path = temporary_database("clear-read-only");
+        create_test_database(&path);
+        let mut history = ClipboardHistory::open_sqlite_read_only(path.clone()).unwrap();
+
+        let error = history.apply_action(0, "clear").unwrap_err();
+
+        assert_eq!(error.kind(), HistoryErrorKind::ReadOnly);
+        assert_eq!(history.snapshot("").unwrap().items.len(), 3);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn content_lookup_reports_missing_entries() {
         let history = ClipboardHistory::synthetic();
 
@@ -2989,6 +3077,90 @@ mod tests {
             .items
             .iter()
             .any(|item| item.id == 1));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_clear_preserves_protected_entries_and_creates_tombstones() {
+        let path = temporary_database("clear");
+        create_test_database(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO entry_tags (entry_id, tag) VALUES (3, 'password')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+
+        let cleared = history.apply_action(0, "clear").unwrap();
+
+        assert_eq!(cleared.action, "clear");
+        assert!(cleared.removed);
+        assert_eq!(cleared.generation, 2);
+        let remaining_ids = history
+            .snapshot("")
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_ids, vec![2, 3]);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 3",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlite_clear_preserves_sensitive_session_entries() {
+        let path = temporary_database("clear-session");
+        create_test_database(&path);
+        set_test_setting(&path, "app.persistent", "false");
+        let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
+        let ordinary_id = history
+            .ingest_text("ordinary session value".to_owned(), "Notepad")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        let sensitive_id = history
+            .ingest_text("person@example.com".to_owned(), "Mail")
+            .unwrap()
+            .effective_id
+            .unwrap();
+        assert!(ordinary_id < 0);
+        assert!(sensitive_id < 0);
+
+        history.apply_action(0, "clear").unwrap();
+
+        assert_eq!(
+            history.content(ordinary_id).unwrap_err().kind(),
+            HistoryErrorKind::NotFound
+        );
+        assert_eq!(
+            history.content(sensitive_id).unwrap().content,
+            "person@example.com"
+        );
+        assert_eq!(sqlite_session_len(&history), 1);
+        drop(history);
         fs::remove_file(path).unwrap();
     }
 

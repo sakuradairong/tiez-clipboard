@@ -47,7 +47,7 @@ The C ABI interface is deliberately small:
 - fetch full content metadata for one stable entry ID;
 - prepare a validated URL or local-file launch plan without invoking a command shell;
 - report the active adapter and whether it is read-only;
-- apply `pin`, `delete`, `paste-plain`, or `paste-rich` (memory or writable SQLite);
+- apply `pin`, `delete`, protected `clear`, and plain/rich paste or copy actions (memory or writable SQLite);
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
 - read and update a strict allowlist of non-secret daily-use settings;
@@ -64,7 +64,7 @@ The C ABI interface is deliberately small:
 The shared Rust module owns adapter selection, query filtering (including
 `type:<content_type>` chips), sorting, sensitive-preview redaction, relative
 timestamps, generation tracking, paste payload planning, tag privacy transitions,
-pin/delete/tag/pinned-order writes, and the backup/rollback transaction.
+pin/delete/protected-clear/tag/pinned-order writes, and the backup/rollback transaction.
 `PasteCoordinator` plans hide → restore-focus → clipboard → Ctrl+V; the WinUI
 shell captures the last foreground HWND and the Windows executor applies Unicode
 text plus a paste keystroke. The C ABI library owns only transport concerns:
@@ -80,6 +80,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - search plus type chips (`type:text` and friends) driven by the Rust snapshot;
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
+- a Chinese “清空历史” confirmation that preserves pinned, tagged, and sensitive-protected entries and is disabled for read-only adapters;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);

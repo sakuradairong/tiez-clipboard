@@ -77,7 +77,7 @@ TIEZ_CORE_API char* tiez_core_schedule_restore_json(
     TiezCoreHandle* handle,
     const char* path_utf8);
 
-// Supported prototype actions: pin, delete, paste-plain, and paste-rich.
+// Supported actions: pin, delete, clear, paste/copy-plain, and paste/copy-rich.
 TIEZ_CORE_API bool tiez_core_apply_action(
     TiezCoreHandle* handle,
     int64_t entry_id,

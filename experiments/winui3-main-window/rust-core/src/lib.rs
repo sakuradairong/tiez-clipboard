@@ -1612,6 +1612,41 @@ mod tests {
     }
 
     #[test]
+    fn clear_action_export_preserves_protected_entries() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let clear = CString::new("clear").unwrap();
+
+        unsafe {
+            let value = tiez_core_apply_action_json(handle, 0, clear.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains("\"action\":\"clear\""));
+            assert!(json.contains("\"requested_id\":0"));
+            assert!(json.contains("\"removed\":true"));
+            assert!(json.contains("\"generation\":2"));
+            tiez_core_string_free(value);
+
+            let query = CString::new("").unwrap();
+            let snapshot_value = tiez_core_get_snapshot_json(handle, query.as_ptr());
+            assert!(!snapshot_value.is_null());
+            let snapshot = CStr::from_ptr(snapshot_value).to_str().unwrap();
+            let root = serde_json::from_str::<serde_json::Value>(snapshot).unwrap();
+            let ids = root["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].as_i64().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec![101, 102, 104, 107]);
+            tiez_core_string_free(snapshot_value);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn tag_export_accepts_utf8_json_and_returns_structured_mutation() {
         let handle = Box::into_raw(Box::new(
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),

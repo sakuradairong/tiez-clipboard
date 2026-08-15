@@ -584,6 +584,7 @@ namespace
     {
         if (action == "pin") return L"置顶状态已更新";
         if (action == "delete") return L"记录已删除";
+        if (action == "clear") return L"未保护的历史记录已清空";
         if (action == "paste-plain") return L"已执行纯文本粘贴";
         if (action == "paste-rich") return L"已执行富文本粘贴";
         if (action == "copy-plain") return L"已复制到剪贴板";
@@ -918,6 +919,61 @@ namespace winrt::Tiez::WinUIProbe::implementation
         RefreshItems();
     }
 
+    void MainWindow::ClearHistoryButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ConfirmClearHistoryAsync();
+    }
+
+    winrt::fire_and_forget MainWindow::ConfirmClearHistoryAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法清空历史记录。");
+            co_return;
+        }
+        if (m_readOnly)
+        {
+            SetStatus(L"当前数据库以只读方式打开，无法清空历史记录。");
+            co_return;
+        }
+
+        try
+        {
+            ContentDialog dialog;
+            dialog.XamlRoot(RootGrid().XamlRoot());
+            dialog.Title(winrt::box_value(L"清空剪贴板历史？"));
+            dialog.Content(winrt::box_value(
+                L"将删除所有未固定且没有标签的历史记录。已固定、带标签和受保护的敏感记录会保留。此操作无法撤销。"));
+            dialog.PrimaryButtonText(L"清空历史");
+            dialog.CloseButtonText(L"取消");
+            dialog.DefaultButton(ContentDialogButton::Close);
+            m_suspendLifecycle = true;
+            auto const result = co_await dialog.ShowAsync();
+            if (result == ContentDialogResult::Primary)
+            {
+                ApplyAction(0, "clear");
+            }
+            else
+            {
+                m_suspendLifecycle = false;
+                SetStatus(L"已取消清空历史记录。");
+            }
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"无法确认清空历史：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"无法确认清空历史：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
     void MainWindow::HideButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         if (!m_showTimer)
@@ -1097,6 +1153,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             auto const adapter = root.GetNamedString(L"adapter");
             auto const readOnly = root.GetNamedBoolean(L"read_only");
             m_readOnly = readOnly;
+            ClearHistoryButton().IsEnabled(!readOnly);
 
             AdapterText().Text(AdapterLabel(adapter));
             if (readOnly)

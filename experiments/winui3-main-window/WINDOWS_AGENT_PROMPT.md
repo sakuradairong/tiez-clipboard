@@ -26,7 +26,7 @@ Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
 2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v12;
-3. verify Chinese-first search/details, tags, pin ordering, capture, copy/paste,
+3. verify Chinese-first search/details, protected history clearing, tags, pin ordering, capture, copy/paste,
    safe opening, settings, compact preview, backup/restore, OCR/QR analysis,
    WebDAV background synchronization, and Windows login startup;
 4. verify the copied production-history adapter is genuinely read-only and the
@@ -86,32 +86,35 @@ Required negative tests:
    structured Rust mutation message is shown without a JSON parsing error;
 5. delete one item and verify it remains deleted until the process exits and
    the mutation result reports removal;
-6. activate **Hide for 5 seconds** and verify the exact same process and Rust
+6. choose **清空历史**, cancel once, then confirm once and verify unpinned
+   untagged entries are removed while pinned, tagged, and sensitive-protected
+   entries remain; the action must be unavailable in copied read-only mode;
+7. activate **Hide for 5 seconds** and verify the exact same process and Rust
    state return.
-7. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
+8. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
    error without a crash; clear it afterward.
-8. open details for a synthetic entry, delete it, and verify the list refreshes
+9. open details for a synthetic entry, delete it, and verify the list refreshes
    without crashing or corrupting the native details panel.
-9. verify the WebDAV password is never displayed, blank preserves it, explicit
+10. verify the WebDAV password is never displayed, blank preserves it, explicit
    clear requires confirmation, non-loopback HTTP is rejected, and the test
    action reports a Chinese result without blocking the UI or writing remotely.
-10. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
+11. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
     sign out/in and confirm TieZ remains tray-only until the configured global
     shortcut (Alt+C by default) or the tray icon is used. Disable it in Windows
     settings and verify the native UI explains
     that only Windows can re-enable a user-disabled startup task.
-11. with no TieZ process running, execute `test-single-instance.ps1` for 100
+12. with no TieZ process running, execute `test-single-instance.ps1` for 100
     lifecycle cycles; verify every real WM_CLOSE returns the same primary PID to
     the tray, the hidden duplicate exits without revealing the primary, the
     ordinary duplicate reveals the same primary PID, and both secondary exit
     codes are zero.
-12. enable Narrator, Tab from the type filters into a clipboard record, and
+13. enable Narrator, Tab from the type filters into a clipboard record, and
     verify it is announced as a Chinese list item with pinned/sensitive state,
     type, source, time, and only a non-sensitive preview. Enter or Space must
     open details without pasting, the next Tab must reach the card's action
     buttons, Shift+F10 must open the Chinese card menu, and a sensitive item must
     announce “预览已隐藏” without exposing its preview value.
-13. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
+14. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
     Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
     the hidden native window, and WM_CLOSE returns the same process to the tray.
     Verify the script then starts a separate `MouseMiddle` instance, real mouse
