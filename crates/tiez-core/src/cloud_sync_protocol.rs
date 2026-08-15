@@ -158,6 +158,8 @@ pub fn is_cloud_sync_setting_eligible(key: &str) -> bool {
             | "clipboard_relay_shared_key"
             | "app.emoji_favorites"
             | "app.last_ping_date"
+            | "app.autostart"
+            | "app.silent_start"
             | "app.window_width"
             | "app.window_height"
             | "app.tag_manager_size"
@@ -352,6 +354,8 @@ mod tests {
             "cloud_sync_api_key",
             "cloud_sync_webdav_password",
             "clipboard_relay_shared_key",
+            "app.autostart",
+            "app.silent_start",
             "future_access_token",
             "future_client_secret",
             "cloud_sync_webdav_last_emoji_hash",

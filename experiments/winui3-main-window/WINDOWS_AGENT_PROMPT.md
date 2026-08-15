@@ -17,18 +17,18 @@ experiments/winui3-main-window
 This is a production-intended, mutually exclusive WinUI candidate. Release
 builds use the Tauri-compatible data directory by default; synthetic and copied
 read-only adapters remain available for diagnostics. Never run WinUI and Tauri
-against the same live database. WebDAV setup and safe connectivity probing are
-connected, but the background cloud-sync runner, file transfer, and some
-secondary surfaces are not yet parity-complete, so do not make WinUI the default
-installed entry during this validation.
+against the same live database. WebDAV setup, probing, and the background
+cloud-sync runner are connected, but file transfer and some secondary surfaces
+are not yet parity-complete. Do not make WinUI the default installed entry
+during this validation until the signed upgrade and startup acceptance passes.
 
 Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
-2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v11;
+2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v12;
 3. verify Chinese-first search/details, tags, pin ordering, capture, copy/paste,
    safe opening, settings, compact preview, backup/restore, OCR/QR analysis,
-   and WebDAV setup/read-only connectivity testing;
+   WebDAV background synchronization, and Windows login startup;
 4. verify the copied production-history adapter is genuinely read-only and the
    writable adapter remains schema/data compatible with Tauri;
 5. verify sensitive/encrypted payloads and recognition results stay protected;
@@ -93,6 +93,10 @@ Required negative tests:
 9. verify the WebDAV password is never displayed, blank preserves it, explicit
    clear requires confirmation, non-loopback HTTP is rejected, and the test
    action reports a Chinese result without blocking the UI or writing remotely.
+10. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
+    sign out/in and confirm TieZ remains tray-only until Alt+C or the tray icon
+    is used. Disable it in Windows settings and verify the native UI explains
+    that only Windows can re-enable a user-disabled startup task.
 
 Evidence to save under:
 
@@ -106,19 +110,19 @@ Save:
 - full `build-release.log`;
 - five synthetic-adapter and five copied-history measurement JSON files;
 - screenshots of loaded UI, UTF-8 search, native full-content details,
-  protected sensitive details, missing-DLL error, and hidden/restored state,
-  plus the `sqlite-read-only` badge;
+  protected sensitive details, missing-DLL error, hidden/restored state,
+  packaged startup state, and the `sqlite-read-only` badge;
 - copied-database hashes before and after the read-only run;
 - a 100-cycle lifecycle result or a clearly documented blocker;
 - `verdict.md` with medians, worst-five startup values, private/working-set
   ranges, failures, and recommendation.
 
 Do not claim this proves a full TieZ replacement. The current candidate already
-owns substantial daily-use history, capture, privacy, lifecycle, backup, and
-image-analysis behavior, but release-critical service parity and the default
-entry switch remain unfinished. The decision question is whether the verified
-native slice can proceed toward those remaining blockers without regressing
-data compatibility, privacy, accessibility, or rollback safety.
+owns substantial daily-use history, capture, privacy, lifecycle, backup,
+image-analysis, WebDAV, and startup behavior, but signed upgrade/endurance
+acceptance and the default entry switch remain unfinished. The decision question
+is whether the verified native slice can proceed toward those remaining blockers
+without regressing data compatibility, privacy, accessibility, or rollback safety.
 
 Before committing, inspect the diff and ensure generated NuGet packages,
 Visual Studio caches, build artifacts, logs, and screenshots are not committed.

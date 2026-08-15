@@ -24,6 +24,205 @@ namespace
     constexpr UINT kTrayShowCommand = 1001;
     constexpr UINT kTrayExitCommand = 1002;
     constexpr int kAppIconResourceId = 101;
+    constexpr wchar_t kAutostartTaskId[] = L"TieZStartup";
+    constexpr wchar_t kRunRegistryPath[] =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+    bool HasPackageIdentity()
+    {
+        UINT32 length{};
+        auto const result = GetCurrentPackageFullName(&length, nullptr);
+        if (result == APPMODEL_ERROR_NO_PACKAGE)
+        {
+            return false;
+        }
+        if (result != ERROR_INSUFFICIENT_BUFFER)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+        return true;
+    }
+
+    std::filesystem::path CurrentExecutablePath()
+    {
+        std::vector<wchar_t> buffer(32768);
+        auto const length = GetModuleFileNameW(
+            nullptr,
+            buffer.data(),
+            static_cast<DWORD>(buffer.size()));
+        if (length == 0 || length >= buffer.size())
+        {
+            winrt::throw_last_error();
+        }
+        return std::filesystem::path{ std::wstring_view{ buffer.data(), length } };
+    }
+
+    void DeleteRunValue(wchar_t const* name)
+    {
+        auto const result = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunRegistryPath, name);
+        if (result != ERROR_SUCCESS
+            && result != ERROR_FILE_NOT_FOUND
+            && result != ERROR_PATH_NOT_FOUND)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+    }
+
+    void RemoveLegacyAutostartValues()
+    {
+        DeleteRunValue(L"TieZ");
+        DeleteRunValue(L"tie-z");
+    }
+
+    std::optional<std::wstring> ReadRunValue(wchar_t const* name)
+    {
+        DWORD bytes{};
+        auto result = RegGetValueW(
+            HKEY_CURRENT_USER,
+            kRunRegistryPath,
+            name,
+            RRF_RT_REG_SZ,
+            nullptr,
+            nullptr,
+            &bytes);
+        if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND)
+        {
+            return std::nullopt;
+        }
+        if (result != ERROR_SUCCESS)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+
+        std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 1);
+        result = RegGetValueW(
+            HKEY_CURRENT_USER,
+            kRunRegistryPath,
+            name,
+            RRF_RT_REG_SZ,
+            nullptr,
+            buffer.data(),
+            &bytes);
+        if (result != ERROR_SUCCESS)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+        return std::wstring{ buffer.data() };
+    }
+
+    bool CommandTargetsCurrentExecutable(std::wstring const& command)
+    {
+        int argumentCount{};
+        auto* arguments = CommandLineToArgvW(command.c_str(), &argumentCount);
+        if (arguments == nullptr || argumentCount == 0)
+        {
+            if (arguments != nullptr)
+            {
+                LocalFree(arguments);
+            }
+            return false;
+        }
+
+        auto const current = CurrentExecutablePath().wstring();
+        auto const matchesExecutable = _wcsicmp(arguments[0], current.c_str()) == 0;
+        bool startsHidden{};
+        for (int index = 1; index < argumentCount; ++index)
+        {
+            if (_wcsicmp(arguments[index], L"--autostart") == 0
+                || _wcsicmp(arguments[index], L"--minimized") == 0)
+            {
+                startsHidden = true;
+                break;
+            }
+        }
+        LocalFree(arguments);
+        return matchesExecutable && startsHidden;
+    }
+
+    bool IsNativeRunAutostartEnabled()
+    {
+        auto const command = ReadRunValue(L"TieZ");
+        return command && CommandTargetsCurrentExecutable(*command);
+    }
+
+    void SetNativeRunAutostart(bool enabled)
+    {
+        if (!enabled)
+        {
+            RemoveLegacyAutostartValues();
+            return;
+        }
+
+        auto const executable = CurrentExecutablePath().wstring();
+        std::wstring command{ L"\"" };
+        command.append(executable);
+        command.append(L"\" --autostart");
+
+        HKEY key{};
+        auto result = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            kRunRegistryPath,
+            0,
+            nullptr,
+            0,
+            KEY_SET_VALUE,
+            nullptr,
+            &key,
+            nullptr);
+        if (result != ERROR_SUCCESS)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+
+        result = RegSetValueExW(
+            key,
+            L"TieZ",
+            0,
+            REG_SZ,
+            reinterpret_cast<BYTE const*>(command.c_str()),
+            static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+        if (result != ERROR_SUCCESS)
+        {
+            winrt::check_hresult(HRESULT_FROM_WIN32(result));
+        }
+        DeleteRunValue(L"tie-z");
+    }
+
+    bool StartupTaskIsEnabled(winrt::Windows::ApplicationModel::StartupTaskState state)
+    {
+        return state == winrt::Windows::ApplicationModel::StartupTaskState::Enabled
+            || state == winrt::Windows::ApplicationModel::StartupTaskState::EnabledByPolicy;
+    }
+
+    bool StartupTaskCanChange(winrt::Windows::ApplicationModel::StartupTaskState state)
+    {
+        return state != winrt::Windows::ApplicationModel::StartupTaskState::DisabledByUser
+            && state != winrt::Windows::ApplicationModel::StartupTaskState::DisabledByPolicy
+            && state != winrt::Windows::ApplicationModel::StartupTaskState::EnabledByPolicy;
+    }
+
+    winrt::hstring StartupTaskStatus(
+        winrt::Windows::ApplicationModel::StartupTaskState state,
+        bool reconciled)
+    {
+        switch (state)
+        {
+        case winrt::Windows::ApplicationModel::StartupTaskState::DisabledByUser:
+            return L"Windows 已在系统设置或任务管理器中禁用 TieZ 自启动；请在那里重新启用。";
+        case winrt::Windows::ApplicationModel::StartupTaskState::DisabledByPolicy:
+            return L"系统策略禁止 TieZ 自启动，请联系设备管理员。";
+        case winrt::Windows::ApplicationModel::StartupTaskState::EnabledByPolicy:
+            return L"系统策略已强制启用 TieZ 自启动，应用内无法关闭。";
+        case winrt::Windows::ApplicationModel::StartupTaskState::Enabled:
+            return reconciled
+                ? L"已由 Windows 注册；下次登录后 TieZ 将只在托盘后台启动。"
+                : L"Windows 已注册 TieZ 登录启动；启动时不会弹出主窗口。";
+        case winrt::Windows::ApplicationModel::StartupTaskState::Disabled:
+        default:
+            return L"TieZ 不会随 Windows 登录启动。";
+        }
+    }
 
     std::optional<std::filesystem::path> SelectBackupPath(HWND owner, bool save)
     {
@@ -329,14 +528,21 @@ namespace winrt::Tiez::WinUIProbe::implementation
     using winrt::Windows::Foundation::IInspectable;
     using Windows::System::VirtualKey;
 
-    MainWindow::MainWindow()
+    MainWindow::MainWindow() : MainWindow(false)
+    {
+    }
+
+    MainWindow::MainWindow(bool startHidden) : m_startHidden(startHidden)
     {
         InitializeComponent();
-        Title(L"TieZ · WinUI 3 原生主窗口实验");
+        Title(L"TieZ · 原生剪贴板");
         SetInitialWindowSize();
         SetupLifecycle();
         SetupImeGuards();
-        SearchBox().Focus(FocusState::Programmatic);
+        if (!m_startHidden)
+        {
+            SearchBox().Focus(FocusState::Programmatic);
+        }
 
         try
         {
@@ -346,6 +552,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_core = std::make_unique<tiez::probe::RustCoreBridge>();
             m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
             LoadSettings();
+            RefreshAutostartStateAsync(true);
             if (m_productionData && !m_settingsReadOnly)
             {
                 m_core->StartCloudSync();
@@ -506,6 +713,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             EnsureSettingsDialog();
             LoadSettings();
+            RefreshAutostartStateAsync(false);
             m_suspendLifecycle = true;
             m_settingsDialog.XamlRoot(RootGrid().XamlRoot());
             (void)m_settingsDialog.ShowAsync();
@@ -1403,6 +1611,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             marker << "pid=" << GetCurrentProcessId() << '\n';
             marker << "ready_tick_ms=" << GetTickCount64() << '\n';
             marker << "abi_version=" << m_core->AbiVersion() << '\n';
+            marker << "start_hidden=" << (m_startHidden ? "true" : "false") << '\n';
         }
 
         m_readyMarkerWritten = true;
@@ -2980,9 +3189,20 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_trayVisibleToggle = SettingToggle(
             L"显示系统托盘图标",
             L"关闭后仍可使用 Alt+C 显示 TieZ。");
+        m_autostartToggle = SettingToggle(
+            L"开机启动 TieZ",
+            L"登录 Windows 后只在系统托盘后台运行，不弹出主窗口。");
+        m_autostartStatus = TextBlock();
+        m_autostartStatus.Text(L"正在读取 Windows 登录启动状态……");
+        m_autostartStatus.TextWrapping(TextWrapping::Wrap);
+        m_autostartStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_autostartStatus, L"TieZ 开机启动状态");
         m_settingsPanel.Children().Append(m_compactModeToggle);
         m_settingsPanel.Children().Append(m_windowPinnedToggle);
         m_settingsPanel.Children().Append(m_trayVisibleToggle);
+        m_settingsPanel.Children().Append(m_autostartToggle);
+        m_settingsPanel.Children().Append(m_autostartStatus);
 
         TextBlock historyTitle;
         historyTitle.Text(L"历史与捕获");
@@ -3340,6 +3560,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
             }
             else LoadSettings();
         });
+        m_autostartToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (m_settingsLoading || m_autostartBusy) return;
+            ApplyAutostartAsync(m_autostartToggle.IsOn());
+        });
         m_persistentToggle.Toggled([this](auto const&, auto const&)
         {
             if (m_settingsLoading) return;
@@ -3457,6 +3682,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const privacyProtection = getBool(L"app.privacy_protection", true);
         auto const trayVisible = !getBool(L"app.hide_tray_icon", false);
         auto const pinned = getBool(L"app.window_pinned", false);
+        auto const autostart = getBool(L"app.autostart", true);
         auto const adapter = root.GetNamedString(L"adapter", L"memory");
         double persistentLimit = 500;
         try
@@ -3474,6 +3700,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_productionData = adapter == L"sqlite" || adapter == L"sqlite-read-only";
         m_settingsLoading = true;
         m_compactMode = compactMode;
+        m_autostartPreference = autostart;
         if (m_settingsPanel)
         {
             auto const settingsEnabled = !m_settingsReadOnly;
@@ -3489,6 +3716,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_privacyProtectionToggle.IsEnabled(settingsEnabled);
             m_trayVisibleToggle.IsEnabled(settingsEnabled);
             m_windowPinnedToggle.IsEnabled(settingsEnabled);
+            m_autostartToggle.IsEnabled(settingsEnabled && !m_autostartBusy);
             m_colorModeCombo.SelectedIndex(colorMode == L"light" ? 1 : colorMode == L"dark" ? 2 : 0);
             m_compactModeToggle.IsOn(compactMode);
             m_persistentToggle.IsOn(persistent);
@@ -3501,6 +3729,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_privacyProtectionToggle.IsOn(privacyProtection);
             m_trayVisibleToggle.IsOn(trayVisible);
             m_windowPinnedToggle.IsOn(pinned);
+            m_autostartToggle.IsOn(autostart);
 
             auto backupMessage = m_backupStatus.Text();
             if (backupMessage.empty())
@@ -3529,6 +3758,224 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (compactChanged && m_core)
         {
             RefreshItems();
+        }
+    }
+
+    void MainWindow::SetAutostartUi(
+        bool enabled,
+        bool canChange,
+        winrt::hstring const& message)
+    {
+        if (!m_autostartToggle)
+        {
+            return;
+        }
+
+        auto const wasLoading = m_settingsLoading;
+        m_settingsLoading = true;
+        m_autostartToggle.IsOn(enabled);
+        m_autostartToggle.IsEnabled(
+            canChange && !m_settingsReadOnly && !m_autostartBusy);
+        m_autostartStatus.Text(message);
+        m_settingsLoading = wasLoading;
+    }
+
+    winrt::fire_and_forget MainWindow::RefreshAutostartStateAsync(
+        bool reconcilePreference)
+    {
+        auto lifetime = get_strong();
+        if (m_autostartBusy)
+        {
+            co_return;
+        }
+
+        m_autostartBusy = true;
+        SetAutostartUi(
+            m_autostartPreference,
+            false,
+            L"正在读取 Windows 登录启动状态……");
+        try
+        {
+            if (HasPackageIdentity())
+            {
+                auto const task = co_await StartupTask::GetAsync(kAutostartTaskId);
+                auto state = task.State();
+                bool reconciled{};
+                if (reconcilePreference && !m_settingsReadOnly)
+                {
+                    if (m_autostartPreference
+                        && state == StartupTaskState::Disabled)
+                    {
+                        state = co_await task.RequestEnableAsync();
+                        reconciled = true;
+                    }
+                    else if (!m_autostartPreference
+                        && StartupTaskIsEnabled(state)
+                        && StartupTaskCanChange(state))
+                    {
+                        task.Disable();
+                        state = task.State();
+                        reconciled = true;
+                    }
+                }
+
+                // The packaged WinUI app owns login startup after installation.
+                RemoveLegacyAutostartValues();
+                m_autostartBusy = false;
+                SetAutostartUi(
+                    StartupTaskIsEnabled(state),
+                    StartupTaskCanChange(state),
+                    StartupTaskStatus(state, reconciled));
+            }
+            else
+            {
+                auto const enabled = IsNativeRunAutostartEnabled();
+                m_autostartBusy = false;
+                SetAutostartUi(
+                    enabled,
+                    true,
+                    enabled
+                        ? L"未打包版本已注册当前原生 TieZ；登录后只在托盘后台启动。"
+                        : L"未打包版本不会随 Windows 登录启动。正式 MSIX 使用系统启动任务。");
+            }
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_autostartBusy = false;
+            SetAutostartUi(
+                m_autostartPreference,
+                true,
+                StatusMessage(L"读取开机启动状态失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_autostartBusy = false;
+            SetAutostartUi(
+                m_autostartPreference,
+                true,
+                StatusMessage(
+                    L"读取开机启动状态失败：",
+                    tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ApplyAutostartAsync(bool enabled)
+    {
+        auto lifetime = get_strong();
+        if (m_autostartBusy)
+        {
+            co_return;
+        }
+
+        auto const previousPreference = m_autostartPreference;
+        m_autostartBusy = true;
+        SetAutostartUi(
+            enabled,
+            false,
+            enabled ? L"正在注册 Windows 登录启动……" : L"正在关闭 Windows 登录启动……");
+        try
+        {
+            bool actual{};
+            bool canChange{ true };
+            winrt::hstring message;
+            if (HasPackageIdentity())
+            {
+                auto const task = co_await StartupTask::GetAsync(kAutostartTaskId);
+                auto state = task.State();
+                auto const previousEnabled = StartupTaskIsEnabled(state);
+                if (enabled && state == StartupTaskState::Disabled)
+                {
+                    state = co_await task.RequestEnableAsync();
+                }
+                else if (!enabled
+                    && StartupTaskIsEnabled(state)
+                    && StartupTaskCanChange(state))
+                {
+                    task.Disable();
+                    state = task.State();
+                }
+
+                actual = StartupTaskIsEnabled(state);
+                canChange = StartupTaskCanChange(state);
+                message = StartupTaskStatus(state, true);
+                if (actual != enabled)
+                {
+                    m_autostartBusy = false;
+                    SetAutostartUi(actual, canChange, message);
+                    co_return;
+                }
+
+                if (!PersistSetting(
+                    "app.autostart",
+                    actual ? "true" : "false",
+                    L"开机启动"))
+                {
+                    if (previousEnabled != actual)
+                    {
+                        if (previousEnabled && task.State() == StartupTaskState::Disabled)
+                        {
+                            (void)co_await task.RequestEnableAsync();
+                        }
+                        else if (!previousEnabled
+                            && StartupTaskIsEnabled(task.State())
+                            && StartupTaskCanChange(task.State()))
+                        {
+                            task.Disable();
+                        }
+                    }
+                    m_autostartBusy = false;
+                    RefreshAutostartStateAsync(false);
+                    co_return;
+                }
+                RemoveLegacyAutostartValues();
+            }
+            else
+            {
+                auto const previousEnabled = IsNativeRunAutostartEnabled();
+                SetNativeRunAutostart(enabled);
+                actual = IsNativeRunAutostartEnabled();
+                if (actual != enabled)
+                {
+                    throw std::runtime_error("Windows Run registration did not persist");
+                }
+                if (!PersistSetting(
+                    "app.autostart",
+                    actual ? "true" : "false",
+                    L"开机启动"))
+                {
+                    SetNativeRunAutostart(previousEnabled);
+                    m_autostartBusy = false;
+                    RefreshAutostartStateAsync(false);
+                    co_return;
+                }
+                message = actual
+                    ? L"已注册当前原生 TieZ；下次登录后只在托盘后台启动。"
+                    : L"已从 Windows 登录启动项移除 TieZ。";
+            }
+
+            m_autostartPreference = actual;
+            m_autostartBusy = false;
+            SetAutostartUi(actual, canChange, message);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_autostartPreference = previousPreference;
+            m_autostartBusy = false;
+            SetAutostartUi(
+                previousPreference,
+                true,
+                StatusMessage(L"更新开机启动失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_autostartPreference = previousPreference;
+            m_autostartBusy = false;
+            SetAutostartUi(
+                previousPreference,
+                true,
+                StatusMessage(
+                    L"更新开机启动失败：",
+                    tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }
 

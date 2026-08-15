@@ -28,6 +28,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v12 adds a Rust-owned WebDAV background service, automatic scheduling, immediate manual synchronization, sanitized status polling, and Chinese progress/error/result UI. Its SQLite host preserves sync revisions, tombstones, tags, sensitive DPAPI storage, settings, image attachments, and cross-device emoji images without exposing credentials through C++.
 - The Chinese WinUI settings dialog can check the current MSIX package's associated App Installer feed and hand available updates back to Windows for signed installation; unpackaged builds fail closed without contacting a hard-coded endpoint.
 - Native Windows CI now builds a versioned `TieZ.exe` and structurally validates a self-contained x64 MSIX. Release publishing requires a matching Publisher certificate, SHA256/RFC 3161 signing, package re-verification, and emits an App Installer update feed plus checksum.
+- The Chinese WinUI settings dialog now owns Windows login startup. Installed MSIX builds use the native `TieZStartup` task, unpackaged builds register only the current native executable, and startup activation remains hidden in the system tray.
 
 ### Changed
 
@@ -43,13 +44,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Release version validation now covers the WinUI Rust core in addition to the four Tauri version files; native backup metadata, EXE resources, MSIX identity, and the release tag derive from the synchronized product version.
 - Native clipboard search now matches cached OCR text and QR payloads without exposing those payloads in list previews, and remains compatible with older read-only databases that do not yet have the analysis table.
 - WinUI 主窗口现以中文作为主要界面语言，同时保留内部内容类型和搜索筛选协议不变。
+- The native main-window title no longer labels the WinUI runtime as an experiment, and installed startup ownership removes legacy Tauri Run entries to prevent both frontends launching together.
 - WinUI Debug builds now use the correct C++/WinRT namespaces in the generated-XAML unhandled-exception hook.
 
 - Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
 
 ### Security
 
-- Cloud settings snapshots now share one fail-closed eligibility policy across Tauri and WinUI, excluding MQTT credentials, AI profiles, relay keys, WebDAV credentials, token/secret/password-style keys, and local synchronization state from upload and remote application.
+- Cloud settings snapshots now share one fail-closed eligibility policy across Tauri and WinUI, excluding MQTT credentials, AI profiles, relay keys, WebDAV credentials, token/secret/password-style keys, local synchronization state, and device-local autostart/silent-start preferences from upload and remote application.
 - Shared WebDAV transport refuses credential-bearing endpoints and cross-origin redirects, encodes path segments defensively, validates blob identities, and bounds remote error bodies before surfacing them.
 - Writable WinUI capture now applies the same privacy kinds and custom regular expressions as Tauri, tags matching text as sensitive, and DPAPI-protects content, preview, and rich HTML before committing it.
 - WinUI tag changes atomically synchronize normalized tags and revision metadata; `sensitive`, `密码`, and `password` transitions encrypt or decrypt stored payloads, and sensitive transitions remove plaintext OCR indexes.

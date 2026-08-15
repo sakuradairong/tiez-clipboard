@@ -8,6 +8,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
     struct MainWindow : MainWindowT<MainWindow>
     {
         MainWindow();
+        explicit MainWindow(bool startHidden);
         ~MainWindow();
 
         void SearchBox_TextChanged(
@@ -106,6 +107,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetupImeGuards();
         void EnsureSettingsDialog();
         void LoadSettings();
+        winrt::fire_and_forget RefreshAutostartStateAsync(bool reconcilePreference);
+        winrt::fire_and_forget ApplyAutostartAsync(bool enabled);
+        void SetAutostartUi(
+            bool enabled,
+            bool canChange,
+            winrt::hstring const& message);
         void LoadCloudSyncSettings();
         bool SaveCloudSyncSettings(bool clearPassword, bool reloadRunner = true);
         void RequestCloudSyncNow();
@@ -157,6 +164,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_privacyProtectionToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_trayVisibleToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_windowPinnedToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_autostartToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_autostartStatus{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncEnabledToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncAutoToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox m_cloudSyncUrlText{ nullptr };
@@ -204,6 +213,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_readOnly{};
         bool m_settingsReadOnly{};
         bool m_settingsLoading{};
+        bool m_autostartBusy{};
+        bool m_autostartPreference{ true };
+        bool m_startHidden{};
         bool m_cloudSyncBusy{};
         bool m_cloudSyncPasswordConfigured{};
         std::uint64_t m_cloudSyncSettingsRevision{};

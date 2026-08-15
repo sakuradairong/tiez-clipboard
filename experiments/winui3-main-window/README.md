@@ -88,7 +88,8 @@ versioned request/response structs or another explicitly versioned wire format.
 - card context menu and double-click paste;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
-- a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, and window pinning;
+- a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
+- packaged login startup through the MSIX `StartupTask` contract, plus a current-EXE HKCU Run fallback for unpackaged development; startup activation stays hidden in the tray and packaged ownership removes legacy Tauri Run values;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
 - Chinese “打开” actions for validated links/files and controlled temporary text, rich-text, or image files;
@@ -212,8 +213,9 @@ plus an RFC 3161 timestamp service:
 
 The package script reads the product version from the repository-wide version
 gate, generates `TieZ_<version>.0_x64.msix`, re-opens it with `MakeAppx`, checks
-the package identity and required runtime files, rejects WebView2 payloads, and
-writes SHA256. The manifest deliberately disables AppData write virtualization,
+the package identity, native `TieZStartup` login task, and required runtime files,
+rejects WebView2 payloads, and writes SHA256. The manifest deliberately disables
+AppData write virtualization,
 and the package validator requires that declaration plus the corresponding
 `unvirtualizedResources` capability. This keeps the installed WinUI app and the
 unpackaged Tauri fallback on the same `%APPDATA%\com.tiez` database instead of
@@ -355,6 +357,7 @@ recognition. Record the active adapter with every result.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
+- [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
 - [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
@@ -394,6 +397,7 @@ recognition. Record the active adapter with every result.
 - [ ] Pinned reordering is unavailable in searched, type-filtered, or read-only views.
 - [ ] The Chinese settings dialog reads existing TieZ values and never exposes secret keys.
 - [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
+- [ ] “开机启动 TieZ” reflects the actual Windows state; disabling it persists locally, user/policy-disabled states explain where to re-enable it, and the setting never crosses WebDAV.
 - [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
 - [ ] The Chinese WebDAV section reads the existing Tauri-compatible URL, username, path, intervals, and content preferences without ever displaying the saved password.
 - [ ] Saving WebDAV settings is transactional; leaving the password blank preserves it, while the explicit confirmed clear action removes it.
@@ -462,6 +466,7 @@ window should call, and which extraction phase owns it.
 | Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
 | Open URL/file/text/rich/image | `open_content` | `tiez_core_prepare_open_content_json` + native `ShellExecuteW`, without command shells | 4 |
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
+| Windows login startup / silent activation | Tauri Run value + minimized argument | MSIX `StartupTask` + AppLifecycle activation, with current-EXE Run fallback for unpackaged development | 5 (connected) |
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
 | WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 12 + write-only secret and read-only `PROPFIND` | 5 (connected) |
@@ -536,8 +541,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    required before default cutover.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs release-critical sync/service parity plus manual Windows 10/11,
-DPI, IME, accessibility, and long-run lifecycle acceptance.
+needs signed installer upgrade, real-account multi-device sync endurance, and
+manual Windows 10/11, DPI, IME, accessibility, and long-run lifecycle acceptance.
 
 ## Primary references
 
@@ -545,4 +550,6 @@ DPI, IME, accessibility, and long-run lifecycle acceptance.
 - [Create a WinUI 3 app](https://learn.microsoft.com/en-us/windows/apps/get-started/start-here)
 - [Distribute an unpackaged WinUI app](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 - [Windows App SDK runtime bootstrap](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/use-windows-app-sdk-run-time)
+- [AppLifecycle rich activation](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-rich-activation)
+- [Desktop startup-task manifest extension](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions)
 - [Official C++ unpackaged self-contained sample](https://github.com/microsoft/WindowsAppSDK-Samples/tree/main/Samples/SelfContainedDeployment/cpp/cpp-winui-unpackaged)

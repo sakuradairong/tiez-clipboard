@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <appmodel.h>
 #include <unknwn.h>
 #include <restrictederrorinfo.h>
 #include <hstring.h>
@@ -18,6 +19,7 @@
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
+#include <winrt/Microsoft.Windows.AppLifecycle.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>

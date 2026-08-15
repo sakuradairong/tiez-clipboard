@@ -229,6 +229,23 @@ try {
         $packedIdentity.GetAttribute("Version") -ne $PackageVersion) {
         throw "The packed MSIX identity does not match the requested release identity."
     }
+    $startupExtension = $packedManifest.SelectSingleNode(
+        "/*[local-name()='Package']/*[local-name()='Applications']/*[local-name()='Application']/*[local-name()='Extensions']/*[local-name()='Extension'][@Category='windows.startupTask']"
+    )
+    $startupTask = if ($startupExtension) {
+        $startupExtension.SelectSingleNode("./*[local-name()='StartupTask']")
+    } else {
+        $null
+    }
+    if (-not $startupExtension -or
+        $startupExtension.NamespaceURI -ne "http://schemas.microsoft.com/appx/manifest/desktop/windows10" -or
+        $startupExtension.GetAttribute("Executable") -ne "TieZ.exe" -or
+        $startupExtension.GetAttribute("EntryPoint") -ne "Windows.FullTrustApplication" -or
+        -not $startupTask -or
+        $startupTask.GetAttribute("TaskId") -ne "TieZStartup" -or
+        $startupTask.GetAttribute("Enabled") -ne "true") {
+        throw "The packed MSIX is missing the native TieZ startup task."
+    }
     $fileVirtualization = $packedManifest.SelectSingleNode(
         "/*[local-name()='Package']/*[local-name()='Properties']/*[local-name()='FileSystemWriteVirtualization']"
     )

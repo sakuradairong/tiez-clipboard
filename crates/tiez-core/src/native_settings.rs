@@ -37,6 +37,11 @@ const NATIVE_SETTINGS: &[SettingDefinition] = &[
         kind: SettingKind::Bool,
     },
     SettingDefinition {
+        key: "app.autostart",
+        default_value: "true",
+        kind: SettingKind::Bool,
+    },
+    SettingDefinition {
         key: "app.persistent",
         default_value: "false",
         kind: SettingKind::Bool,
@@ -475,6 +480,18 @@ mod tests {
         drop(connection);
         drop(settings);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn autostart_preference_is_available_to_native_frontends() {
+        let mut settings = NativeSettings::in_memory();
+        assert_eq!(
+            settings.snapshot().unwrap().values.get("app.autostart"),
+            Some(&"true".to_owned())
+        );
+
+        let mutation = settings.update("app.autostart", "false").unwrap();
+        assert_eq!(mutation.value, "false");
     }
 
     #[test]

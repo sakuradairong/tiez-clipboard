@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="desktop6 uap rescap">
+  IgnorableNamespaces="desktop desktop6 uap rescap">
   <Identity
     Name="{{IDENTITY_NAME}}"
     Publisher="{{PUBLISHER}}"
@@ -42,6 +43,17 @@
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <desktop:Extension
+          Category="windows.startupTask"
+          Executable="TieZ.exe"
+          EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask
+            TaskId="TieZStartup"
+            Enabled="true"
+            DisplayName="TieZ 剪贴板" />
+        </desktop:Extension>
+      </Extensions>
     </Application>
   </Applications>
 
