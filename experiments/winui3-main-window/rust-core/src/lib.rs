@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::env;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use tiez_core::clipboard_capture::{
@@ -18,6 +19,7 @@ use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot,
 };
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
+use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
 #[cfg(windows)]
 mod win32_paste;
@@ -26,6 +28,7 @@ mod win32_capture;
 const ABI_VERSION: u32 = 4;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
+static DATABASE_INSTANCE_GUARD: Mutex<Option<DatabaseInstanceGuard>> = Mutex::new(None);
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
@@ -68,6 +71,7 @@ impl TiezCoreHandle {
         let history = match env::var_os(DATABASE_ENV) {
             Some(value) if !value.is_empty() => {
                 let read_only = env_flag(DATABASE_READ_ONLY_ENV);
+                ensure_database_instance_guard(Path::new(&value))?;
                 ClipboardHistory::open_sqlite(value, read_only)
                     .map_err(|error| format!("{DATABASE_ENV}: {error}"))?
             }
@@ -76,6 +80,28 @@ impl TiezCoreHandle {
 
         Ok(Self::wrap(history))
     }
+}
+
+fn ensure_database_instance_guard(database_path: &Path) -> Result<(), String> {
+    let mut guard = DATABASE_INSTANCE_GUARD
+        .lock()
+        .map_err(|_| "database instance guard lock is poisoned".to_owned())?;
+    if let Some(existing) = guard.as_ref() {
+        return if existing.protects(database_path) {
+            Ok(())
+        } else {
+            Err(format!(
+                "the WinUI runtime already owns {}",
+                existing.database_path().display()
+            ))
+        };
+    }
+
+    *guard = Some(
+        DatabaseInstanceGuard::acquire(database_path)
+            .map_err(|error| format!("{DATABASE_ENV}: {error}"))?,
+    );
+    Ok(())
 }
 
 fn env_flag(name: &str) -> bool {

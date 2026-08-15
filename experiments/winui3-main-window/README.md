@@ -14,8 +14,10 @@ clipboard listener. The reusable history, paste, and window-lifecycle policies
 now live in the standalone, Tauri-independent `tiez-core` crate. By default the
 probe uses synthetic in-memory data. An opt-in adapter can open a TieZ
 `clipboard.db` for read or write. **Do not run this executable at the same time
-as Tauri** against the live database — the two entries are mutually exclusive
-writers. The existing WebView2 application remains the production fallback.
+as Tauri** against the live database. Both runtimes now acquire the same
+per-database Windows ownership mutex before restore or SQLite open, so the
+second process fails with a visible startup error instead of becoming a
+concurrent writer. The existing WebView2 application remains the production fallback.
 The production Tauri list, search, and full-content commands still use the same
 storage-neutral merge/search policies through `TauriHistoryAdapter`; their
 command names and serialized `ClipboardEntry` contract remain unchanged.
