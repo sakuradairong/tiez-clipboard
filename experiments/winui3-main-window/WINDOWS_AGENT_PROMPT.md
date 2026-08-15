@@ -51,6 +51,7 @@ cd experiments\winui3-main-window
 rustup toolchain install 1.88.0-x86_64-pc-windows-msvc
 Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1 -Configuration Release
+.\test-single-instance.ps1 -Configuration Release
 .\measure.ps1 -Configuration Release -SampleSeconds 30 -KeepOpen
 ```
 
@@ -97,6 +98,9 @@ Required negative tests:
     sign out/in and confirm TieZ remains tray-only until Alt+C or the tray icon
     is used. Disable it in Windows settings and verify the native UI explains
     that only Windows can re-enable a user-disabled startup task.
+11. with no TieZ process running, execute `test-single-instance.ps1`; verify the
+    hidden duplicate exits without revealing the primary, the ordinary duplicate
+    reveals the same primary PID, and both secondary exit codes are zero.
 
 Evidence to save under:
 

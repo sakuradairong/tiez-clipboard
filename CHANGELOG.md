@@ -29,6 +29,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - The Chinese WinUI settings dialog can check the current MSIX package's associated App Installer feed and hand available updates back to Windows for signed installation; unpackaged builds fail closed without contacting a hard-coded endpoint.
 - Native Windows CI now builds a versioned `TieZ.exe` and structurally validates a self-contained x64 MSIX. Release publishing requires a matching Publisher certificate, SHA256/RFC 3161 signing, package re-verification, and emits an App Installer update feed plus checksum.
 - The Chinese WinUI settings dialog now owns Windows login startup. Installed MSIX builds use the native `TieZStartup` task, unpackaged builds register only the current native executable, and startup activation remains hidden in the system tray.
+- Native WinUI launches now register one AppLifecycle main instance before XAML and Rust/SQLite startup. Duplicate startup activations remain hidden, while ordinary duplicate launches exit and reveal the existing tray process; an isolated PowerShell smoke test covers both paths.
 
 ### Changed
 
@@ -67,6 +68,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - `emoji_sync` now uses the same stable text payload hash as the legacy Tauri runner, so native favorites are uploaded once and exact remote payloads can suppress echo uploads.
 - The WinUI build and MSIX packaging helpers now run release-version validation from the repository root, so their documented invocations also work from inside `experiments/winui3-main-window`.
 - Tauri and the native WinUI candidate now share a per-database Windows ownership mutex, preventing concurrent restore or write access to the same `clipboard.db`.
+- Duplicate native WinUI launches no longer reach the Rust database-ownership error path when the tray process is already running.
 - Writable WinUI history now copies captured images from its temporary capture area into the TieZ data directory before committing the database row, so system temp cleanup cannot break saved image entries.
 - WinUI history deletion and capacity eviction now remove attachment files only after the last live database reference is gone, and fail closed when a surviving encrypted path cannot be inspected.
 - WinUI probe now restores WASDK 1.8 split packages, imports the Runtime and MSIX/MRT build assets required by self-contained XAML windows, generates the current app PRI, compiles native sources as UTF-8, finds MSBuild on Visual Studio Build Tools, compiles the Windows paste helper against `windows-sys` 0.59, and assembles the current native EXE with the matching Rust DLL.

@@ -88,6 +88,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - card context menu and double-click paste;
 - Alt+C toggle, last-foreground HWND capture, and deactivate-to-hide (unless pinned);
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
+- process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
 - a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
 - packaged login startup through the MSIX `StartupTask` contract, plus a current-EXE HKCU Run fallback for unpackaged development; startup activation stays hidden in the tray and packaged ownership removes legacy Tauri Run values;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
@@ -358,6 +359,7 @@ recognition. Record the active adapter with every result.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
 - [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
+- [ ] `test-single-instance.ps1 -Configuration Release` passes against an isolated temporary database.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
 - [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
@@ -380,6 +382,8 @@ recognition. Record the active adapter with every result.
 - [ ] Alt+C toggles visibility and captures the last foreground window.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
 - [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
+- [ ] An ordinary second launch exits with code 0 and reveals the existing native window without constructing another Rust/SQLite owner.
+- [ ] A `--autostart` or `--minimized` second launch exits with code 0 without revealing a hidden primary window.
 - [ ] Right-clicking the tray icon shows the Chinese “显示主界面” and “退出 TieZ” commands.
 - [ ] Restarting Explorer restores the tray icon.
 - [ ] Sensitive cards show a redacted preview and a sensitive label.
@@ -459,6 +463,7 @@ window should call, and which extraction phase owns it.
 | Toggle hotkey (default Alt+C) | `toggle_window_cmd` | WinUI `RegisterHotKey` + last HWND | 1 |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
+| Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
 | Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy and OCR/QR connected, cloud later | 3 |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
@@ -503,8 +508,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    text payloads;
 4. `UiLifecycle` — **WinUI daily shell connected**: Alt+C toggle, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste, native tray,
-   close-to-hide, explicit tray exit, Explorer restart recovery, and shared
-   per-database single-instance ownership;
+   close-to-hide, explicit tray exit, Explorer restart recovery, AppLifecycle
+   launch redirection, and shared per-database single-instance ownership;
 5. `ClipboardCapture` — **WinUI Unicode/HTML/image/file connected**: format
    priority (files, rich text, image, text), CRLF normalization without trim,
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
@@ -551,5 +556,6 @@ manual Windows 10/11, DPI, IME, accessibility, and long-run lifecycle acceptance
 - [Distribute an unpackaged WinUI app](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 - [Windows App SDK runtime bootstrap](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/use-windows-app-sdk-run-time)
 - [AppLifecycle rich activation](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-rich-activation)
+- [App instancing with AppLifecycle](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-instancing)
 - [Desktop startup-task manifest extension](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions)
 - [Official C++ unpackaged self-contained sample](https://github.com/microsoft/WindowsAppSDK-Samples/tree/main/Samples/SelfContainedDeployment/cpp/cpp-winui-unpackaged)
