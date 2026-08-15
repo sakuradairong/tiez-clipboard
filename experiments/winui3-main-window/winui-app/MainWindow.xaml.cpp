@@ -17,6 +17,7 @@ namespace
     constexpr UINT kToggleHotkeyId = 1;
     constexpr UINT_PTR kMessageWindowSubclassId = 1;
     constexpr UINT_PTR kMainWindowSubclassId = 2;
+    constexpr UINT_PTR kHoverPreviewSubclassId = 3;
     constexpr UINT kTrayCallbackMessage = WM_APP + 7;
     constexpr UINT kTrayIconId = 1;
     constexpr UINT kTrayShowCommand = 1001;
@@ -56,7 +57,7 @@ namespace
         if (contentType == L"url") return L"链接";
         if (contentType == L"code") return L"代码";
         if (contentType == L"file" || contentType == L"files") return L"文件";
-        if (contentType == L"html") return L"富文本";
+        if (contentType == L"html" || contentType == L"rich_text") return L"富文本";
         return contentType;
     }
 
@@ -222,6 +223,25 @@ namespace
 
         return DefSubclassProc(hwnd, message, wParam, lParam);
     }
+
+    LRESULT CALLBACK HoverPreviewSubclassProc(
+        HWND hwnd,
+        UINT message,
+        WPARAM wParam,
+        LPARAM lParam,
+        UINT_PTR,
+        DWORD_PTR)
+    {
+        if (message == WM_NCHITTEST)
+        {
+            return HTTRANSPARENT;
+        }
+        if (message == WM_MOUSEACTIVATE)
+        {
+            return MA_NOACTIVATE;
+        }
+        return DefSubclassProc(hwnd, message, wParam, lParam);
+    }
 }
 
 namespace winrt::Tiez::WinUIProbe::implementation
@@ -267,6 +287,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     MainWindow::~MainWindow()
     {
+        HideHoverPreview();
+        if (m_hoverPreviewWindow)
+        {
+            RemoveWindowSubclass(
+                m_hoverPreviewHwnd,
+                HoverPreviewSubclassProc,
+                kHoverPreviewSubclassId);
+            m_hoverPreviewWindow.Close();
+            m_hoverPreviewWindow = nullptr;
+            m_hoverPreviewHwnd = nullptr;
+        }
         if (m_refreshSink)
         {
             std::lock_guard<std::mutex> guard(m_refreshSink->mutex);
@@ -476,6 +507,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     void MainWindow::RefreshItems()
     {
+        HideHoverPreview();
         if (!m_core)
         {
             return;
@@ -619,6 +651,17 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_selectedIndex = static_cast<int>(index);
             UpdateSelectionVisuals();
             ShowContent(entryId);
+        });
+        card.PointerEntered([this, entryId](auto const&, auto const&)
+        {
+            if (m_compactMode)
+            {
+                ShowHoverPreview(entryId);
+            }
+        });
+        card.PointerExited([this](auto const&, auto const&)
+        {
+            HideHoverPreview();
         });
         card.DoubleTapped([this, entryId, readOnly](auto const&, auto const&)
         {
@@ -1196,6 +1239,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     void MainWindow::HideMainWindow()
     {
+        HideHoverPreview();
         ShowWindow(GetWindowHandle(), SW_HIDE);
         SetStatus(L"窗口已隐藏，按 Alt+C 或点击系统托盘图标可重新显示。");
     }
@@ -1947,10 +1991,15 @@ namespace winrt::Tiez::WinUIProbe::implementation
 
     void MainWindow::ApplyColorMode(std::string_view mode)
     {
-        RootGrid().RequestedTheme(
+        auto const theme =
             mode == "light" ? ElementTheme::Light
             : mode == "dark" ? ElementTheme::Dark
-            : ElementTheme::Default);
+            : ElementTheme::Default;
+        RootGrid().RequestedTheme(theme);
+        if (m_hoverPreviewRoot)
+        {
+            m_hoverPreviewRoot.RequestedTheme(theme);
+        }
     }
 
     void MainWindow::ApplyPinnedWindow(bool pinned)
@@ -1972,6 +2021,210 @@ namespace winrt::Tiez::WinUIProbe::implementation
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    void MainWindow::EnsureHoverPreviewWindow()
+    {
+        if (m_hoverPreviewWindow)
+        {
+            return;
+        }
+
+        m_hoverPreviewWindow = Window();
+        m_hoverPreviewWindow.Title(L"TieZ 剪贴板预览");
+
+        m_hoverPreviewRoot = Border();
+        m_hoverPreviewRoot.Padding(ThicknessHelper::FromLengths(16, 14, 16, 14));
+        m_hoverPreviewRoot.CornerRadius(CornerRadiusHelper::FromUniformRadius(12));
+        m_hoverPreviewRoot.BorderThickness(ThicknessHelper::FromUniformLength(1));
+        m_hoverPreviewRoot.Background(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"CardBackgroundFillColorDefaultBrush")).as<Brush>());
+        m_hoverPreviewRoot.BorderBrush(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"CardStrokeColorDefaultBrush")).as<Brush>());
+        m_hoverPreviewRoot.RequestedTheme(RootGrid().RequestedTheme());
+
+        Grid layout;
+        layout.RowSpacing(10);
+        RowDefinition titleRow;
+        titleRow.Height(GridLengthHelper::Auto());
+        RowDefinition contentRow;
+        contentRow.Height(GridLength{ 1, GridUnitType::Star });
+        layout.RowDefinitions().Append(titleRow);
+        layout.RowDefinitions().Append(contentRow);
+
+        m_hoverPreviewTitle = TextBlock();
+        m_hoverPreviewTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        layout.Children().Append(m_hoverPreviewTitle);
+
+        ScrollViewer scroller;
+        scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        Grid::SetRow(scroller, 1);
+        StackPanel body;
+        body.Spacing(10);
+        m_hoverPreviewImage = Image();
+        m_hoverPreviewImage.MaxHeight(190);
+        m_hoverPreviewImage.Stretch(Stretch::Uniform);
+        m_hoverPreviewImage.Visibility(Visibility::Collapsed);
+        AutomationProperties::SetName(m_hoverPreviewImage, L"紧凑模式图片预览");
+        m_hoverPreviewText = TextBlock();
+        m_hoverPreviewText.FontFamily(FontFamily{ L"Consolas" });
+        m_hoverPreviewText.TextWrapping(TextWrapping::Wrap);
+        m_hoverPreviewText.IsTextSelectionEnabled(false);
+        body.Children().Append(m_hoverPreviewImage);
+        body.Children().Append(m_hoverPreviewText);
+        scroller.Content(body);
+        layout.Children().Append(scroller);
+        m_hoverPreviewRoot.Child(layout);
+        m_hoverPreviewWindow.Content(m_hoverPreviewRoot);
+
+        Window preview = m_hoverPreviewWindow;
+        winrt::check_hresult(preview.as<::IWindowNative>()->get_WindowHandle(&m_hoverPreviewHwnd));
+        auto style = GetWindowLongPtrW(m_hoverPreviewHwnd, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU);
+        style |= WS_POPUP;
+        SetWindowLongPtrW(m_hoverPreviewHwnd, GWL_STYLE, style);
+        auto extendedStyle = GetWindowLongPtrW(m_hoverPreviewHwnd, GWL_EXSTYLE);
+        extendedStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        SetWindowLongPtrW(m_hoverPreviewHwnd, GWL_EXSTYLE, extendedStyle);
+        SetWindowSubclass(
+            m_hoverPreviewHwnd,
+            HoverPreviewSubclassProc,
+            kHoverPreviewSubclassId,
+            0);
+        SetWindowPos(
+            m_hoverPreviewHwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+
+    void MainWindow::ShowHoverPreview(std::int64_t entryId)
+    {
+        if (!m_compactMode || !m_core)
+        {
+            return;
+        }
+
+        try
+        {
+            EnsureHoverPreviewWindow();
+            auto const value = m_core->Content(entryId);
+            auto const content = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            auto const contentType = content.GetNamedString(L"content_type");
+            auto const available = content.GetNamedBoolean(L"available");
+            auto const isSensitive = content.GetNamedBoolean(L"is_sensitive");
+
+            std::wstringstream title;
+            title << ContentTypeLabel(contentType).c_str() << L" · 记录 " << entryId;
+            m_hoverPreviewTitle.Text(winrt::hstring{ title.str() });
+
+            winrt::hstring displayContent;
+            if (isSensitive)
+            {
+                displayContent = L"此记录受隐私保护，悬停预览已隐藏。";
+            }
+            else if (!available)
+            {
+                displayContent = L"此记录的完整内容当前不可用。";
+            }
+            else
+            {
+                displayContent = content.GetNamedString(L"content");
+                if (displayContent.empty())
+                {
+                    auto const htmlContent = content.GetNamedValue(L"html_content");
+                    if (htmlContent.ValueType() == JsonValueType::String)
+                    {
+                        displayContent = htmlContent.GetString();
+                    }
+                }
+            }
+            m_hoverPreviewText.Text(displayContent);
+            ShowHoverPreviewImage(
+                available && !isSensitive ? contentType : winrt::hstring{},
+                displayContent);
+
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            MONITORINFO monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            GetMonitorInfoW(
+                MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST),
+                &monitorInfo);
+            auto const scale = static_cast<double>(GetDpiForWindow(GetWindowHandle())) / 96.0;
+            auto const width = static_cast<int>(420 * scale);
+            auto const height = static_cast<int>(300 * scale);
+            auto x = cursor.x + static_cast<int>(18 * scale);
+            auto y = cursor.y + static_cast<int>(18 * scale);
+            if (x + width > monitorInfo.rcWork.right)
+            {
+                x = cursor.x - width - static_cast<int>(18 * scale);
+            }
+            if (y + height > monitorInfo.rcWork.bottom)
+            {
+                y = monitorInfo.rcWork.bottom - height;
+            }
+            x = std::max(monitorInfo.rcWork.left, x);
+            y = std::max(monitorInfo.rcWork.top, y);
+            SetWindowPos(
+                m_hoverPreviewHwnd,
+                HWND_TOPMOST,
+                x,
+                y,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        catch (std::exception const& error)
+        {
+            HideHoverPreview();
+            SetStatus(StatusMessage(
+                L"悬停预览失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::HideHoverPreview()
+    {
+        if (m_hoverPreviewHwnd != nullptr && IsWindow(m_hoverPreviewHwnd))
+        {
+            ShowWindow(m_hoverPreviewHwnd, SW_HIDE);
+        }
+    }
+
+    void MainWindow::ShowHoverPreviewImage(
+        winrt::hstring const& contentType,
+        winrt::hstring const& content)
+    {
+        if (!m_hoverPreviewImage)
+        {
+            return;
+        }
+        m_hoverPreviewImage.Source(nullptr);
+        m_hoverPreviewImage.Visibility(Visibility::Collapsed);
+        if (contentType != L"image")
+        {
+            return;
+        }
+
+        std::wstring path{ content };
+        if (path.empty()
+            || path.rfind(L"data:image/", 0) == 0
+            || !std::filesystem::exists(std::filesystem::path{ content.c_str() }))
+        {
+            return;
+        }
+        std::replace(path.begin(), path.end(), L'\\', L'/');
+        Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+        bitmap.UriSource(Windows::Foundation::Uri{ L"file:///" + path });
+        m_hoverPreviewImage.Source(bitmap);
+        m_hoverPreviewImage.Visibility(Visibility::Visible);
     }
 
     void MainWindow::SetupImeGuards()

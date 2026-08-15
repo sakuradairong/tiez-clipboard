@@ -97,6 +97,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
             winrt::hstring const& label);
         void ApplyColorMode(std::string_view mode);
         void ApplyPinnedWindow(bool pinned);
+        void EnsureHoverPreviewWindow();
+        void ShowHoverPreview(std::int64_t entryId);
+        void HideHoverPreview();
+        void ShowHoverPreviewImage(
+            winrt::hstring const& contentType,
+            winrt::hstring const& content);
         void ShowDetailsImage(winrt::hstring const& contentType, winrt::hstring const& content);
         static void __cdecl OnHistoryChanged(void* userData, std::uint64_t generation);
 
@@ -123,7 +129,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_privacyProtectionToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_trayVisibleToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_windowPinnedToggle{ nullptr };
+        Microsoft::UI::Xaml::Window m_hoverPreviewWindow{ nullptr };
+        Microsoft::UI::Xaml::Controls::Border m_hoverPreviewRoot{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_hoverPreviewTitle{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_hoverPreviewText{ nullptr };
+        Microsoft::UI::Xaml::Controls::Image m_hoverPreviewImage{ nullptr };
         HWND m_hwnd{};
+        HWND m_hoverPreviewHwnd{};
         HWND m_hotkeyHwnd{};
         HWND m_lastHwnd{};
         HICON m_trayIcon{};

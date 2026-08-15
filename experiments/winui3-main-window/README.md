@@ -83,6 +83,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - a Chinese native settings dialog for theme, compact list, persistence, limits, capture, privacy, tray, and window pinning;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
+- a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -318,6 +319,7 @@ adapter with every result.
 - [ ] The Chinese settings dialog reads existing TieZ values and never exposes secret keys.
 - [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
 - [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
+- [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
 
 ### Copied production history
 
@@ -364,7 +366,7 @@ window should call, and which extraction phase owns it.
 | Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy connected, OCR/cloud later | 3 |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
 | Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
-| Compact preview window | `WebviewWindow` `compact-preview` | later native popup | 4 |
+| Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
 | Open URL/file | `open_content` | later | 4 |
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
 | Emoji, tag manager, file transfer, cloud, advanced theme store, AI, OCR, updater | various commands | phase 5 independent WinUI surfaces | 5 |
@@ -405,8 +407,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    distribution remain later.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs the remaining phase-4 native hover preview and open-content shell work,
-plus the release-critical backup/sync/update surfaces.
+needs the remaining phase-4 open-content shell work, plus the release-critical
+backup/sync/update surfaces.
 
 ## Primary references
 
