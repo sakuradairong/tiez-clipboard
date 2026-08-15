@@ -335,6 +335,14 @@ impl CaptureFilter {
         &mut self,
         payload: Option<CapturedPayload>,
     ) -> Result<CapturedPayload, CaptureSkip> {
+        self.accept_payload_with_dedup(payload, true)
+    }
+
+    pub fn accept_payload_with_dedup(
+        &mut self,
+        payload: Option<CapturedPayload>,
+        deduplicate: bool,
+    ) -> Result<CapturedPayload, CaptureSkip> {
         let payload = payload.ok_or(CaptureSkip::Empty)?;
         if payload.is_empty() {
             return Err(CaptureSkip::Empty);
@@ -343,7 +351,7 @@ impl CaptureFilter {
         if self.echoes.contains(&fingerprint) {
             return Err(CaptureSkip::Echo);
         }
-        if self.last == Some(fingerprint) {
+        if deduplicate && self.last == Some(fingerprint) {
             return Err(CaptureSkip::Duplicate);
         }
         self.last = Some(fingerprint);
@@ -370,6 +378,31 @@ mod tests {
         filter.note_self_write("pasted");
         assert_eq!(filter.accept("pasted"), Err(CaptureSkip::Echo));
         assert_eq!(filter.accept("next").unwrap(), "next");
+    }
+
+    #[test]
+    fn filter_can_allow_duplicates_without_allowing_self_write_echoes() {
+        let mut filter = CaptureFilter::new();
+        let duplicate = classify_snapshot(ClipboardSnapshot {
+            text: Some("repeat".to_owned()),
+            ..ClipboardSnapshot::default()
+        });
+        assert!(filter
+            .accept_payload_with_dedup(duplicate.clone(), false)
+            .is_ok());
+        assert!(filter
+            .accept_payload_with_dedup(duplicate, false)
+            .is_ok());
+
+        filter.note_self_write("echo");
+        let echo = classify_snapshot(ClipboardSnapshot {
+            text: Some("echo".to_owned()),
+            ..ClipboardSnapshot::default()
+        });
+        assert_eq!(
+            filter.accept_payload_with_dedup(echo, false),
+            Err(CaptureSkip::Echo)
+        );
     }
 
     #[test]

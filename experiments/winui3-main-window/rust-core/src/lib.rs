@@ -13,13 +13,16 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use tiez_core::clipboard_capture::{
-    classify_snapshot, CapturedPayload, CaptureFilter, ClipboardSnapshot,
+    classify_snapshot, detect_content_type, CapturedPayload, CaptureFilter, ClipboardSnapshot,
 };
 use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
 };
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
+use tiez_core::native_settings::{
+    NativeSettingMutation, NativeSettings, NativeSettingsSnapshot,
+};
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
 
@@ -27,7 +30,7 @@ use tiez_core::runtime_instance::DatabaseInstanceGuard;
 mod win32_paste;
 mod win32_capture;
 
-const ABI_VERSION: u32 = 6;
+const ABI_VERSION: u32 = 7;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -49,6 +52,7 @@ unsafe impl Sync for ChangedSink {}
 
 pub(crate) struct TiezCoreInner {
     history: Mutex<ClipboardHistory>,
+    settings: Mutex<NativeSettings>,
     capture: Mutex<CaptureFilter>,
     changed: Mutex<Option<ChangedSink>>,
 }
@@ -60,10 +64,16 @@ pub struct TiezCoreHandle {
 }
 
 impl TiezCoreHandle {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn wrap(history: ClipboardHistory) -> Self {
+        Self::wrap_with_settings(history, NativeSettings::in_memory())
+    }
+
+    fn wrap_with_settings(history: ClipboardHistory, settings: NativeSettings) -> Self {
         Self {
             inner: Arc::new(TiezCoreInner {
                 history: Mutex::new(history),
+                settings: Mutex::new(settings),
                 capture: Mutex::new(CaptureFilter::new()),
                 changed: Mutex::new(None),
             }),
@@ -77,20 +87,23 @@ impl TiezCoreHandle {
             _ if env_flag(PRODUCTION_DATA_ENV) => Some(production_database_path()?),
             _ => None,
         };
-        let history = match configured_database {
+        let (history, settings) = match configured_database {
             Some(value) => {
                 let read_only = env_flag(DATABASE_READ_ONLY_ENV);
                 ensure_database_instance_guard(&value)?;
                 if !read_only {
                     prepare_writable_database(&value)?;
                 }
-                ClipboardHistory::open_sqlite(&value, read_only)
-                    .map_err(|error| format!("{}: {error}", value.display()))?
+                let history = ClipboardHistory::open_sqlite(&value, read_only)
+                    .map_err(|error| format!("{}: {error}", value.display()))?;
+                let settings = NativeSettings::open_sqlite(&value, read_only)
+                    .map_err(|error| format!("{}: {error}", value.display()))?;
+                (history, settings)
             }
-            _ => ClipboardHistory::synthetic(),
+            _ => (ClipboardHistory::synthetic(), NativeSettings::in_memory()),
         };
 
-        Ok(Self::wrap(history))
+        Ok(Self::wrap_with_settings(history, settings))
     }
 }
 
@@ -172,6 +185,20 @@ struct PinnedOrderResponse<'a> {
     result: &'a PinnedOrderResult,
 }
 
+#[derive(Serialize)]
+struct SettingsResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativeSettingsSnapshot,
+}
+
+#[derive(Serialize)]
+struct SettingMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativeSettingMutation,
+}
+
 fn snapshot_json(snapshot: &HistorySnapshot) -> Result<String, String> {
     serde_json::to_string(&SnapshotResponse {
         abi_version: ABI_VERSION,
@@ -199,6 +226,22 @@ fn pinned_order_json(result: &PinnedOrderResult) -> Result<String, String> {
         result,
     })
     .map_err(|error| format!("failed to serialize pinned order result: {error}"))
+}
+
+fn settings_json(snapshot: &NativeSettingsSnapshot) -> Result<String, String> {
+    serde_json::to_string(&SettingsResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize native settings: {error}"))
+}
+
+fn setting_mutation_json(mutation: &NativeSettingMutation) -> Result<String, String> {
+    serde_json::to_string(&SettingMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("failed to serialize native setting mutation: {error}"))
 }
 
 fn apply_history_action(
@@ -289,6 +332,30 @@ fn reorder_history_pins(
     Ok(result)
 }
 
+fn native_settings_snapshot(handle: &TiezCoreHandle) -> Result<NativeSettingsSnapshot, String> {
+    handle
+        .inner
+        .settings
+        .lock()
+        .map_err(|_| "NativeSettings lock is poisoned".to_owned())?
+        .snapshot()
+        .map_err(|error| error.to_string())
+}
+
+fn update_native_setting(
+    handle: &TiezCoreHandle,
+    key: &str,
+    value: &str,
+) -> Result<NativeSettingMutation, String> {
+    handle
+        .inner
+        .settings
+        .lock()
+        .map_err(|_| "NativeSettings lock is poisoned".to_owned())?
+        .update(key, value)
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn ingest_captured_text(
     inner: &TiezCoreInner,
@@ -307,12 +374,36 @@ pub(crate) fn ingest_captured_snapshot(
     inner: &TiezCoreInner,
     snapshot: ClipboardSnapshot,
 ) -> Result<Option<u64>, String> {
+    let Some(mut payload) = classify_snapshot(snapshot) else {
+        return Ok(None);
+    };
+    let capture_preferences = inner
+        .settings
+        .lock()
+        .map_err(|_| "NativeSettings lock is poisoned".to_owned())?
+        .capture_preferences()
+        .map_err(|error| error.to_string())?;
+    if matches!(payload, CapturedPayload::Files { .. }) && !capture_preferences.capture_files {
+        return Ok(None);
+    }
+    if !capture_preferences.capture_rich_text {
+        if let CapturedPayload::RichText { content, .. } = payload {
+            let content_type = detect_content_type(&content);
+            payload = CapturedPayload::Text {
+                content,
+                content_type,
+            };
+        }
+    }
     let accepted = {
         let mut filter = inner
             .capture
             .lock()
             .map_err(|_| "CaptureFilter lock is poisoned".to_owned())?;
-        match filter.accept_payload(classify_snapshot(snapshot)) {
+        match filter.accept_payload_with_dedup(
+            Some(payload),
+            capture_preferences.deduplicate,
+        ) {
             Ok(payload) => payload,
             Err(_) => return Ok(None),
         }
@@ -655,6 +746,45 @@ pub unsafe extern "C" fn tiez_core_update_pinned_order_json(
 }
 
 #[no_mangle]
+/// Return the allowlisted native settings as a newly allocated UTF-8 JSON string.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_settings_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = native_settings_snapshot(handle)?;
+        into_owned_c_string(settings_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Update one allowlisted native setting and return its structured result.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `key_utf8` and `value_utf8` must be readable, NUL-terminated UTF-8 strings.
+pub unsafe extern "C" fn tiez_core_update_setting_json(
+    handle: *mut TiezCoreHandle,
+    key_utf8: *const c_char,
+    value_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let key = required_utf8(key_utf8, "key_utf8")?;
+        let value = required_utf8(value_utf8, "value_utf8")?;
+        let mutation = update_native_setting(handle, &key, &value)?;
+        into_owned_c_string(setting_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Register a history-changed callback. Pass a null callback to clear it.
 ///
 /// The callback may run on a background clipboard worker thread. The C++
@@ -726,8 +856,9 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `value` must be null or a pointer returned by this library through
 /// `tiez_core_get_snapshot_json`, `tiez_core_get_content_json`,
 /// `tiez_core_apply_action_json`, `tiez_core_update_tags_json`, or
-/// `tiez_core_update_pinned_order_json`, or `tiez_core_take_last_error`. A
-/// non-null pointer must be transferred to this function exactly once.
+/// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
+/// `tiez_core_update_setting_json`, or `tiez_core_take_last_error`. A non-null
+/// pointer must be transferred to this function exactly once.
 pub unsafe extern "C" fn tiez_core_string_free(value: *mut c_char) {
     catch_ffi((), || {
         if value.is_null() {
@@ -797,7 +928,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":6"));
+        assert!(json.contains("\"abi_version\":7"));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -842,7 +973,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":6"));
+            assert!(pin_json.contains("\"abi_version\":7"));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -872,7 +1003,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":6"));
+            assert!(json.contains("\"abi_version\":7"));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -902,6 +1033,59 @@ mod tests {
     }
 
     #[test]
+    fn native_settings_export_is_allowlisted_and_mutable() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
+        let compact_key = CString::new("app.compact_mode").unwrap();
+        let true_value = CString::new("true").unwrap();
+
+        unsafe {
+            let initial = tiez_core_get_settings_json(handle);
+            assert!(!initial.is_null());
+            let initial_json = CStr::from_ptr(initial).to_str().unwrap();
+            assert!(initial_json.contains("\"abi_version\":7"));
+            assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
+            assert!(!initial_json.contains("mqtt_password"));
+            tiez_core_string_free(initial);
+
+            let mutation = tiez_core_update_setting_json(
+                handle,
+                compact_key.as_ptr(),
+                true_value.as_ptr(),
+            );
+            assert!(!mutation.is_null());
+            let mutation_json = CStr::from_ptr(mutation).to_str().unwrap();
+            assert!(mutation_json.contains("\"key\":\"app.compact_mode\""));
+            assert!(mutation_json.contains("\"value\":\"true\""));
+            assert!(mutation_json.contains("\"generation\":2"));
+            tiez_core_string_free(mutation);
+
+            let updated = tiez_core_get_settings_json(handle);
+            assert!(!updated.is_null());
+            assert!(CStr::from_ptr(updated)
+                .to_str()
+                .unwrap()
+                .contains("\"app.compact_mode\":\"true\""));
+            tiez_core_string_free(updated);
+
+            let secret_key = CString::new("mqtt_password").unwrap();
+            assert!(tiez_core_update_setting_json(
+                handle,
+                secret_key.as_ptr(),
+                true_value.as_ptr(),
+            )
+            .is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("not exposed to native frontends"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn pinned_order_export_requires_all_pinned_ids_and_preserves_requested_order() {
         let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(ClipboardHistory::synthetic())));
         let pin = CString::new("pin").unwrap();
@@ -918,7 +1102,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":6"));
+            assert!(json.contains("\"abi_version\":7"));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));
@@ -1044,6 +1228,16 @@ mod tests {
                 LAST_GENERATION.load(std::sync::atomic::Ordering::SeqCst),
                 2
             );
+            let key = CString::new("app.deduplicate").unwrap();
+            let disabled = CString::new("false").unwrap();
+            let mutation =
+                tiez_core_update_setting_json(handle, key.as_ptr(), disabled.as_ptr());
+            assert!(!mutation.is_null());
+            tiez_core_string_free(mutation);
+            assert_eq!(
+                ingest_captured_text(&(*handle).inner, "hello from notepad").unwrap(),
+                Some(3)
+            );
             let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
             let json = CStr::from_ptr(snapshot).to_str().unwrap();
             assert!(json.contains("hello from notepad"));
@@ -1058,6 +1252,15 @@ mod tests {
             vec![],
         ))));
         unsafe {
+            let true_value = CString::new("true").unwrap();
+            for key in ["app.capture_files", "app.capture_rich_text"] {
+                let key = CString::new(key).unwrap();
+                let mutation =
+                    tiez_core_update_setting_json(handle, key.as_ptr(), true_value.as_ptr());
+                assert!(!mutation.is_null());
+                tiez_core_string_free(mutation);
+            }
+
             ingest_captured_snapshot(
                 &(*handle).inner,
                 ClipboardSnapshot {
