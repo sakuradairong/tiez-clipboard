@@ -17,7 +17,7 @@ experiments/winui3-main-window
 This is a production-intended, mutually exclusive WinUI candidate. Release
 builds use the Tauri-compatible data directory by default; synthetic and copied
 read-only adapters remain available for diagnostics. Never run WinUI and Tauri
-against the same live database. Cloud sync, file transfer, updater UI, and some
+against the same live database. Cloud sync, file transfer, and some
 secondary surfaces are not yet parity-complete, so do not make WinUI the default
 installed entry during this validation.
 

@@ -90,6 +90,8 @@ versioned request/response structs or another explicitly versioned wire format.
 - Chinese “打开” actions for validated links/files and controlled temporary text, rich-text, or image files;
 - asynchronous Chinese backup export and restore controls with native file dialogs,
   archive/checksum validation, next-startup restore, and seven-day rollback retention;
+- asynchronous OCR/QR recognition with cached native search and sensitive-result protection;
+- a Chinese App Installer update check/install entry that uses the feed associated with the installed MSIX;
 - UTF-8 text, including Chinese and emoji;
 - a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
@@ -344,6 +346,7 @@ recognition. Record the active adapter with every result.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
+- [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
@@ -444,7 +447,8 @@ window should call, and which extraction phase owns it.
 | Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + ABI 10 + async Chinese details panel and cached-index search | 5 (connected) |
-| Emoji, tag manager, file transfer, cloud, advanced theme store, AI, updater | various commands | phase 5 independent WinUI surfaces | 5 |
+| Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
+| Emoji, tag manager, file transfer, cloud, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.

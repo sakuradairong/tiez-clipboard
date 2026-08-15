@@ -322,8 +322,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
     using namespace Microsoft::UI::Xaml::Controls::Primitives;
     using namespace Microsoft::UI::Xaml::Input;
     using namespace Microsoft::UI::Xaml::Media;
+    using namespace Windows::ApplicationModel;
     using namespace Windows::ApplicationModel::DataTransfer;
     using namespace Windows::Data::Json;
+    using namespace Windows::Management::Deployment;
     using winrt::Windows::Foundation::IInspectable;
     using Windows::System::VirtualKey;
 
@@ -2333,6 +2335,137 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::SetUpdateBusy(bool busy, winrt::hstring const& message)
+    {
+        m_updateBusy = busy;
+        if (m_checkUpdateButton)
+        {
+            m_checkUpdateButton.IsEnabled(!busy);
+            m_checkUpdateButton.Content(winrt::box_value(
+                busy ? L"正在检查……" : L"检查更新"));
+        }
+        if (m_installUpdateButton)
+        {
+            m_installUpdateButton.IsEnabled(
+                !busy && m_updateAvailable && !m_appInstallerUri.empty());
+        }
+        if (m_updateProgress)
+        {
+            m_updateProgress.IsActive(busy);
+            m_updateProgress.Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
+        }
+        if (m_updateStatus && !message.empty())
+        {
+            m_updateStatus.Text(message);
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::CheckForUpdatesAsync()
+    {
+        auto lifetime = get_strong();
+        if (m_updateBusy)
+        {
+            co_return;
+        }
+
+        m_updateAvailable = false;
+        m_appInstallerUri = L"";
+        SetUpdateBusy(true, L"正在通过 Windows App Installer 检查签名更新……");
+        try
+        {
+            auto const current = Package::Current();
+            PackageManager manager;
+            auto const package = manager.FindPackageForUser(
+                L"",
+                current.Id().FullName());
+            if (!package)
+            {
+                SetUpdateBusy(false, L"Windows 找不到当前 TieZ 安装包，无法检查更新。");
+                co_return;
+            }
+
+            auto const installer = package.GetAppInstallerInfo();
+            if (!installer)
+            {
+                SetUpdateBusy(
+                    false,
+                    L"当前安装未关联 .appinstaller 更新源。请从正式 TieZ-x64.appinstaller 安装后再试。");
+                co_return;
+            }
+            auto const feed = installer.Uri();
+            if (!feed || feed.SchemeName() != L"https")
+            {
+                SetUpdateBusy(false, L"更新源不是受支持的 HTTPS 地址，已拒绝打开。");
+                co_return;
+            }
+            m_appInstallerUri = feed.AbsoluteUri();
+
+            auto const result = co_await package.CheckUpdateAvailabilityAsync();
+            switch (result.Availability())
+            {
+            case PackageUpdateAvailability::Available:
+                m_updateAvailable = true;
+                SetUpdateBusy(
+                    false,
+                    L"发现可用更新。点击“安装更新”，由 Windows 校验签名并完成升级。");
+                break;
+            case PackageUpdateAvailability::Required:
+                m_updateAvailable = true;
+                SetUpdateBusy(
+                    false,
+                    L"发现必须安装的更新。请点击“安装更新”继续使用受支持版本。");
+                break;
+            case PackageUpdateAvailability::NoUpdates:
+                SetUpdateBusy(false, L"当前已是最新版本。");
+                break;
+            case PackageUpdateAvailability::Error:
+                SetUpdateBusy(false, L"Windows App Installer 检查更新时返回错误，请稍后重试。");
+                break;
+            case PackageUpdateAvailability::Unknown:
+            default:
+                SetUpdateBusy(
+                    false,
+                    L"当前安装没有可用的更新信息；确认它是通过正式 .appinstaller 安装的版本。");
+                break;
+            }
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_updateAvailable = false;
+            m_appInstallerUri = L"";
+            SetUpdateBusy(false, StatusMessage(L"检查更新失败：", error.message()));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::OpenAppInstallerAsync()
+    {
+        auto lifetime = get_strong();
+        if (m_updateBusy || !m_updateAvailable || m_appInstallerUri.empty())
+        {
+            co_return;
+        }
+
+        SetUpdateBusy(true, L"正在打开 Windows App Installer……");
+        try
+        {
+            auto const escapedSource = Windows::Foundation::Uri::EscapeComponent(
+                m_appInstallerUri);
+            std::wstring activation{ L"ms-appinstaller:?source=" };
+            activation.append(escapedSource.c_str(), escapedSource.size());
+            auto const launched = co_await Windows::System::Launcher::LaunchUriAsync(
+                Windows::Foundation::Uri{ winrt::hstring{ activation } });
+            SetUpdateBusy(
+                false,
+                launched
+                    ? L"Windows App Installer 已打开；确认发布者与版本后即可升级。"
+                    : L"系统未能打开 App Installer，请检查 Windows 的应用安装程序组件。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetUpdateBusy(false, StatusMessage(L"打开 App Installer 失败：", error.message()));
+        }
+    }
+
     void MainWindow::EnsureSettingsDialog()
     {
         if (m_settingsDialog)
@@ -2472,6 +2605,59 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_restoreBackupButton.Click([this](auto const&, auto const&)
         {
             RestoreBackupAsync();
+        });
+
+        TextBlock updateTitle;
+        updateTitle.Text(L"应用更新");
+        updateTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(updateTitle);
+
+        TextBlock updateDescription;
+        updateDescription.Text(
+            L"正式 MSIX 版本使用安装时关联的 .appinstaller 源。TieZ 不保存或替换该地址，下载、发布者签名校验和升级均由 Windows App Installer 完成。");
+        updateDescription.TextWrapping(TextWrapping::Wrap);
+        updateDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(updateDescription);
+
+        StackPanel updateActions;
+        updateActions.Orientation(Orientation::Horizontal);
+        updateActions.Spacing(8);
+        m_checkUpdateButton = Button();
+        m_checkUpdateButton.Content(winrt::box_value(L"检查更新"));
+        AutomationProperties::SetName(m_checkUpdateButton, L"检查 TieZ 更新");
+        m_installUpdateButton = Button();
+        m_installUpdateButton.Content(winrt::box_value(L"安装更新"));
+        m_installUpdateButton.IsEnabled(false);
+        AutomationProperties::SetName(m_installUpdateButton, L"使用 Windows App Installer 安装 TieZ 更新");
+        m_updateProgress = ProgressRing();
+        m_updateProgress.Width(22);
+        m_updateProgress.Height(22);
+        m_updateProgress.IsActive(false);
+        m_updateProgress.Visibility(Visibility::Collapsed);
+        updateActions.Children().Append(m_checkUpdateButton);
+        updateActions.Children().Append(m_installUpdateButton);
+        updateActions.Children().Append(m_updateProgress);
+        m_settingsPanel.Children().Append(updateActions);
+
+        m_updateStatus = TextBlock();
+        m_updateStatus.Text(
+            L"点击“检查更新”后，Windows 会查询当前安装包关联的发布源。未打包开发版本不会访问网络。");
+        m_updateStatus.TextWrapping(TextWrapping::Wrap);
+        m_updateStatus.IsTextSelectionEnabled(true);
+        m_updateStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_updateStatus, L"TieZ 更新状态");
+        m_settingsPanel.Children().Append(m_updateStatus);
+
+        m_checkUpdateButton.Click([this](auto const&, auto const&)
+        {
+            CheckForUpdatesAsync();
+        });
+        m_installUpdateButton.Click([this](auto const&, auto const&)
+        {
+            OpenAppInstallerAsync();
         });
 
         ScrollViewer scroller;

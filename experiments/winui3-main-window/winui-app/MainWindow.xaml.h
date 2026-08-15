@@ -109,6 +109,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::fire_and_forget ExportBackupAsync();
         winrt::fire_and_forget RestoreBackupAsync();
         void SetBackupBusy(bool busy, winrt::hstring const& message);
+        winrt::fire_and_forget CheckForUpdatesAsync();
+        winrt::fire_and_forget OpenAppInstallerAsync();
+        void SetUpdateBusy(bool busy, winrt::hstring const& message);
         bool PersistSetting(
             std::string_view key,
             std::string_view value,
@@ -151,6 +154,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::Button m_restoreBackupButton{ nullptr };
         Microsoft::UI::Xaml::Controls::ProgressRing m_backupProgress{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_backupStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_checkUpdateButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_installUpdateButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::ProgressRing m_updateProgress{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_updateStatus{ nullptr };
         Microsoft::UI::Xaml::Window m_hoverPreviewWindow{ nullptr };
         Microsoft::UI::Xaml::Controls::Border m_hoverPreviewRoot{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_hoverPreviewTitle{ nullptr };
@@ -173,6 +180,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_settingsReadOnly{};
         bool m_settingsLoading{};
         bool m_backupBusy{};
+        bool m_updateBusy{};
+        bool m_updateAvailable{};
         bool m_imageAnalysisBusy{};
         bool m_imageAnalysisLoaded{};
         bool m_productionData{};
@@ -188,6 +197,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::optional<std::int64_t> m_imageAnalysisEntryId;
         std::optional<std::int64_t> m_draggedPinnedId;
         std::wstring m_imageAnalysisCopyText;
+        winrt::hstring m_appInstallerUri;
         int m_selectedIndex{-1};
     };
 }
