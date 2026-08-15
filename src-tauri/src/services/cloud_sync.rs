@@ -28,9 +28,17 @@ use tiez_core::cloud_sync_protocol::{
     HASH_VERSION_LEGACY, HASH_VERSION_WHITESPACE,
 };
 use tiez_core::cloud_sync_runner::{
-    should_pull_snapshot as shared_should_pull_snapshot,
+    run_webdav_once as shared_run_webdav_once, should_pull_snapshot as shared_should_pull_snapshot,
     should_run_periodic_snapshot as shared_should_run_periodic_snapshot,
-    update_head_device as shared_update_head_device,
+    update_head_device as shared_update_head_device, CloudSyncHost as SharedCloudSyncHost,
+    CloudSyncHostError as SharedCloudSyncHostError,
+    CloudSyncHostErrorKind as SharedCloudSyncHostErrorKind,
+    CloudSyncHostEvent as SharedCloudSyncHostEvent,
+    CloudSyncLocalDelta as SharedCloudSyncLocalDelta,
+    CloudSyncRunStatus as SharedCloudSyncRunStatus,
+    CloudSyncRunnerConfig as SharedCloudSyncRunnerConfig,
+    CloudSyncRunnerError as SharedCloudSyncRunnerError,
+    CloudSyncRuntimeState as SharedCloudSyncRuntimeState,
 };
 use tiez_core::cloud_sync_webdav::{
     build_webdav_http_client_with_timeout, collection_url as shared_webdav_collection_url,
@@ -64,6 +72,9 @@ const CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY: &str = "cloud_sync_webdav_blob_cache";
 const CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY: &str = "cloud_sync_webdav_last_snapshot_push_at";
 const CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY: &str = "cloud_sync_webdav_last_snapshot_pull_at";
 const CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY: &str = "cloud_sync_webdav_last_head_rebuild_at";
+const CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY: &str = "cloud_sync_settings_applied_at";
+const CLOUD_SYNC_CURSOR_KEY: &str = "cloud_sync_cursor";
+const CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY: &str = "cloud_sync_webdav_use_legacy_runner";
 const BLOB_KIND_IMAGE: &str = "image";
 const BLOB_KIND_CONTENT: &str = "content";
 const BLOB_KIND_HTML: &str = "html";
@@ -128,6 +139,208 @@ struct CloudSyncConfig {
     webdav_password: String,
     webdav_base_path: String,
     content_prefs: CloudSyncContentPrefs,
+}
+
+struct TauriCloudSyncHost {
+    app: AppHandle,
+}
+
+impl TauriCloudSyncHost {
+    fn new(app: &AppHandle) -> Self {
+        Self { app: app.clone() }
+    }
+}
+
+impl SharedCloudSyncHost for TauriCloudSyncHost {
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        cloud_sync_cancel_requested()
+    }
+
+    fn load_runtime_state(
+        &mut self,
+    ) -> Result<SharedCloudSyncRuntimeState, SharedCloudSyncHostError> {
+        Ok(SharedCloudSyncRuntimeState {
+            local_op_seq: get_local_webdav_op_seq(&self.app),
+            op_cursors: load_webdav_op_cursor_map(&self.app).into_iter().collect(),
+            blob_cache: load_webdav_blob_cache(&self.app),
+            last_snapshot_push_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY,
+                0,
+            ),
+            last_snapshot_pull_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY,
+                0,
+            ),
+            last_head_rebuild_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY,
+                0,
+            ),
+            settings_applied_at: get_setting_i64(&self.app, CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY, 0),
+            cursor: get_setting_i64(&self.app, CLOUD_SYNC_CURSOR_KEY, 0),
+        })
+    }
+
+    fn save_runtime_state(
+        &mut self,
+        state: &SharedCloudSyncRuntimeState,
+    ) -> Result<(), SharedCloudSyncHostError> {
+        save_shared_runtime_state(&self.app, state)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn collect_local_items(
+        &mut self,
+        preferences: &CloudSyncContentPrefs,
+    ) -> Result<Vec<CloudSyncItem>, SharedCloudSyncHostError> {
+        collect_local_syncable_items(&self.app, preferences)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn collect_local_delta(
+        &mut self,
+        local_items: &[CloudSyncItem],
+    ) -> Result<SharedCloudSyncLocalDelta, SharedCloudSyncHostError> {
+        collect_local_incremental_items(&self.app, local_items)
+            .map(|(items, collapsed_index)| SharedCloudSyncLocalDelta {
+                items,
+                collapsed_index,
+            })
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn replace_local_index(
+        &mut self,
+        collapsed_index: &BTreeMap<String, CloudSyncItem>,
+    ) -> Result<(), SharedCloudSyncHostError> {
+        replace_local_sync_index(&self.app, collapsed_index)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn apply_remote_items(
+        &mut self,
+        remote_items: &[CloudSyncItem],
+        preferences: &CloudSyncContentPrefs,
+    ) -> Result<usize, SharedCloudSyncHostError> {
+        apply_remote_changes(&self.app, remote_items, preferences)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn prepare_upload_items(
+        &mut self,
+        items: &mut [CloudSyncItem],
+    ) -> Result<(), SharedCloudSyncHostError> {
+        for item in items {
+            *item = normalize_item_for_sync(item.clone()).ok_or_else(|| {
+                SharedCloudSyncHostError::new(
+                    SharedCloudSyncHostErrorKind::Payload,
+                    "prepare cloud sync payload failed",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn materialize_remote_image(
+        &mut self,
+        data_url: &str,
+    ) -> Result<String, SharedCloudSyncHostError> {
+        if let Some(data_dir) = get_app_data_dir(&self.app) {
+            if let Some(path) = crate::database::save_image_to_file(data_url, &data_dir) {
+                return Ok(path);
+            }
+        }
+        Ok(data_url.to_owned())
+    }
+
+    fn collect_syncable_settings(
+        &mut self,
+    ) -> Result<HashMap<String, String>, SharedCloudSyncHostError> {
+        collect_syncable_settings(&self.app)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Settings, error))
+    }
+
+    fn apply_synced_settings(
+        &mut self,
+        incoming: &HashMap<String, String>,
+    ) -> Result<usize, SharedCloudSyncHostError> {
+        apply_synced_settings(&self.app, incoming)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Settings, error))
+    }
+
+    fn next_emoji_operation(&mut self) -> Result<Option<CloudSyncItem>, SharedCloudSyncHostError> {
+        check_and_create_emoji_sync_op(&self.app)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Payload, error))
+    }
+
+    fn mark_emoji_uploaded(&mut self, content_hash: i64) {
+        LAST_PUSHED_EMOJI_HASH.store(content_hash, Ordering::Relaxed);
+    }
+
+    fn emit(&mut self, event: SharedCloudSyncHostEvent) {
+        match event {
+            // The existing outer `sync_once` wrapper remains the single owner of
+            // Tauri status storage and status events during the migration.
+            SharedCloudSyncHostEvent::Status(_) => {}
+            SharedCloudSyncHostEvent::HistoryChanged => {
+                let _ = self.app.emit("clipboard-changed", ());
+            }
+            SharedCloudSyncHostEvent::SettingsChanged => {
+                let _ = self.app.emit("settings-changed", ());
+            }
+        }
+    }
+}
+
+fn shared_host_error(
+    kind: SharedCloudSyncHostErrorKind,
+    error: impl std::fmt::Display,
+) -> SharedCloudSyncHostError {
+    SharedCloudSyncHostError::new(kind, error.to_string())
+}
+
+fn shared_runner_config(cfg: &CloudSyncConfig) -> SharedCloudSyncRunnerConfig {
+    SharedCloudSyncRunnerConfig::new(
+        &cfg.device_id,
+        &cfg.webdav_url,
+        &cfg.webdav_username,
+        &cfg.webdav_password,
+        &cfg.webdav_base_path,
+        cfg.interval_secs,
+        cfg.snapshot_interval_secs,
+        cfg.content_prefs.clone(),
+    )
+}
+
+fn shared_status_to_tauri(status: SharedCloudSyncRunStatus) -> CloudSyncStatus {
+    CloudSyncStatus {
+        state: status.state,
+        running: status.running,
+        last_sync_at: status.last_sync_at,
+        last_error: status.last_error,
+        uploaded_items: status.uploaded_items,
+        received_items: status.received_items,
+    }
+}
+
+fn map_shared_runner_error(error: SharedCloudSyncRunnerError) -> AppError {
+    match error {
+        SharedCloudSyncRunnerError::Transport(error) => map_webdav_transport_error(error),
+        SharedCloudSyncRunnerError::Protocol(message) => AppError::Validation(message),
+        SharedCloudSyncRunnerError::Host(error) => match error.kind() {
+            SharedCloudSyncHostErrorKind::Storage => AppError::Database(error.to_string()),
+            SharedCloudSyncHostErrorKind::Payload => AppError::Validation(error.to_string()),
+            SharedCloudSyncHostErrorKind::Settings | SharedCloudSyncHostErrorKind::Internal => {
+                AppError::Internal(error.to_string())
+            }
+        },
+    }
 }
 
 type LocalSyncEntryState = (
@@ -445,6 +658,7 @@ fn is_setting_sync_eligible(key: &str) -> bool {
             | "cloud_sync_webdav_last_snapshot_pull_at"
             | "cloud_sync_webdav_last_head_rebuild_at"
             | "cloud_sync_settings_applied_at"
+            | "cloud_sync_webdav_use_legacy_runner"
     )
 }
 
@@ -1155,6 +1369,60 @@ fn save_webdav_blob_cache(app: &AppHandle, cache: &HashMap<String, i64>) {
             .settings_repo
             .set(CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY, &payload);
     }
+}
+
+fn save_shared_runtime_state(
+    app: &AppHandle,
+    state: &SharedCloudSyncRuntimeState,
+) -> AppResult<()> {
+    let cursor_map = serde_json::to_string(&state.op_cursors)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let blob_cache = serde_json::to_string(&state.blob_cache)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let values = [
+        (
+            CLOUD_SYNC_WEBDAV_LOCAL_SEQ_KEY,
+            state.local_op_seq.to_string(),
+        ),
+        (CLOUD_SYNC_WEBDAV_OP_CURSOR_MAP_KEY, cursor_map),
+        (CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY, blob_cache),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY,
+            state.last_snapshot_push_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY,
+            state.last_snapshot_pull_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY,
+            state.last_head_rebuild_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY,
+            state.settings_applied_at.to_string(),
+        ),
+        (CLOUD_SYNC_CURSOR_KEY, state.cursor.to_string()),
+    ];
+
+    let db_state = app
+        .try_state::<DbState>()
+        .ok_or_else(|| AppError::Internal("DB state unavailable".to_owned()))?;
+    let mut connection = db_state
+        .conn
+        .lock()
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let transaction = connection.transaction().map_err(AppError::from)?;
+    for (key, value) in values {
+        transaction
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map_err(AppError::from)?;
+    }
+    transaction.commit().map_err(AppError::from)
 }
 
 fn get_app_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -3079,6 +3347,36 @@ async fn sync_once_http(app: &AppHandle, cfg: &CloudSyncConfig) -> AppResult<Clo
     })
 }
 
+fn use_legacy_webdav_runner(app: &AppHandle) -> bool {
+    app.try_state::<DbState>()
+        .and_then(|db| {
+            db.settings_repo
+                .get(CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY)
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|value| legacy_webdav_runner_requested(&value))
+}
+
+fn legacy_webdav_runner_requested(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("true")
+}
+
+async fn sync_once_webdav_shared(
+    app: &AppHandle,
+    cfg: &CloudSyncConfig,
+    force_snapshot: bool,
+) -> AppResult<CloudSyncStatus> {
+    let mut host = TauriCloudSyncHost::new(app);
+    let status = shared_run_webdav_once(&mut host, &shared_runner_config(cfg), force_snapshot)
+        .await
+        .map_err(map_shared_runner_error)?;
+    if let Some(timestamp) = status.last_sync_at {
+        CLOUD_SYNC_LAST_SYNC_AT.store(timestamp, Ordering::Relaxed);
+    }
+    Ok(shared_status_to_tauri(status))
+}
+
 async fn sync_once_webdav(
     app: &AppHandle,
     cfg: &CloudSyncConfig,
@@ -3336,7 +3634,10 @@ async fn sync_once(
 
     let result = match cfg.provider {
         CloudSyncProvider::Http => sync_once_http(app, cfg).await,
-        CloudSyncProvider::WebDav => sync_once_webdav(app, cfg, force_snapshot).await,
+        CloudSyncProvider::WebDav if use_legacy_webdav_runner(app) => {
+            sync_once_webdav(app, cfg, force_snapshot).await
+        }
+        CloudSyncProvider::WebDav => sync_once_webdav_shared(app, cfg, force_snapshot).await,
     };
 
     match result {
@@ -3674,11 +3975,13 @@ mod tests {
         apply_remote_emoji_item, apply_remote_live_item_with_conn,
         apply_remote_tombstone_with_conn, canonicalize_incoming_live_hash,
         clear_matching_tombstones, collapse_items_by_sync_key, decode_persisted_sync_text,
-        emoji_sync_payload_hash, find_existing_entry_for_sync, load_persisted_sync_item,
-        matching_tombstone_deleted_at, merged_emoji_suppression_hash, normalize_item_for_sync,
-        record_remote_sync_digest, remote_tombstone_matches_stored_entry,
-        rewrite_rich_html_resources_for_sync, sync_digest_for_item, sync_key_for_item,
-        update_existing_entry_from_sync, CloudSyncItem, HASH_VERSION_LEGACY,
+        emoji_sync_payload_hash, find_existing_entry_for_sync, is_setting_sync_eligible,
+        legacy_webdav_runner_requested, load_persisted_sync_item, matching_tombstone_deleted_at,
+        merged_emoji_suppression_hash, normalize_item_for_sync, record_remote_sync_digest,
+        remote_tombstone_matches_stored_entry, rewrite_rich_html_resources_for_sync,
+        shared_runner_config, shared_status_to_tauri, sync_digest_for_item, sync_key_for_item,
+        update_existing_entry_from_sync, CloudSyncConfig, CloudSyncItem, CloudSyncProvider,
+        SharedCloudSyncRunStatus, CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY, HASH_VERSION_LEGACY,
         HASH_VERSION_WHITESPACE, RICH_IMAGE_FALLBACK_PREFIX, RICH_IMAGE_FALLBACK_SUFFIX,
     };
     use crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository;
@@ -3724,6 +4027,48 @@ mod tests {
             use_count: 0,
             pinned_order: 0,
         }
+    }
+
+    #[test]
+    fn shared_runner_adapter_preserves_config_and_status_contracts() {
+        let config = CloudSyncConfig {
+            enabled: true,
+            auto_sync: true,
+            provider: CloudSyncProvider::WebDav,
+            base_url: String::new(),
+            api_key: String::new(),
+            device_id: "aaaaaaaa".to_owned(),
+            interval_secs: 120,
+            snapshot_interval_secs: 43_200,
+            cursor: 0,
+            webdav_url: "https://dav.example.test/root".to_owned(),
+            webdav_username: "user".to_owned(),
+            webdav_password: "secret".to_owned(),
+            webdav_base_path: "tiez-sync".to_owned(),
+            content_prefs: super::CloudSyncContentPrefs::default(),
+        };
+        let shared = shared_runner_config(&config);
+        assert_eq!(shared.device_id, config.device_id);
+        assert_eq!(shared.webdav_url, config.webdav_url);
+        assert_eq!(shared.webdav_username, config.webdav_username);
+        assert_eq!(shared.webdav_password, config.webdav_password);
+        assert_eq!(shared.snapshot_interval_secs, 43_200);
+
+        let status = shared_status_to_tauri(SharedCloudSyncRunStatus::idle(42, 2, 3));
+        assert_eq!(status.state, "idle");
+        assert_eq!(status.last_sync_at, Some(42));
+        assert_eq!(status.uploaded_items, 2);
+        assert_eq!(status.received_items, 3);
+    }
+
+    #[test]
+    fn legacy_runner_escape_hatch_is_local_only_and_strict() {
+        assert!(legacy_webdav_runner_requested(" TRUE "));
+        assert!(!legacy_webdav_runner_requested("1"));
+        assert!(!legacy_webdav_runner_requested("false"));
+        assert!(!is_setting_sync_eligible(
+            CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY
+        ));
     }
 
     #[test]
