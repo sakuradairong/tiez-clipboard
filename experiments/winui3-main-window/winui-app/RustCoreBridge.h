@@ -58,6 +58,12 @@ namespace tiez::probe
         bool StartCloudSync() const;
         bool RequestCloudSync() const;
         void StopCloudSync() const noexcept;
+        [[nodiscard]] std::string FileTransfer() const;
+        [[nodiscard]] std::string UpdateFileTransfer(std::string_view requestJson) const;
+        bool StartFileTransfer() const;
+        void StopFileTransfer() const noexcept;
+        [[nodiscard]] std::string SendTransferText(std::string_view text) const;
+        [[nodiscard]] std::string ShareTransferFiles(std::string_view pathsJson) const;
         void SetChangedCallback(TiezChangedCallback callback, void* userData) const;
         bool StartCapture() const;
         [[nodiscard]] std::uint32_t AbiVersion() const noexcept;
@@ -131,6 +137,12 @@ namespace tiez::probe
         CloudSyncLifecycleFn m_startCloudSync{};
         CloudSyncLifecycleFn m_requestCloudSync{};
         StopCloudSyncFn m_stopCloudSync{};
+        SettingsJsonFn m_fileTransferJson{};
+        JsonRequestFn m_updateFileTransferJson{};
+        CloudSyncLifecycleFn m_startFileTransfer{};
+        StopCloudSyncFn m_stopFileTransfer{};
+        JsonRequestFn m_sendTransferTextJson{};
+        JsonRequestFn m_shareTransferFilesJson{};
         SetChangedCallbackFn m_setChangedCallback{};
         StartCaptureFn m_startCapture{};
         TakeLastErrorFn m_takeLastError{};

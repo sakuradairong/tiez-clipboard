@@ -32,6 +32,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void TagButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void FileTransferButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void HideButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -123,6 +126,14 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::fire_and_forget ConfirmClearHistoryAsync();
         winrt::fire_and_forget ShowEmojiPickerAsync();
         winrt::fire_and_forget ShowTagManagerAsync();
+        winrt::fire_and_forget ShowFileTransferAsync();
+        winrt::fire_and_forget LoadFileTransferQrAsync(winrt::hstring base64Png);
+        void EnsureFileTransferDialog();
+        void RefreshFileTransfer();
+        void ApplyFileTransferSnapshot(Windows::Data::Json::JsonObject const& response);
+        winrt::fire_and_forget SaveFileTransferSettings(bool enabled);
+        winrt::fire_and_forget SendFileTransferText();
+        winrt::fire_and_forget ShareFileTransferFiles();
         winrt::Windows::Foundation::IAsyncOperation<winrt::hstring> RunRustOperationAsync(
             std::function<std::string()> operation);
         void EnsureSettingsDialog();
@@ -171,6 +182,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::shared_ptr<HistoryRefreshSink> m_refreshSink;
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_showTimer{ nullptr };
         Microsoft::UI::Dispatching::DispatcherQueueTimer m_cloudSyncStatusTimer{ nullptr };
+        Microsoft::UI::Dispatching::DispatcherQueueTimer m_fileTransferTimer{ nullptr };
+        Microsoft::UI::Xaml::Controls::ContentDialog m_fileTransferDialog{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_fileTransferStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::Image m_fileTransferQrImage{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_fileTransferUrlText{ nullptr };
+        Microsoft::UI::Xaml::Controls::NumberBox m_fileTransferPortNumber{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_fileTransferPathText{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_fileTransferAutoCopyToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_fileTransferAutoOpenToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_fileTransferAutoCloseToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferToggleButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferSaveButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferCopyUrlButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferOpenUrlButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_fileTransferMessageText{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferSendButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_fileTransferShareButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_fileTransferDevicesText{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel m_fileTransferMessagesPanel{ nullptr };
         Microsoft::UI::Xaml::Controls::ContentDialog m_settingsDialog{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel m_settingsPanel{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox m_colorModeCombo{ nullptr };
@@ -244,6 +274,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_autostartPreference{ true };
         bool m_startHidden{};
         bool m_cloudSyncBusy{};
+        bool m_fileTransferRunning{};
+        bool m_fileTransferReadOnly{};
+        bool m_fileTransferLoading{};
         bool m_cloudSyncPasswordConfigured{};
         std::uint64_t m_cloudSyncSettingsRevision{};
         bool m_backupBusy{};
@@ -258,6 +291,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::string m_typeFilter;
         winrt::hstring m_configuredHotkey{ L"Alt+C" };
         winrt::hstring m_registeredHotkey;
+        winrt::hstring m_fileTransferQrBase64;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;
         std::vector<Microsoft::UI::Xaml::Controls::Border> m_cards;

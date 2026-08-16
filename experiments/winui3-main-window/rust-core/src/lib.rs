@@ -30,6 +30,7 @@ use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
 use tiez_core::emoji_favorites::{EmojiFavorites, EmojiFavoritesMutation, EmojiFavoritesSnapshot};
+use tiez_core::file_transfer::{FileTransferPreferences, FileTransferPreferencesUpdate};
 use tiez_core::image_analysis::{
     analyze_image_entry_from_database, get_image_analysis_from_database, ImageAnalysisResult,
 };
@@ -42,13 +43,15 @@ use tiez_core::tag_catalog::{
 };
 
 mod cloud_sync_service;
+mod file_transfer_service;
 mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
+use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
 
-const ABI_VERSION: u32 = 15;
+const ABI_VERSION: u32 = 16;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -82,6 +85,7 @@ pub struct TiezCoreHandle {
     tag_catalog: Mutex<TagCatalog>,
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
+    file_transfer: NativeFileTransferService,
     session: Mutex<Option<win32_capture::Session>>,
 }
 
@@ -100,17 +104,23 @@ impl TiezCoreHandle {
         settings: NativeSettings,
         cloud_settings: CloudSyncSettings,
     ) -> Self {
+        let inner = Arc::new(TiezCoreInner {
+            history: Mutex::new(history),
+            settings: Mutex::new(settings),
+            capture: Mutex::new(CaptureFilter::new()),
+            changed: Mutex::new(None),
+        });
+        let file_transfer = NativeFileTransferService::new(
+            FileTransferPreferences::in_memory(default_file_transfer_directory()),
+            file_transfer_receiver(Arc::clone(&inner)),
+        );
         Self {
-            inner: Arc::new(TiezCoreInner {
-                history: Mutex::new(history),
-                settings: Mutex::new(settings),
-                capture: Mutex::new(CaptureFilter::new()),
-                changed: Mutex::new(None),
-            }),
+            inner,
             emoji_favorites: Mutex::new(EmojiFavorites::in_memory()),
             tag_catalog: Mutex::new(TagCatalog::in_memory()),
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
+            file_transfer,
             session: Mutex::new(None),
         }
     }
@@ -172,8 +182,66 @@ impl TiezCoreHandle {
                         notify_changed(&inner, generation);
                     }
                 });
+            handle.file_transfer = NativeFileTransferService::new(
+                FileTransferPreferences::open_sqlite(
+                    &database_path,
+                    default_file_transfer_directory(),
+                    read_only,
+                )
+                .map_err(|error| format!("{}: {error}", database_path.display()))?,
+                file_transfer_receiver(Arc::clone(&handle.inner)),
+            );
+            let should_start_file_transfer = handle
+                .file_transfer
+                .snapshot()
+                .map(|snapshot| snapshot.preferences.enabled && !snapshot.preferences.read_only)
+                .unwrap_or(false);
+            if should_start_file_transfer {
+                if let Err(error) = handle.file_transfer.start() {
+                    eprintln!(">>> [FILE TRANSFER] {error}");
+                }
+            }
         }
         Ok(handle)
+    }
+}
+
+fn default_file_transfer_directory() -> PathBuf {
+    env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads").join("TieZ"))
+        .unwrap_or_else(|| env::temp_dir().join("TieZ").join("接收"))
+}
+
+fn file_transfer_receiver(
+    inner: Arc<TiezCoreInner>,
+) -> impl Fn(ReceivedTransfer) -> Result<(), String> + Send + Sync + 'static {
+    move |received| {
+        let mutation = {
+            let mut history = inner
+                .history
+                .lock()
+                .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+            match received {
+                ReceivedTransfer::Text {
+                    content,
+                    sender_name,
+                } => history
+                    .ingest_text(content, sender_name)
+                    .map_err(|error| error.to_string())?,
+                ReceivedTransfer::File { path, sender_name } => history
+                    .ingest(
+                        CapturedPayload::Files {
+                            paths: vec![path.to_string_lossy().into_owned()],
+                        },
+                        sender_name,
+                    )
+                    .map_err(|error| error.to_string())?,
+            }
+        };
+        notify_changed(&inner, mutation.generation);
+        Ok(())
     }
 }
 
@@ -331,6 +399,13 @@ struct CloudSyncStatusResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct FileTransferResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a FileTransferSnapshot,
+}
+
+#[derive(Serialize)]
 struct OpenContentResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -467,6 +542,14 @@ fn cloud_sync_status_json(status: &NativeCloudSyncStatus) -> Result<String, Stri
         status,
     })
     .map_err(|error| format!("failed to serialize cloud-sync status: {error}"))
+}
+
+fn file_transfer_json(snapshot: &FileTransferSnapshot) -> Result<String, String> {
+    serde_json::to_string(&FileTransferResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize file-transfer snapshot: {error}"))
 }
 
 fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
@@ -1227,6 +1310,7 @@ pub unsafe extern "C" fn tiez_core_destroy(handle: *mut TiezCoreHandle) {
         // transferred back exactly once by this function. Drop the listener
         // and cloud worker before the inner Arc or DLL can be unloaded.
         let boxed = unsafe { Box::from_raw(handle) };
+        boxed.file_transfer.stop();
         boxed.cloud_sync.stop();
         if let Ok(mut session) = boxed.session.lock() {
             session.take();
@@ -1928,6 +2012,110 @@ pub unsafe extern "C" fn tiez_core_stop_cloud_sync(handle: *mut TiezCoreHandle) 
             set_last_error("handle must not be null");
         }
     });
+}
+
+#[no_mangle]
+/// Returns pairing status, compatible preferences, devices, and capped chat history.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_file_transfer_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle.file_transfer.snapshot()?;
+        into_owned_c_string(file_transfer_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Updates validated transfer settings and applies an explicit enabled toggle.
+///
+/// # Safety
+/// `handle` must be live and `request_json_utf8` must be readable UTF-8 JSON.
+pub unsafe extern "C" fn tiez_core_update_file_transfer_json(
+    handle: *mut TiezCoreHandle,
+    request_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let request_json = required_utf8(request_json_utf8, "request_json_utf8")?;
+        let update = serde_json::from_str::<FileTransferPreferencesUpdate>(&request_json)
+            .map_err(|error| format!("文件传输设置 JSON 无效：{error}"))?;
+        let snapshot = handle.file_transfer.update_preferences(update)?;
+        into_owned_c_string(file_transfer_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Starts the authenticated LAN server using saved preferences.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_start_file_transfer(handle: *mut TiezCoreHandle) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        handle.file_transfer.start()?;
+        Ok(true)
+    })
+}
+
+#[no_mangle]
+/// Stops and joins the LAN server before returning.
+///
+/// # Safety
+/// `handle` must be null or point to a live handle.
+pub unsafe extern "C" fn tiez_core_stop_file_transfer(handle: *mut TiezCoreHandle) {
+    catch_ffi((), || {
+        if let Some(handle) = unsafe { handle.as_ref() } {
+            handle.file_transfer.stop();
+        }
+    });
+}
+
+#[no_mangle]
+/// Adds a PC-to-mobile text message and returns the refreshed snapshot.
+///
+/// # Safety
+/// `handle` must be live and `text_utf8` must be readable UTF-8.
+pub unsafe extern "C" fn tiez_core_send_transfer_text_json(
+    handle: *mut TiezCoreHandle,
+    text_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let text = required_utf8(text_utf8, "text_utf8")?;
+        let snapshot = handle.file_transfer.send_text(&text)?;
+        into_owned_c_string(file_transfer_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Registers local files as authenticated streaming downloads.
+///
+/// # Safety
+/// `handle` must be live and `paths_json_utf8` must be a readable JSON string array.
+pub unsafe extern "C" fn tiez_core_share_transfer_files_json(
+    handle: *mut TiezCoreHandle,
+    paths_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let paths_json = required_utf8(paths_json_utf8, "paths_json_utf8")?;
+        let paths = serde_json::from_str::<Vec<String>>(&paths_json)
+            .map_err(|error| format!("共享文件路径 JSON 无效：{error}"))?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let snapshot = handle.file_transfer.share_files(paths)?;
+        into_owned_c_string(file_transfer_json(&snapshot)?)
+    })
 }
 
 #[no_mangle]

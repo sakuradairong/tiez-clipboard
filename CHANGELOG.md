@@ -38,6 +38,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - WinUI ABI v13 adds transient UTF-8 text paste for a Chinese native Emoji picker; its ten grouped categories are keyboard and Narrator reachable, paste through the shared Rust coordinator, and do not create a synthetic history row.
 - WinUI ABI v14 adds native image-Emoji favorites: the Chinese picker previews, imports, removes, and pastes PNG, JPEG, GIF, and WebP files through the shared Rust core while preserving the existing `app.emoji_favorites`, `emoji_favorites/`, backup, and WebDAV-sync contracts. Read-only adapters disable mutations, imported bytes are validated and size-limited, and external source files are never deleted.
 - WinUI ABI v15 adds a Chinese native tag manager backed by a Tauri-compatible shared tag catalog. It lists saved and entry-derived tags with counts and colors, searches exact tagged entries, creates and recolors tags, adds whitespace-preserving manual text to ordinary tags, and safely renames or permanently deletes a tag's records through existing privacy, tombstone, attachment-cleanup, and WebDAV-sync paths. Built-in privacy tags cannot be renamed, deleted, or used for the two-step manual-text action, sensitive previews stay redacted, read-only adapters disable mutations, and exact-entry views report their total while capping one response at 1,000 records.
+- WinUI ABI v16 adds a Chinese native LAN-transfer panel with start/stop state, pairing QR and link, compatible receive settings, active devices, recent messages, PC-to-device text/file sharing, and device-to-PC text/direct/chunked uploads. The Rust-owned service reuses the existing `file_server_*` and `file_transfer_*` database keys, can add received content to native clipboard history, supports five-minute idle shutdown, and stops synchronously before the DLL unloads.
 
 ### Changed
 
@@ -72,6 +73,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native WebDAV setup never returns saved passwords through the ABI, commits compatible settings transactionally, requires HTTPS except for loopback tests, rejects credential-bearing URLs and redirects, and uses a read-only `PROPFIND` without writing remote data.
 - Native MSIX packaging disables AppData write virtualization and verifies the required capability so installed WinUI builds continue using the Tauri-compatible data directory instead of package-private clipboard history.
 - Sensitive WinUI cards suppress their preview value from all newly assigned UI Automation names and announce only that the preview is hidden.
+- Native LAN transfer now uses a fresh 128-bit pairing token for every server run and requires it on every page, API, upload, and download request. The shared policy strips path components and Windows device names, generates temporary paths internally, confines unique receive paths to the selected directory, enforces text/file/chunk/session limits and strict chunk order/size consistency, caps chat history, and removes unfinished parts during shutdown; read-only data mode cannot start the server.
 
 ### Fixed
 

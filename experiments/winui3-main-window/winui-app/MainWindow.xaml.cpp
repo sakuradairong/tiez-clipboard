@@ -576,6 +576,81 @@ namespace
         return selected;
     }
 
+    std::vector<std::filesystem::path> SelectTransferFilePaths(HWND owner)
+    {
+        winrt::com_ptr<IFileOpenDialog> dialog;
+        winrt::check_hresult(CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            __uuidof(IFileOpenDialog),
+            dialog.put_void()));
+        winrt::check_hresult(dialog->SetTitle(L"选择要通过 TieZ 共享的文件"));
+        FILEOPENDIALOGOPTIONS options{};
+        winrt::check_hresult(dialog->GetOptions(&options));
+        winrt::check_hresult(dialog->SetOptions(
+            options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST
+            | FOS_FILEMUSTEXIST | FOS_ALLOWMULTISELECT));
+        auto const shown = dialog->Show(owner);
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        {
+            return {};
+        }
+        winrt::check_hresult(shown);
+        winrt::com_ptr<IShellItemArray> results;
+        winrt::check_hresult(dialog->GetResults(results.put()));
+        DWORD count{};
+        winrt::check_hresult(results->GetCount(&count));
+        std::vector<std::filesystem::path> selected;
+        selected.reserve(count);
+        for (DWORD index = 0; index < count; ++index)
+        {
+            winrt::com_ptr<IShellItem> item;
+            winrt::check_hresult(results->GetItemAt(index, item.put()));
+            PWSTR rawPath{};
+            winrt::check_hresult(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath));
+            if (rawPath != nullptr)
+            {
+                selected.emplace_back(rawPath);
+                CoTaskMemFree(rawPath);
+            }
+        }
+        return selected;
+    }
+
+    std::optional<std::filesystem::path> SelectTransferFolder(HWND owner)
+    {
+        winrt::com_ptr<IFileOpenDialog> dialog;
+        winrt::check_hresult(CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            __uuidof(IFileOpenDialog),
+            dialog.put_void()));
+        winrt::check_hresult(dialog->SetTitle(L"选择 TieZ 文件接收目录"));
+        FILEOPENDIALOGOPTIONS options{};
+        winrt::check_hresult(dialog->GetOptions(&options));
+        winrt::check_hresult(dialog->SetOptions(
+            options | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_PICKFOLDERS));
+        auto const shown = dialog->Show(owner);
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        {
+            return std::nullopt;
+        }
+        winrt::check_hresult(shown);
+        winrt::com_ptr<IShellItem> result;
+        winrt::check_hresult(dialog->GetResult(result.put()));
+        PWSTR rawPath{};
+        winrt::check_hresult(result->GetDisplayName(SIGDN_FILESYSPATH, &rawPath));
+        if (rawPath == nullptr)
+        {
+            return std::nullopt;
+        }
+        std::filesystem::path selected{ rawPath };
+        CoTaskMemFree(rawPath);
+        return selected;
+    }
+
     winrt::hstring BackupSummary(
         winrt::Windows::Data::Json::JsonObject const& information,
         std::wstring_view prefix)
@@ -959,6 +1034,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_cloudSyncStatusTimer.Stop();
             m_cloudSyncStatusTimer = nullptr;
         }
+        if (m_fileTransferTimer)
+        {
+            m_fileTransferTimer.Stop();
+            m_fileTransferTimer = nullptr;
+        }
         HideHoverPreview();
         if (m_hoverPreviewWindow)
         {
@@ -1067,6 +1147,507 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::TagButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         ShowTagManagerAsync();
+    }
+
+    void MainWindow::FileTransferButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ShowFileTransferAsync();
+    }
+
+    void MainWindow::EnsureFileTransferDialog()
+    {
+        if (m_fileTransferDialog)
+        {
+            return;
+        }
+
+        m_fileTransferDialog = ContentDialog{};
+        m_fileTransferDialog.Title(winrt::box_value(L"局域网文件传输"));
+        m_fileTransferDialog.CloseButtonText(L"关闭");
+        m_fileTransferDialog.DefaultButton(ContentDialogButton::Close);
+        m_fileTransferDialog.MinWidth(760);
+
+        StackPanel content;
+        content.Spacing(14);
+
+        m_fileTransferStatus = TextBlock{};
+        m_fileTransferStatus.TextWrapping(TextWrapping::Wrap);
+        m_fileTransferStatus.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(m_fileTransferStatus);
+
+        Grid pairing;
+        pairing.ColumnSpacing(18);
+        ColumnDefinition qrColumn;
+        qrColumn.Width(GridLengthHelper::Auto());
+        ColumnDefinition linkColumn;
+        linkColumn.Width(GridLength{ 1, GridUnitType::Star });
+        pairing.ColumnDefinitions().Append(qrColumn);
+        pairing.ColumnDefinitions().Append(linkColumn);
+
+        m_fileTransferQrImage = Image{};
+        m_fileTransferQrImage.Width(180);
+        m_fileTransferQrImage.Height(180);
+        m_fileTransferQrImage.Stretch(Stretch::Uniform);
+        AutomationProperties::SetName(m_fileTransferQrImage, L"局域网传输配对二维码");
+        pairing.Children().Append(m_fileTransferQrImage);
+
+        StackPanel linkPanel;
+        linkPanel.Spacing(8);
+        TextBlock pairingHint;
+        pairingHint.Text(L"在同一局域网的手机上扫描二维码，或复制配对链接。每次启动都会生成新的随机令牌。链接仅在本次运行有效。");
+        pairingHint.TextWrapping(TextWrapping::Wrap);
+        linkPanel.Children().Append(pairingHint);
+        m_fileTransferUrlText = TextBox{};
+        m_fileTransferUrlText.IsReadOnly(true);
+        m_fileTransferUrlText.TextWrapping(TextWrapping::Wrap);
+        m_fileTransferUrlText.PlaceholderText(L"启动后显示配对链接");
+        AutomationProperties::SetName(m_fileTransferUrlText, L"局域网传输配对链接");
+        linkPanel.Children().Append(m_fileTransferUrlText);
+        StackPanel linkButtons;
+        linkButtons.Orientation(Orientation::Horizontal);
+        linkButtons.Spacing(8);
+        m_fileTransferToggleButton = Button{};
+        m_fileTransferToggleButton.Content(winrt::box_value(L"启动传输"));
+        m_fileTransferToggleButton.Click([this](auto const&, auto const&)
+        {
+            SaveFileTransferSettings(!m_fileTransferRunning);
+        });
+        linkButtons.Children().Append(m_fileTransferToggleButton);
+        m_fileTransferCopyUrlButton = Button{};
+        m_fileTransferCopyUrlButton.Content(winrt::box_value(L"复制链接"));
+        m_fileTransferCopyUrlButton.Click([this](auto const&, auto const&)
+        {
+            if (m_fileTransferUrlText.Text().empty()) return;
+            DataPackage package;
+            package.SetText(m_fileTransferUrlText.Text());
+            Clipboard::SetContent(package);
+            Clipboard::Flush();
+            SetStatus(L"已复制局域网传输配对链接。");
+        });
+        linkButtons.Children().Append(m_fileTransferCopyUrlButton);
+        m_fileTransferOpenUrlButton = Button{};
+        m_fileTransferOpenUrlButton.Content(winrt::box_value(L"在浏览器打开"));
+        m_fileTransferOpenUrlButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_fileTransferUrlText.Text().empty())
+            {
+                (void)Windows::System::Launcher::LaunchUriAsync(
+                    Windows::Foundation::Uri{ m_fileTransferUrlText.Text() });
+            }
+        });
+        linkButtons.Children().Append(m_fileTransferOpenUrlButton);
+        linkPanel.Children().Append(linkButtons);
+        Grid::SetColumn(linkPanel, 1);
+        pairing.Children().Append(linkPanel);
+        content.Children().Append(pairing);
+
+        TextBlock settingsTitle;
+        settingsTitle.Text(L"接收设置");
+        settingsTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(settingsTitle);
+
+        m_fileTransferPortNumber = NumberBox{};
+        m_fileTransferPortNumber.Header(winrt::box_value(L"监听端口（1–65535）"));
+        m_fileTransferPortNumber.Minimum(1);
+        m_fileTransferPortNumber.Maximum(65535);
+        m_fileTransferPortNumber.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+        content.Children().Append(m_fileTransferPortNumber);
+
+        Grid pathRow;
+        pathRow.ColumnSpacing(8);
+        ColumnDefinition pathColumn;
+        pathColumn.Width(GridLength{ 1, GridUnitType::Star });
+        ColumnDefinition browseColumn;
+        browseColumn.Width(GridLengthHelper::Auto());
+        pathRow.ColumnDefinitions().Append(pathColumn);
+        pathRow.ColumnDefinitions().Append(browseColumn);
+        m_fileTransferPathText = TextBox{};
+        m_fileTransferPathText.Header(winrt::box_value(L"文件接收目录"));
+        m_fileTransferPathText.PlaceholderText(L"选择接收目录");
+        pathRow.Children().Append(m_fileTransferPathText);
+        Button browseFolder;
+        browseFolder.Content(winrt::box_value(L"选择目录"));
+        browseFolder.VerticalAlignment(VerticalAlignment::Bottom);
+        browseFolder.Click([this](auto const&, auto const&)
+        {
+            if (auto const selected = SelectTransferFolder(GetWindowHandle()))
+            {
+                m_fileTransferPathText.Text(winrt::hstring{ selected->wstring() });
+            }
+        });
+        Grid::SetColumn(browseFolder, 1);
+        pathRow.Children().Append(browseFolder);
+        content.Children().Append(pathRow);
+
+        m_fileTransferAutoCopyToggle = ToggleSwitch{};
+        m_fileTransferAutoCopyToggle.Header(winrt::box_value(L"收到内容后加入剪贴板历史"));
+        content.Children().Append(m_fileTransferAutoCopyToggle);
+        m_fileTransferAutoOpenToggle = ToggleSwitch{};
+        m_fileTransferAutoOpenToggle.Header(winrt::box_value(L"收到文件后在资源管理器中显示"));
+        content.Children().Append(m_fileTransferAutoOpenToggle);
+        m_fileTransferAutoCloseToggle = ToggleSwitch{};
+        m_fileTransferAutoCloseToggle.Header(winrt::box_value(L"5 分钟无活动后自动关闭"));
+        content.Children().Append(m_fileTransferAutoCloseToggle);
+        m_fileTransferSaveButton = Button{};
+        m_fileTransferSaveButton.Content(winrt::box_value(L"保存接收设置"));
+        m_fileTransferSaveButton.HorizontalAlignment(HorizontalAlignment::Left);
+        m_fileTransferSaveButton.Click([this](auto const&, auto const&)
+        {
+            SaveFileTransferSettings(m_fileTransferRunning);
+        });
+        content.Children().Append(m_fileTransferSaveButton);
+
+        TextBlock sendTitle;
+        sendTitle.Text(L"从电脑发送");
+        sendTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(sendTitle);
+        m_fileTransferMessageText = TextBox{};
+        m_fileTransferMessageText.AcceptsReturn(true);
+        m_fileTransferMessageText.MinHeight(80);
+        m_fileTransferMessageText.TextWrapping(TextWrapping::Wrap);
+        m_fileTransferMessageText.PlaceholderText(L"输入要发送到手机的文字");
+        content.Children().Append(m_fileTransferMessageText);
+        StackPanel sendButtons;
+        sendButtons.Orientation(Orientation::Horizontal);
+        sendButtons.Spacing(8);
+        m_fileTransferSendButton = Button{};
+        m_fileTransferSendButton.Content(winrt::box_value(L"发送文字"));
+        m_fileTransferSendButton.Click([this](auto const&, auto const&)
+        {
+            SendFileTransferText();
+        });
+        sendButtons.Children().Append(m_fileTransferSendButton);
+        m_fileTransferShareButton = Button{};
+        m_fileTransferShareButton.Content(winrt::box_value(L"选择并共享文件"));
+        m_fileTransferShareButton.Click([this](auto const&, auto const&)
+        {
+            ShareFileTransferFiles();
+        });
+        sendButtons.Children().Append(m_fileTransferShareButton);
+        content.Children().Append(sendButtons);
+
+        m_fileTransferDevicesText = TextBlock{};
+        m_fileTransferDevicesText.TextWrapping(TextWrapping::Wrap);
+        m_fileTransferDevicesText.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        content.Children().Append(m_fileTransferDevicesText);
+
+        TextBlock messagesTitle;
+        messagesTitle.Text(L"最近消息");
+        messagesTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(messagesTitle);
+        m_fileTransferMessagesPanel = StackPanel{};
+        m_fileTransferMessagesPanel.Spacing(6);
+        content.Children().Append(m_fileTransferMessagesPanel);
+
+        ScrollViewer scroller;
+        scroller.MaxHeight(650);
+        scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroller.Content(content);
+        m_fileTransferDialog.Content(scroller);
+
+        m_fileTransferTimer = DispatcherQueue().CreateTimer();
+        m_fileTransferTimer.Interval(std::chrono::seconds(2));
+        m_fileTransferTimer.IsRepeating(true);
+        m_fileTransferTimer.Tick([this](auto const&, auto const&)
+        {
+            if (m_fileTransferDialog && !m_fileTransferLoading)
+            {
+                RefreshFileTransfer();
+            }
+        });
+    }
+
+    winrt::fire_and_forget MainWindow::ShowFileTransferAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法打开局域网传输。");
+            co_return;
+        }
+        try
+        {
+            m_suspendLifecycle = true;
+            EnsureFileTransferDialog();
+            m_fileTransferDialog.XamlRoot(RootGrid().XamlRoot());
+            RefreshFileTransfer();
+            m_fileTransferTimer.Start();
+            co_await m_fileTransferDialog.ShowAsync();
+            m_fileTransferTimer.Stop();
+            m_suspendLifecycle = false;
+            SearchBox().Focus(FocusState::Programmatic);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            if (m_fileTransferTimer) m_fileTransferTimer.Stop();
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"无法打开局域网传输：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            if (m_fileTransferTimer) m_fileTransferTimer.Stop();
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"无法打开局域网传输：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::RefreshFileTransfer()
+    {
+        if (!m_core || m_fileTransferLoading) return;
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->FileTransfer()));
+            ApplyFileTransferSnapshot(response);
+        }
+        catch (std::exception const& error)
+        {
+            m_fileTransferStatus.Text(StatusMessage(
+                L"读取文件传输状态失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::ApplyFileTransferSnapshot(JsonObject const& response)
+    {
+        m_fileTransferLoading = true;
+        auto const preferences = response.GetNamedObject(L"preferences");
+        auto const status = response.GetNamedObject(L"status");
+        m_fileTransferReadOnly = preferences.GetNamedBoolean(L"read_only", true);
+        auto const state = status.GetNamedString(L"state", L"stopped");
+        m_fileTransferRunning = status.GetNamedBoolean(L"enabled", false)
+            && (state == L"running" || state == L"starting");
+        m_fileTransferPortNumber.Value(preferences.GetNamedNumber(L"port", 12345));
+        m_fileTransferPathText.Text(preferences.GetNamedString(L"receive_directory", L""));
+        m_fileTransferAutoCopyToggle.IsOn(preferences.GetNamedBoolean(L"auto_copy", false));
+        m_fileTransferAutoOpenToggle.IsOn(preferences.GetNamedBoolean(L"auto_open", false));
+        m_fileTransferAutoCloseToggle.IsOn(preferences.GetNamedBoolean(L"auto_close", false));
+
+        auto const pairingValue = status.GetNamedValue(L"pairing_url");
+        auto const pairingUrl = pairingValue.ValueType() == JsonValueType::String
+            ? pairingValue.GetString()
+            : winrt::hstring{};
+        m_fileTransferUrlText.Text(pairingUrl);
+        m_fileTransferToggleButton.Content(winrt::box_value(
+            m_fileTransferRunning ? L"停止传输" : L"启动传输"));
+        m_fileTransferToggleButton.IsEnabled(!m_fileTransferReadOnly && !m_fileTransferLoading);
+        m_fileTransferCopyUrlButton.IsEnabled(!pairingUrl.empty());
+        m_fileTransferOpenUrlButton.IsEnabled(!pairingUrl.empty());
+        auto const canEdit = !m_fileTransferReadOnly && !m_fileTransferRunning;
+        m_fileTransferPortNumber.IsEnabled(canEdit);
+        m_fileTransferPathText.IsEnabled(canEdit);
+        m_fileTransferAutoCopyToggle.IsEnabled(canEdit);
+        m_fileTransferAutoOpenToggle.IsEnabled(canEdit);
+        m_fileTransferAutoCloseToggle.IsEnabled(canEdit);
+        m_fileTransferSaveButton.IsEnabled(canEdit);
+        m_fileTransferSendButton.IsEnabled(m_fileTransferRunning);
+        m_fileTransferShareButton.IsEnabled(m_fileTransferRunning);
+
+        auto const qrValue = status.GetNamedValue(L"qr_png_base64");
+        auto const qr = qrValue.ValueType() == JsonValueType::String
+            ? qrValue.GetString()
+            : winrt::hstring{};
+        if (qr != m_fileTransferQrBase64)
+        {
+            m_fileTransferQrBase64 = qr;
+            if (qr.empty())
+            {
+                m_fileTransferQrImage.Source(nullptr);
+            }
+            else
+            {
+                LoadFileTransferQrAsync(qr);
+            }
+        }
+
+        std::wstring statusText;
+        if (m_fileTransferReadOnly) statusText = L"当前数据库为只读，局域网服务已禁用。";
+        else if (state == L"running") statusText = L"正在安全传输 · 仅持有本次配对链接的设备可访问";
+        else if (state == L"starting") statusText = L"正在启动局域网传输……";
+        else if (state == L"auto_closed") statusText = L"已在 5 分钟无活动后自动关闭。";
+        else if (state == L"error") statusText = L"启动失败";
+        else statusText = L"传输服务未启动。";
+        auto const errorValue = status.GetNamedValue(L"last_error");
+        if (errorValue.ValueType() == JsonValueType::String)
+        {
+            statusText.append(L" ");
+            auto const error = errorValue.GetString();
+            statusText.append(error.c_str(), error.size());
+        }
+        m_fileTransferStatus.Text(winrt::hstring{ statusText });
+
+        auto const devices = response.GetNamedArray(L"devices");
+        std::wstringstream deviceLabel;
+        deviceLabel << L"在线设备：" << devices.Size();
+        for (std::uint32_t index = 0; index < devices.Size() && index < 5; ++index)
+        {
+            deviceLabel << (index == 0 ? L" · " : L"、")
+                << devices.GetObjectAt(index).GetNamedString(L"name", L"设备").c_str();
+        }
+        m_fileTransferDevicesText.Text(winrt::hstring{ deviceLabel.str() });
+
+        m_fileTransferMessagesPanel.Children().Clear();
+        auto const messages = response.GetNamedArray(L"messages");
+        auto const first = messages.Size() > 50 ? messages.Size() - 50 : 0;
+        for (std::uint32_t index = first; index < messages.Size(); ++index)
+        {
+            auto const message = messages.GetObjectAt(index);
+            auto const direction = message.GetNamedString(L"direction", L"in");
+            auto const sender = message.GetNamedString(L"sender_name", L"设备");
+            auto const text = message.GetNamedString(L"content", L"");
+            std::wstring line{ direction == L"in" ? L"← " : L"→ " };
+            line.append(sender.c_str(), sender.size());
+            line.append(L"：");
+            line.append(text.c_str(), text.size());
+            TextBlock row;
+            row.Text(winrt::hstring{ line });
+            row.TextWrapping(TextWrapping::Wrap);
+            m_fileTransferMessagesPanel.Children().Append(row);
+        }
+        if (messages.Size() == 0)
+        {
+            TextBlock empty;
+            empty.Text(L"暂无传输消息。");
+            m_fileTransferMessagesPanel.Children().Append(empty);
+        }
+        m_fileTransferLoading = false;
+        m_fileTransferToggleButton.IsEnabled(!m_fileTransferReadOnly);
+    }
+
+    winrt::fire_and_forget MainWindow::LoadFileTransferQrAsync(winrt::hstring base64Png)
+    {
+        auto lifetime = get_strong();
+        try
+        {
+            auto const buffer = Windows::Security::Cryptography::CryptographicBuffer::
+                DecodeFromBase64String(base64Png);
+            Windows::Storage::Streams::InMemoryRandomAccessStream stream;
+            co_await stream.WriteAsync(buffer);
+            stream.Seek(0);
+            Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+            co_await bitmap.SetSourceAsync(stream);
+            if (base64Png == m_fileTransferQrBase64)
+            {
+                m_fileTransferQrImage.Source(bitmap);
+            }
+        }
+        catch (...)
+        {
+            m_fileTransferQrImage.Source(nullptr);
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::SaveFileTransferSettings(bool enabled)
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_fileTransferLoading) co_return;
+        auto const port = m_fileTransferPortNumber.Value();
+        if (!std::isfinite(port) || port < 1 || port > 65535)
+        {
+            m_fileTransferStatus.Text(L"端口必须在 1 到 65535 之间。");
+            co_return;
+        }
+        if (m_fileTransferPathText.Text().empty())
+        {
+            m_fileTransferStatus.Text(L"请选择文件接收目录。");
+            co_return;
+        }
+        JsonObject update;
+        update.Insert(L"enabled", JsonValue::CreateBooleanValue(enabled));
+        update.Insert(L"port", JsonValue::CreateNumberValue(
+            static_cast<double>(static_cast<std::uint16_t>(std::llround(port)))));
+        update.Insert(L"receive_directory", JsonValue::CreateStringValue(m_fileTransferPathText.Text()));
+        update.Insert(L"auto_copy", JsonValue::CreateBooleanValue(m_fileTransferAutoCopyToggle.IsOn()));
+        update.Insert(L"auto_open", JsonValue::CreateBooleanValue(m_fileTransferAutoOpenToggle.IsOn()));
+        update.Insert(L"auto_close", JsonValue::CreateBooleanValue(m_fileTransferAutoCloseToggle.IsOn()));
+        m_fileTransferLoading = true;
+        m_fileTransferToggleButton.IsEnabled(false);
+        m_fileTransferStatus.Text(enabled ? L"正在启动安全传输……" : L"正在停止传输……");
+        try
+        {
+            auto const request = winrt::to_string(update.Stringify());
+            auto const response = co_await RunRustOperationAsync([this, request]
+            {
+                return m_core->UpdateFileTransfer(request);
+            });
+            m_fileTransferLoading = false;
+            ApplyFileTransferSnapshot(JsonObject::Parse(response));
+        }
+        catch (std::exception const& error)
+        {
+            m_fileTransferLoading = false;
+            m_fileTransferStatus.Text(StatusMessage(
+                L"更新文件传输失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+            RefreshFileTransfer();
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::SendFileTransferText()
+    {
+        auto lifetime = get_strong();
+        auto const text = m_fileTransferMessageText.Text();
+        if (text.empty())
+        {
+            m_fileTransferStatus.Text(L"请输入要发送的文字。");
+            co_return;
+        }
+        try
+        {
+            auto const value = winrt::to_string(text);
+            auto const response = co_await RunRustOperationAsync([this, value]
+            {
+                return m_core->SendTransferText(value);
+            });
+            m_fileTransferMessageText.Text(L"");
+            ApplyFileTransferSnapshot(JsonObject::Parse(response));
+        }
+        catch (std::exception const& error)
+        {
+            m_fileTransferStatus.Text(StatusMessage(
+                L"发送文字失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ShareFileTransferFiles()
+    {
+        auto lifetime = get_strong();
+        try
+        {
+            auto const selected = SelectTransferFilePaths(GetWindowHandle());
+            if (selected.empty()) co_return;
+            JsonArray paths;
+            for (auto const& path : selected)
+            {
+                paths.Append(JsonValue::CreateStringValue(winrt::hstring{ path.wstring() }));
+            }
+            auto const value = winrt::to_string(paths.Stringify());
+            auto const response = co_await RunRustOperationAsync([this, value]
+            {
+                return m_core->ShareTransferFiles(value);
+            });
+            ApplyFileTransferSnapshot(JsonObject::Parse(response));
+            m_fileTransferStatus.Text(L"文件已共享；配对设备可在消息列表中下载。");
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_fileTransferStatus.Text(StatusMessage(L"共享文件失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_fileTransferStatus.Text(StatusMessage(
+                L"共享文件失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
     }
 
     winrt::fire_and_forget MainWindow::ShowEmojiPickerAsync()

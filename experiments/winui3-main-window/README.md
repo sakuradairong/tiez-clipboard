@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v15
+        │ dynamic loading + C ABI v16
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -60,6 +60,9 @@ The C ABI interface is deliberately small:
   its password, then run a read-only connectivity probe;
 - start, request, stop, and poll the Rust-owned background WebDAV runner without
   returning its credentials or binding worker lifetime to a XAML object;
+- configure, start, stop, and poll an authenticated Rust-owned LAN transfer
+  server; send text, expose local files as streaming downloads, and retain the
+  existing snake_case message and settings contracts;
 - create, fully validate, and schedule restoration of the same `.tiez-backup`
   archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
@@ -92,6 +95,10 @@ versioned request/response structs or another explicitly versioned wire format.
 - a Chinese native tag manager with search, counts, colors, exact tagged-entry
   browsing, manual text creation, protected privacy tags, and explicit permanent
   deletion confirmation;
+- a Chinese native LAN-transfer dialog with a per-run pairing QR/link, receive
+  directory and automation settings, active-device/message status, text sending,
+  multi-file sharing, and a responsive Chinese phone page for text and bounded
+  direct/chunked uploads;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -354,7 +361,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v15 owns the native scheduler and writable
+single-pass runner are shared. ABI v16 owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -366,7 +373,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 15`.
+- [ ] Status shows `Rust ABI 16`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -514,7 +521,8 @@ window should call, and which extraction phase owns it.
 | Unicode Emoji picker / direct paste | `paste_text_directly` | `tiez_core_paste_text` + Chinese native grouped dialog | 5 (connected) |
 | Emoji image favorites | `get_emoji_favorites` / `add_emoji_favorite` / `remove_emoji_favorite` / `paste_emoji_image` | shared `tiez-core::emoji_favorites` + ABI v14 + Chinese native preview/import/remove/paste dialog, retaining the existing setting, managed directory, backup, and cloud-sync contracts | 5 (connected) |
 | Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
-| File transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
+| LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
+| Advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.

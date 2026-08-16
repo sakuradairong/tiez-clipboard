@@ -95,6 +95,18 @@ namespace tiez::probe
                 "tiez_core_request_cloud_sync");
             m_stopCloudSync = Resolve<StopCloudSyncFn>(
                 "tiez_core_stop_cloud_sync");
+            m_fileTransferJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_file_transfer_json");
+            m_updateFileTransferJson = Resolve<JsonRequestFn>(
+                "tiez_core_update_file_transfer_json");
+            m_startFileTransfer = Resolve<CloudSyncLifecycleFn>(
+                "tiez_core_start_file_transfer");
+            m_stopFileTransfer = Resolve<StopCloudSyncFn>(
+                "tiez_core_stop_file_transfer");
+            m_sendTransferTextJson = Resolve<JsonRequestFn>(
+                "tiez_core_send_transfer_text_json");
+            m_shareTransferFilesJson = Resolve<JsonRequestFn>(
+                "tiez_core_share_transfer_files_json");
             m_setChangedCallback = Resolve<SetChangedCallbackFn>("tiez_core_set_changed_callback");
             m_startCapture = Resolve<StartCaptureFn>("tiez_core_start_capture");
             m_takeLastError = Resolve<TakeLastErrorFn>("tiez_core_take_last_error");
@@ -130,6 +142,11 @@ namespace tiez::probe
         if (m_handle != nullptr && m_stopCloudSync != nullptr)
         {
             m_stopCloudSync(m_handle);
+        }
+
+        if (m_handle != nullptr && m_stopFileTransfer != nullptr)
+        {
+            m_stopFileTransfer(m_handle);
         }
 
         if (m_handle != nullptr && m_destroy != nullptr)
@@ -516,6 +533,66 @@ namespace tiez::probe
         {
             m_stopCloudSync(m_handle);
         }
+    }
+
+    std::string RustCoreBridge::FileTransfer() const
+    {
+        auto* result = m_fileTransferJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust file-transfer lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateFileTransfer(std::string_view requestJson) const
+    {
+        std::string request{ requestJson };
+        auto* result = m_updateFileTransferJson(m_handle, request.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust file-transfer update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    bool RustCoreBridge::StartFileTransfer() const
+    {
+        if (!m_startFileTransfer(m_handle))
+        {
+            throw std::runtime_error("Rust file-transfer start failed: " + TakeLastError());
+        }
+        return true;
+    }
+
+    void RustCoreBridge::StopFileTransfer() const noexcept
+    {
+        if (m_handle != nullptr && m_stopFileTransfer != nullptr)
+        {
+            m_stopFileTransfer(m_handle);
+        }
+    }
+
+    std::string RustCoreBridge::SendTransferText(std::string_view text) const
+    {
+        std::string value{ text };
+        auto* result = m_sendTransferTextJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust transfer-text send failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ShareTransferFiles(std::string_view pathsJson) const
+    {
+        std::string value{ pathsJson };
+        auto* result = m_shareTransferFilesJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust transfer-file share failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
     }
 
     void RustCoreBridge::SetChangedCallback(TiezChangedCallback callback, void* userData) const

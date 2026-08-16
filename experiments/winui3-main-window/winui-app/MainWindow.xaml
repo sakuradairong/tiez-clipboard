@@ -65,6 +65,11 @@
                     AutomationProperties.HelpText="创建、查看、重命名、着色或删除标签及其记录。"
                     Click="TagButton_Click"
                     Content="标签" />
+                <Button
+                    AutomationProperties.Name="打开局域网文件传输"
+                    AutomationProperties.HelpText="在同一局域网内与手机或其他设备安全传输文字和文件。"
+                    Click="FileTransferButton_Click"
+                    Content="传输" />
                 <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />
                 <Button
                     x:Name="ClearHistoryButton"

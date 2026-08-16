@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 15,
+    TIEZ_CORE_ABI_VERSION = 16,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -210,6 +210,29 @@ TIEZ_CORE_API bool tiez_core_request_cloud_sync(TiezCoreHandle* handle);
 
 // Cancels and joins the runner before the native host or DLL is unloaded.
 TIEZ_CORE_API void tiez_core_stop_cloud_sync(TiezCoreHandle* handle);
+
+// Returns compatible preferences, pairing URL/QR, service state, online
+// devices, and capped chat history. Pairing secrets exist only while running.
+TIEZ_CORE_API char* tiez_core_get_file_transfer_json(TiezCoreHandle* handle);
+
+// Validates and persists a JSON settings patch. An explicit enabled toggle
+// starts or stops the native server after the transaction succeeds.
+TIEZ_CORE_API char* tiez_core_update_file_transfer_json(
+    TiezCoreHandle* handle,
+    const char* request_json_utf8);
+
+// Starts or synchronously stops the authenticated LAN server.
+TIEZ_CORE_API bool tiez_core_start_file_transfer(TiezCoreHandle* handle);
+TIEZ_CORE_API void tiez_core_stop_file_transfer(TiezCoreHandle* handle);
+
+// Sends text to paired devices or registers local files as authenticated,
+// streaming downloads. JSON strings are allocated by Rust and caller-freed.
+TIEZ_CORE_API char* tiez_core_send_transfer_text_json(
+    TiezCoreHandle* handle,
+    const char* text_utf8);
+TIEZ_CORE_API char* tiez_core_share_transfer_files_json(
+    TiezCoreHandle* handle,
+    const char* paths_json_utf8);
 
 // History-changed notifications may arrive on a background worker thread.
 TIEZ_CORE_API void tiez_core_set_changed_callback(
