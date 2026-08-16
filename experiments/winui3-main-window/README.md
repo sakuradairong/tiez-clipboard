@@ -28,7 +28,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v12
+        │ dynamic loading + C ABI v13
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -48,6 +48,7 @@ The C ABI interface is deliberately small:
 - prepare a validated URL or local-file launch plan without invoking a command shell;
 - report the active adapter and whether it is read-only;
 - apply `pin`, `delete`, protected `clear`, and plain/rich paste or copy actions (memory or writable SQLite);
+- paste transient UTF-8 text without manufacturing a clipboard-history row;
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
 - read and update a strict allowlist of non-secret daily-use settings;
@@ -81,6 +82,7 @@ versioned request/response structs or another explicitly versioned wire format.
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
 - a Chinese “清空历史” confirmation that preserves pinned, tagged, and sensitive-protected entries and is disabled for read-only adapters;
+- a Chinese native Emoji picker with ten grouped categories, keyboard/Narrator names, and Rust-coordinated paste back to the previous window;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -343,7 +345,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v12 owns the native scheduler and writable
+single-pass runner are shared. ABI v13 owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -355,7 +357,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 12`.
+- [ ] Status shows `Rust ABI 13`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -375,6 +377,7 @@ recognition. Record the active adapter with every result.
 - [ ] Type chips send `type:text` / `type:image` / `type:url` / `type:code` / `type:file`.
 - [ ] Pin/unpin changes the card and generation.
 - [ ] Delete removes an entry.
+- [ ] “表情” opens a Chinese grouped native picker; Tab and Narrator identify every Emoji, selecting one pastes it into the previous window, and no synthetic history row or echo duplicate is created.
 - [ ] Mutation status shows the Rust result message and generation.
 - [ ] Plain/rich paste writes the system clipboard and sends Ctrl+V after restoring the last HWND.
 - [ ] Image paste writes CF_DIB (and PNG when applicable); file paste writes CF_HDROP.
@@ -485,13 +488,14 @@ window should call, and which extraction phase owns it.
 | Windows login startup / silent activation | Tauri Run value + minimized argument | MSIX `StartupTask` + AppLifecycle activation, with current-EXE Run fallback for unpackaged development | 5 (connected) |
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
-| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 12 + write-only secret and read-only `PROPFIND` | 5 (connected) |
+| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 13 + write-only secret and read-only `PROPFIND` | 5 (connected) |
 | WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
 | Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
 | Cloud-sync runner host boundary | Tauri `AppHandle`, repositories, settings, emoji and events | shared `tiez-core::cloud_sync_runner::CloudSyncHost`; typed runtime state/events and bounded remote planning, with no window handle in the port | 5 (defined) |
-| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; WinUI ABI v12 owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; WinUI ABI v13 owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
-| Emoji, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
+| Unicode Emoji picker / direct paste | `paste_text_directly` | `tiez_core_paste_text` + Chinese native grouped dialog | 5 (connected) |
+| Emoji image favorites, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -540,7 +544,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    and QR decoding run off the UI thread, Tauri keeps its command contract,
    cached text is searchable from native snapshots, and sensitive/encrypted
    results are memory-only with a pre-write privacy recheck.
-9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: ABI v12
+9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: ABI v13
    reads and transactionally writes the existing WebDAV keys, keeps passwords
    write-only, validates HTTPS and safe remote paths, and runs a redirect-free
    read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the

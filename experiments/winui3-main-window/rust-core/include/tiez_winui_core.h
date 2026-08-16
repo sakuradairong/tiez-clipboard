@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 12,
+    TIEZ_CORE_ABI_VERSION = 13,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -89,6 +89,12 @@ TIEZ_CORE_API char* tiez_core_apply_action_json(
     TiezCoreHandle* handle,
     int64_t entry_id,
     const char* action_utf8);
+
+// Pastes arbitrary UTF-8 text without creating a history row. The native host
+// owns window hiding/focus restoration; the Rust core owns clipboard + Ctrl+V.
+TIEZ_CORE_API bool tiez_core_paste_text(
+    TiezCoreHandle* handle,
+    const char* text_utf8);
 
 // Replaces an entry's tags from a UTF-8 JSON string array. Session-only
 // entries receive a positive replacement ID when the tag update persists them.

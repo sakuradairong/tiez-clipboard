@@ -24,6 +24,7 @@ namespace tiez::probe
         [[nodiscard]] std::string ApplyAction(
             std::int64_t entryId,
             std::string_view action) const;
+        bool PasteText(std::string_view text) const;
         [[nodiscard]] std::string UpdateTags(
             std::int64_t entryId,
             std::string_view tagsJson) const;
@@ -56,6 +57,7 @@ namespace tiez::probe
         using PrepareOpenContentFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t);
         using PathJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using ApplyActionJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
+        using TextActionFn = bool(__cdecl*)(TiezCoreHandle*, char const*);
         using UpdateTagsJsonFn = char*(__cdecl*)(TiezCoreHandle*, std::int64_t, char const*);
         using UpdatePinnedOrderJsonFn = char*(__cdecl*)(TiezCoreHandle*, char const*);
         using SettingsJsonFn = char*(__cdecl*)(TiezCoreHandle*);
@@ -89,6 +91,7 @@ namespace tiez::probe
         PathJsonFn m_inspectBackup{};
         PathJsonFn m_scheduleRestore{};
         ApplyActionJsonFn m_applyActionJson{};
+        TextActionFn m_pasteText{};
         UpdateTagsJsonFn m_updateTagsJson{};
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};

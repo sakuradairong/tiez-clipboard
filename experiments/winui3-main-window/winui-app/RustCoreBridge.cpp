@@ -52,6 +52,7 @@ namespace tiez::probe
             m_inspectBackup = Resolve<PathJsonFn>("tiez_core_inspect_backup_json");
             m_scheduleRestore = Resolve<PathJsonFn>("tiez_core_schedule_restore_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
+            m_pasteText = Resolve<TextActionFn>("tiez_core_paste_text");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
                 "tiez_core_update_pinned_order_json");
@@ -226,6 +227,16 @@ namespace tiez::probe
         }
 
         return ConsumeString(result);
+    }
+
+    bool RustCoreBridge::PasteText(std::string_view text) const
+    {
+        std::string textValue{ text };
+        if (!m_pasteText(m_handle, textValue.c_str()))
+        {
+            throw std::runtime_error("Rust transient text paste failed: " + TakeLastError());
+        }
+        return true;
     }
 
     std::string RustCoreBridge::UpdateTags(

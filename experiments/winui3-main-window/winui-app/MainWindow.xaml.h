@@ -26,6 +26,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void ClearHistoryButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void EmojiButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void HideButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -68,6 +71,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void OpenEntry(std::int64_t entryId);
         void LaunchOpenPlan(Windows::Data::Json::JsonObject const& plan);
         void ApplyAction(std::int64_t entryId, std::string_view action);
+        void PasteTransientText(winrt::hstring const& text);
         Microsoft::UI::Xaml::UIElement CreateItemCard(
             Windows::Data::Json::JsonObject const& item,
             bool readOnly,
@@ -111,6 +115,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetTypeFilter(std::string filter);
         void SetupImeGuards();
         winrt::fire_and_forget ConfirmClearHistoryAsync();
+        winrt::fire_and_forget ShowEmojiPickerAsync();
         void EnsureSettingsDialog();
         void LoadSettings();
         winrt::fire_and_forget RefreshAutostartStateAsync(bool reconcilePreference);

@@ -42,7 +42,7 @@ mod win32_paste;
 
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 
-const ABI_VERSION: u32 = 12;
+const ABI_VERSION: u32 = 13;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -485,6 +485,27 @@ fn apply_history_action(
     history
         .apply_action(entry_id, action)
         .map_err(|error| error.to_string())
+}
+
+fn paste_transient_text(handle: &TiezCoreHandle, text: &str) -> Result<(), String> {
+    let content = HistoryContent {
+        id: 0,
+        content_type: "text".to_owned(),
+        content: text.to_owned(),
+        html_content: None,
+        available: true,
+        is_sensitive: false,
+        unavailable_reason: None,
+    };
+    let plan =
+        plan_paste(&content, PasteFormat::Plain, false).map_err(|error| error.to_string())?;
+    execute_os_paste(&plan)?;
+    if let Ok(mut filter) = handle.inner.capture.lock() {
+        if let Some(payload) = payload_written_to_clipboard(&plan) {
+            filter.note_payload(&payload);
+        }
+    }
+    Ok(())
 }
 
 fn update_history_tags(
@@ -1067,6 +1088,27 @@ pub unsafe extern "C" fn tiez_core_apply_action_json(
 }
 
 #[no_mangle]
+/// Paste arbitrary UTF-8 text without creating a clipboard-history row.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `text_utf8` must remain a readable, NUL-terminated UTF-8 string for this
+/// call.
+pub unsafe extern "C" fn tiez_core_paste_text(
+    handle: *mut TiezCoreHandle,
+    text_utf8: *const c_char,
+) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let text = required_utf8(text_utf8, "text_utf8")?;
+        paste_transient_text(handle, &text)?;
+        Ok(true)
+    })
+}
+
+#[no_mangle]
 /// Replace an entry's tags and return its structured mutation outcome as JSON.
 ///
 /// # Safety
@@ -1432,7 +1474,7 @@ mod tests {
 
         let json = snapshot_json(&snapshot).unwrap();
 
-        assert!(json.contains("\"abi_version\":12"));
+        assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
         assert!(json.contains("\"adapter\":\"memory\""));
         assert!(json.contains("\"read_only\":false"));
         assert!(json.contains("line one\\n\\\"line two\\\" 中文"));
@@ -1483,7 +1525,7 @@ mod tests {
         let json = image_analysis_json(Some(&analysis)).unwrap();
         let empty = image_analysis_json(None).unwrap();
 
-        assert!(json.contains("\"abi_version\":12"));
+        assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
         assert!(json.contains("\"analysis\":{\"text\":\"识别文字\""));
         assert!(json.contains("\"qrCodes\":[\"https://example.com/pay\"]"));
         assert!(json.contains("\"analyzedAt\":42"));
@@ -1501,7 +1543,7 @@ mod tests {
             let value = tiez_core_prepare_open_content_json(handle, 103);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(json.contains("\"kind\":\"url\""));
             assert!(json.contains("https://github.com/jimuzhe/tiez-clipboard/issues/154"));
             assert!(json.contains("\"requires_confirmation\":false"));
@@ -1538,7 +1580,7 @@ mod tests {
             let created = tiez_core_create_backup_json(handle, destination.as_ptr());
             assert!(!created.is_null());
             let created_json = CStr::from_ptr(created).to_str().unwrap();
-            assert!(created_json.contains("\"abi_version\":12"));
+            assert!(created_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(created_json.contains("\"entryCount\":0"));
             tiez_core_string_free(created);
 
@@ -1590,7 +1632,7 @@ mod tests {
             let pin_value = tiez_core_apply_action_json(handle, 102, pin.as_ptr());
             assert!(!pin_value.is_null());
             let pin_json = CStr::from_ptr(pin_value).to_str().unwrap();
-            assert!(pin_json.contains("\"abi_version\":12"));
+            assert!(pin_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(pin_json.contains("\"adapter\":\"memory\""));
             assert!(pin_json.contains("\"action\":\"pin\""));
             assert!(pin_json.contains("\"requested_id\":102"));
@@ -1622,7 +1664,7 @@ mod tests {
             let value = tiez_core_apply_action_json(handle, 0, clear.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(json.contains("\"action\":\"clear\""));
             assert!(json.contains("\"requested_id\":0"));
             assert!(json.contains("\"removed\":true"));
@@ -1647,6 +1689,29 @@ mod tests {
     }
 
     #[test]
+    fn transient_text_paste_export_accepts_utf8_and_rejects_empty_text() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let emoji = CString::new("🫶🚀").unwrap();
+        let empty = CString::new("").unwrap();
+
+        unsafe {
+            assert!(tiez_core_paste_text(handle, emoji.as_ptr()));
+            assert!(!tiez_core_paste_text(handle, empty.as_ptr()));
+
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("no pasteable text"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
     fn tag_export_accepts_utf8_json_and_returns_structured_mutation() {
         let handle = Box::into_raw(Box::new(
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
@@ -1657,7 +1722,7 @@ mod tests {
             let value = tiez_core_update_tags_json(handle, 102, tags.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(json.contains("\"action\":\"update-tags\""));
             assert!(json.contains("\"requested_id\":102"));
             assert!(json.contains("\"effective_id\":102"));
@@ -1700,7 +1765,7 @@ mod tests {
             let initial = tiez_core_get_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":12"));
+            assert!(initial_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(initial_json.contains("\"app.compact_mode\":\"false\""));
             assert!(initial_json.contains("\"app.hotkey\":\"Alt+C\""));
             assert!(!initial_json.contains("mqtt_password"));
@@ -1777,7 +1842,7 @@ mod tests {
             let initial = tiez_core_get_cloud_sync_settings_json(handle);
             assert!(!initial.is_null());
             let initial_json = CStr::from_ptr(initial).to_str().unwrap();
-            assert!(initial_json.contains("\"abi_version\":12"));
+            assert!(initial_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(initial_json.contains("\"password_configured\":false"));
             assert!(!initial_json.contains("webdav_password"));
             tiez_core_string_free(initial);
@@ -1835,7 +1900,7 @@ mod tests {
             let value = tiez_core_get_cloud_sync_status_json(handle);
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(json.contains("\"state\":\"unavailable\""));
             assert!(json.contains("\"service_started\":false"));
             assert!(json.contains("\"settings_revision\":0"));
@@ -1873,7 +1938,7 @@ mod tests {
             let value = tiez_core_update_pinned_order_json(handle, order.as_ptr());
             assert!(!value.is_null());
             let json = CStr::from_ptr(value).to_str().unwrap();
-            assert!(json.contains("\"abi_version\":12"));
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
             assert!(json.contains("\"action\":\"reorder-pinned\""));
             assert!(json.contains("\"ordered_ids\":[103,101,102]"));
             assert!(json.contains("\"generation\":4"));

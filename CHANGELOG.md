@@ -35,6 +35,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native WinUI clipboard cards now expose focusable list-item semantics with Chinese Narrator names and help text; Enter/Space opens details, Shift+F10 opens the existing card menu, child action buttons remain keyboard reachable, and status surfaces are live regions.
 - Native Windows CI now runs an isolated OS-level global-hotkey smoke test before packaging, proving keyboard registration ownership, real keyboard and mouse-middle activation, and close-to-tray survival without touching the user's TieZ data or shortcut.
 - The Chinese native WinUI header can now clear clipboard history after an explicit confirmation while preserving pinned, tagged, and sensitive-protected entries; writable SQLite clears keep cloud-sync tombstones and managed-attachment cleanup semantics, and read-only adapters disable the action.
+- WinUI ABI v13 adds transient UTF-8 text paste for a Chinese native Emoji picker; its ten grouped categories are keyboard and Narrator reachable, paste through the shared Rust coordinator, and do not create a synthetic history row.
 
 ### Changed
 

@@ -38,6 +38,29 @@ namespace
         std::wstring display;
     };
 
+    struct EmojiGroup
+    {
+        std::wstring_view name;
+        std::vector<std::wstring_view> values;
+    };
+
+    std::vector<EmojiGroup> const& EmojiGroups()
+    {
+        static std::vector<EmojiGroup> const groups = {
+            { L"常用", { L"😀", L"😁", L"😂", L"🤣", L"😊", L"😍", L"😘", L"😎", L"🤔", L"😅", L"😭", L"😡", L"👍", L"👎", L"🙏", L"👏", L"🎉", L"🔥", L"💯", L"✨", L"👌", L"😴", L"🥳", L"🤩", L"😬", L"😇", L"🤝", L"🙌" } },
+            { L"表情", { L"🙂", L"🙃", L"😉", L"😌", L"🤗", L"😪", L"😤", L"😱", L"🤯", L"😵", L"🤐", L"🫠", L"🫡", L"🫣", L"😐", L"😑", L"😶", L"🙄", L"😮", L"😲", L"🥺", L"😢", L"😥", L"😓", L"😕", L"🤒", L"🤢", L"🥵", L"🥶", L"🤡" } },
+            { L"手势", { L"👌", L"✌️", L"🤞", L"🤟", L"🤘", L"🤙", L"👊", L"✊", L"🤚", L"🖐️", L"✋", L"👋", L"🫶", L"👉", L"👈", L"👇", L"👆", L"🫵", L"🤝", L"🙌", L"🤲", L"🤜", L"🤛", L"🫰", L"🤌", L"✍️", L"👏", L"🤳" } },
+            { L"人物", { L"👨‍💻", L"👩‍💻", L"🧑‍💻", L"👨‍🎨", L"👩‍🎨", L"👨‍🚀", L"👩‍🚀", L"👨‍🍳", L"👩‍🍳", L"👨‍⚕️", L"👩‍⚕️", L"👨‍🏫", L"👩‍🏫", L"🧑‍💼", L"🧑‍🔧", L"🧑‍🎧", L"🧑‍🚒", L"👶", L"🧒", L"👦", L"👧", L"🧑", L"👴", L"👵" } },
+            { L"动物", { L"🐶", L"🐱", L"🐭", L"🐹", L"🐰", L"🦊", L"🐻", L"🐼", L"🐯", L"🦁", L"🐮", L"🐷", L"🐸", L"🐵", L"🐔", L"🐧", L"🐦", L"🦆", L"🦉", L"🐺", L"🦄", L"🐝", L"🦋", L"🐢", L"🐙", L"🐬", L"🐳", L"🦈" } },
+            { L"美食", { L"🍎", L"🍐", L"🍊", L"🍋", L"🍉", L"🍇", L"🍓", L"🍒", L"🍍", L"🥭", L"🍌", L"🥝", L"🍑", L"🍅", L"🥑", L"🥦", L"🥕", L"🌽", L"🍔", L"🍟", L"🍕", L"🌭", L"🍿", L"🍜", L"🍣", L"🍤", L"🍩", L"🍰" } },
+            { L"活动", { L"⚽", L"🏀", L"🏈", L"⚾", L"🎾", L"🏐", L"🏓", L"🏸", L"🥊", L"⛳", L"🏹", L"🎯", L"🎮", L"🎲", L"🎹", L"🎸", L"🎤", L"🎧", L"🥁", L"🏆", L"🥇", L"🏃", L"🚴", L"🏋️" } },
+            { L"旅行", { L"🚗", L"🚕", L"🚌", L"🚎", L"🏎️", L"🚓", L"🚑", L"🚒", L"🚀", L"✈️", L"🛫", L"🛬", L"🚢", L"⛵", L"🚲", L"🚁", L"🗺️", L"🧭", L"🏝️", L"⛰️", L"🌋", L"🏜️", L"🏕️", L"🏠" } },
+            { L"物品", { L"📱", L"💻", L"🖥️", L"⌨️", L"🖱️", L"📷", L"🎥", L"📺", L"🔦", L"💡", L"🔋", L"🔌", L"📦", L"📌", L"✏️", L"📚", L"🧰", L"🧲", L"🧯", L"🧪", L"🔒", L"🔑", L"🎁", L"🛒" } },
+            { L"符号", { L"❤️", L"🧡", L"💛", L"💚", L"💙", L"💜", L"🖤", L"🤍", L"🤎", L"💔", L"❗", L"❓", L"✅", L"❌", L"⚠️", L"⭕", L"💯", L"✨", L"⭐", L"🌟", L"➕", L"➖", L"♻️", L"©️" } },
+        };
+        return groups;
+    }
+
     bool IsHotkeyWhitespace(wchar_t value)
     {
         return value == L' ' || value == L'\t' || value == L'\r' || value == L'\n';
@@ -922,6 +945,127 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::ClearHistoryButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         ConfirmClearHistoryAsync();
+    }
+
+    void MainWindow::EmojiButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ShowEmojiPickerAsync();
+    }
+
+    winrt::fire_and_forget MainWindow::ShowEmojiPickerAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法粘贴表情。");
+            co_return;
+        }
+
+        winrt::hstring selectedEmoji;
+        try
+        {
+            ContentDialog dialog;
+            dialog.XamlRoot(RootGrid().XamlRoot());
+            dialog.Title(winrt::box_value(L"选择 Emoji 表情"));
+            dialog.CloseButtonText(L"取消");
+            dialog.DefaultButton(ContentDialogButton::Close);
+            dialog.MinWidth(620);
+
+            StackPanel content;
+            content.Spacing(12);
+
+            TextBlock hint;
+            hint.Text(L"选择后会立即粘贴到呼出 TieZ 前使用的窗口；按 Tab 可逐个浏览表情。");
+            hint.TextWrapping(TextWrapping::Wrap);
+            hint.Foreground(Application::Current().Resources()
+                .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+            content.Children().Append(hint);
+
+            StackPanel groups;
+            groups.Spacing(16);
+            for (auto const& group : EmojiGroups())
+            {
+                TextBlock title;
+                title.Text(winrt::hstring{ group.name });
+                title.Style(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+                groups.Children().Append(title);
+
+                Grid grid;
+                grid.ColumnSpacing(4);
+                grid.RowSpacing(4);
+                for (int column = 0; column < 8; ++column)
+                {
+                    ColumnDefinition definition;
+                    definition.Width(GridLength{ 1, GridUnitType::Star });
+                    grid.ColumnDefinitions().Append(definition);
+                }
+                auto const rowCount = (group.values.size() + 7) / 8;
+                for (std::size_t row = 0; row < rowCount; ++row)
+                {
+                    RowDefinition definition;
+                    definition.Height(GridLengthHelper::Auto());
+                    grid.RowDefinitions().Append(definition);
+                }
+
+                for (std::size_t index = 0; index < group.values.size(); ++index)
+                {
+                    auto const emoji = winrt::hstring{ group.values[index] };
+                    Button button;
+                    button.Content(winrt::box_value(emoji));
+                    button.FontSize(24);
+                    button.MinWidth(54);
+                    button.Height(46);
+                    button.HorizontalAlignment(HorizontalAlignment::Stretch);
+                    std::wstring accessibleName{ L"表情 " };
+                    accessibleName.append(emoji.c_str(), emoji.size());
+                    AutomationProperties::SetName(button, winrt::hstring{ accessibleName });
+                    AutomationProperties::SetHelpText(button, L"选择后粘贴到上一个窗口");
+                    ToolTipService::SetToolTip(button, winrt::box_value(emoji));
+                    Grid::SetRow(button, static_cast<int>(index / 8));
+                    Grid::SetColumn(button, static_cast<int>(index % 8));
+                    button.Click([dialog, &selectedEmoji, emoji](auto const&, auto const&)
+                    {
+                        selectedEmoji = emoji;
+                        dialog.Hide();
+                    });
+                    grid.Children().Append(button);
+                }
+                groups.Children().Append(grid);
+            }
+
+            ScrollViewer scroller;
+            scroller.MaxHeight(520);
+            scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+            scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+            scroller.Content(groups);
+            content.Children().Append(scroller);
+            dialog.Content(content);
+
+            m_suspendLifecycle = true;
+            co_await dialog.ShowAsync();
+            if (selectedEmoji.empty())
+            {
+                m_suspendLifecycle = false;
+                SetStatus(L"已取消选择表情。");
+                SearchBox().Focus(FocusState::Programmatic);
+                co_return;
+            }
+
+            PasteTransientText(selectedEmoji);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"无法打开表情选择器：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"无法打开表情选择器：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
     }
 
     winrt::fire_and_forget MainWindow::ConfirmClearHistoryAsync()
@@ -1935,6 +2079,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
 
+        m_suspendLifecycle = false;
+    }
+
+    void MainWindow::PasteTransientText(winrt::hstring const& text)
+    {
+        PreparePasteTarget();
+        try
+        {
+            m_core->PasteText(winrt::to_string(text));
+            std::wstring status{ L"已粘贴表情：" };
+            status.append(text.c_str(), text.size());
+            SetStatus(winrt::hstring{ status });
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"粘贴表情失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
         m_suspendLifecycle = false;
     }
 
