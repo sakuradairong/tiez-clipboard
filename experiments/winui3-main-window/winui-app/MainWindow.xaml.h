@@ -29,6 +29,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void EmojiButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void TagButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void HideButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -119,6 +122,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void SetupImeGuards();
         winrt::fire_and_forget ConfirmClearHistoryAsync();
         winrt::fire_and_forget ShowEmojiPickerAsync();
+        winrt::fire_and_forget ShowTagManagerAsync();
+        winrt::Windows::Foundation::IAsyncOperation<winrt::hstring> RunRustOperationAsync(
+            std::function<std::string()> operation);
         void EnsureSettingsDialog();
         void LoadSettings();
         winrt::fire_and_forget RefreshAutostartStateAsync(bool reconcilePreference);

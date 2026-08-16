@@ -19,7 +19,8 @@ use tiez_core::clipboard_capture::{
     classify_snapshot, detect_content_type, CaptureFilter, CapturedPayload, ClipboardSnapshot,
 };
 use tiez_core::clipboard_history::{
-    ClipboardHistory, HistoryContent, HistoryMutationResult, HistorySnapshot, PinnedOrderResult,
+    ClipboardHistory, HistoryContent, HistoryItem, HistoryMutationResult, HistorySnapshot,
+    PinnedOrderResult,
 };
 use tiez_core::cloud_sync_settings::{
     CloudSyncProbeResult, CloudSyncSettings, CloudSyncSettingsMutation, CloudSyncSettingsSnapshot,
@@ -35,6 +36,10 @@ use tiez_core::image_analysis::{
 use tiez_core::native_settings::{NativeSettingMutation, NativeSettings, NativeSettingsSnapshot};
 use tiez_core::paste_coordinator::{plan_paste, PasteFormat, PastePayload};
 use tiez_core::runtime_instance::DatabaseInstanceGuard;
+use tiez_core::tag_catalog::{
+    is_protected_tag, normalized_tag_name, TagCatalog, TagCatalogMutation, TagCatalogSnapshot,
+    TagDeletePlan, TagEntriesSnapshot, TagRenamePlan,
+};
 
 mod cloud_sync_service;
 mod win32_capture;
@@ -43,7 +48,7 @@ mod win32_paste;
 
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 
-const ABI_VERSION: u32 = 14;
+const ABI_VERSION: u32 = 15;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -74,6 +79,7 @@ pub(crate) struct TiezCoreInner {
 pub struct TiezCoreHandle {
     inner: Arc<TiezCoreInner>,
     emoji_favorites: Mutex<EmojiFavorites>,
+    tag_catalog: Mutex<TagCatalog>,
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
     session: Mutex<Option<win32_capture::Session>>,
@@ -102,6 +108,7 @@ impl TiezCoreHandle {
                 changed: Mutex::new(None),
             }),
             emoji_favorites: Mutex::new(EmojiFavorites::in_memory()),
+            tag_catalog: Mutex::new(TagCatalog::in_memory()),
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
             session: Mutex::new(None),
@@ -146,6 +153,10 @@ impl TiezCoreHandle {
                 .unwrap_or_default();
             handle.emoji_favorites = Mutex::new(
                 EmojiFavorites::open_sqlite(&database_path, &data_dir, read_only)
+                    .map_err(|error| format!("{}: {error}", database_path.display()))?,
+            );
+            handle.tag_catalog = Mutex::new(
+                TagCatalog::open_sqlite(&database_path, read_only)
                     .map_err(|error| format!("{}: {error}", database_path.display()))?,
             );
             let inner = Arc::clone(&handle.inner);
@@ -271,6 +282,27 @@ struct EmojiFavoritesMutationResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct TagCatalogResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a TagCatalogSnapshot,
+}
+
+#[derive(Serialize)]
+struct TagEntriesResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a TagEntriesSnapshot,
+}
+
+#[derive(Serialize)]
+struct TagCatalogMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a TagCatalogMutation,
+}
+
+#[derive(Serialize)]
 struct CloudSyncSettingsResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -377,6 +409,30 @@ fn emoji_favorites_mutation_json(mutation: &EmojiFavoritesMutation) -> Result<St
         mutation,
     })
     .map_err(|error| format!("failed to serialize Emoji favorites mutation: {error}"))
+}
+
+fn tag_catalog_json(snapshot: &TagCatalogSnapshot) -> Result<String, String> {
+    serde_json::to_string(&TagCatalogResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize tag catalog: {error}"))
+}
+
+fn tag_entries_json(snapshot: &TagEntriesSnapshot) -> Result<String, String> {
+    serde_json::to_string(&TagEntriesResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize tag entries: {error}"))
+}
+
+fn tag_catalog_mutation_json(mutation: &TagCatalogMutation) -> Result<String, String> {
+    serde_json::to_string(&TagCatalogMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("failed to serialize tag catalog mutation: {error}"))
 }
 
 fn cloud_sync_settings_json(snapshot: &CloudSyncSettingsSnapshot) -> Result<String, String> {
@@ -610,6 +666,227 @@ fn remove_emoji_favorite(
     if mutation.changed {
         let _ = handle.cloud_sync.request_now();
     }
+    Ok(mutation)
+}
+
+fn current_history_items(handle: &TiezCoreHandle) -> Result<Vec<HistoryItem>, String> {
+    handle
+        .inner
+        .history
+        .lock()
+        .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?
+        .snapshot("")
+        .map(|snapshot| snapshot.items)
+        .map_err(|error| error.to_string())
+}
+
+fn tag_catalog_snapshot(handle: &TiezCoreHandle) -> Result<TagCatalogSnapshot, String> {
+    let history_items = current_history_items(handle)?;
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .snapshot(&history_items)
+        .map_err(|error| error.to_string())
+}
+
+fn tag_entries_snapshot(
+    handle: &TiezCoreHandle,
+    tag: &str,
+) -> Result<TagEntriesSnapshot, String> {
+    let history_items = current_history_items(handle)?;
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .entries(tag, &history_items)
+        .map_err(|error| error.to_string())
+}
+
+fn create_tag(handle: &TiezCoreHandle, name: &str) -> Result<TagCatalogMutation, String> {
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .create(name)
+        .map_err(|error| error.to_string())
+}
+
+fn set_tag_color(
+    handle: &TiezCoreHandle,
+    name: &str,
+    color: Option<&str>,
+) -> Result<TagCatalogMutation, String> {
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .set_color(name, color)
+        .map_err(|error| error.to_string())
+}
+
+fn apply_tag_rename_plan(
+    handle: &TiezCoreHandle,
+    plan: &TagRenamePlan,
+) -> Result<usize, String> {
+    let mut applied = 0usize;
+    let mut last_generation = None;
+    let mut failure = None;
+    {
+        let mut history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        for entry in &plan.entries {
+            match history.update_tags(entry.id, entry.tags.clone()) {
+                Ok(mutation) => {
+                    applied += 1;
+                    last_generation = Some(mutation.generation);
+                }
+                Err(error) => {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(generation) = last_generation {
+        notify_changed(&handle.inner, generation);
+    }
+    if applied > 0 {
+        let _ = handle.cloud_sync.request_now();
+    }
+    if let Some(error) = failure {
+        return Err(format!(
+            "标签重命名已安全更新 {applied}/{} 条记录；其余记录未改动：{error}",
+            plan.entries.len()
+        ));
+    }
+    Ok(applied)
+}
+
+fn rename_tag(
+    handle: &TiezCoreHandle,
+    old_name: &str,
+    new_name: &str,
+) -> Result<TagCatalogMutation, String> {
+    let history_items = current_history_items(handle)?;
+    let plan = handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .rename_plan(old_name, new_name, &history_items)
+        .map_err(|error| error.to_string())?;
+    apply_tag_rename_plan(handle, &plan)?;
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .finish_rename(&plan)
+        .map_err(|error| error.to_string())
+}
+
+fn apply_tag_delete_plan(
+    handle: &TiezCoreHandle,
+    plan: &TagDeletePlan,
+) -> Result<usize, String> {
+    let mut applied = 0usize;
+    let mut last_generation = None;
+    let mut failure = None;
+    {
+        let mut history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        for entry_id in &plan.entry_ids {
+            match history.apply_action(*entry_id, "delete") {
+                Ok(mutation) => {
+                    applied += 1;
+                    last_generation = Some(mutation.generation);
+                }
+                Err(error) => {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(generation) = last_generation {
+        notify_changed(&handle.inner, generation);
+    }
+    if applied > 0 {
+        let _ = handle.cloud_sync.request_now();
+    }
+    if let Some(error) = failure {
+        return Err(format!(
+            "标签删除已安全删除 {applied}/{} 条记录；其余记录未改动：{error}",
+            plan.entry_ids.len()
+        ));
+    }
+    Ok(applied)
+}
+
+fn delete_tag(handle: &TiezCoreHandle, name: &str) -> Result<TagCatalogMutation, String> {
+    let history_items = current_history_items(handle)?;
+    let plan = handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .delete_plan(name, &history_items)
+        .map_err(|error| error.to_string())?;
+    apply_tag_delete_plan(handle, &plan)?;
+    handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .finish_delete(&plan)
+        .map_err(|error| error.to_string())
+}
+
+fn create_tagged_text(
+    handle: &TiezCoreHandle,
+    tag: &str,
+    content: &str,
+) -> Result<HistoryMutationResult, String> {
+    if content.trim().is_empty() {
+        return Err("手动文本不能为空".to_owned());
+    }
+    let tag = normalized_tag_name(tag).map_err(|error| error.to_string())?;
+    if is_protected_tag(&tag) {
+        return Err(
+            "不能直接向内置敏感标签添加手动文本；请先保存到普通标签，再在记录详情中安全添加敏感标签"
+                .to_owned(),
+        );
+    }
+    create_tag(handle, &tag)?;
+    let entry_id = {
+        let mut history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .ingest_text(content.to_owned(), "TieZ 手动")
+            .map_err(|error| error.to_string())?
+            .effective_id
+            .ok_or_else(|| "手动文本没有生成可用记录".to_owned())?
+    };
+    let history_items = current_history_items(handle)?;
+    let mut tags = handle
+        .tag_catalog
+        .lock()
+        .map_err(|_| "TagCatalog lock is poisoned".to_owned())?
+        .tags_for_entry(entry_id, &history_items)
+        .map_err(|error| error.to_string())?;
+    if !tags.iter().any(|existing| existing == &tag) {
+        tags.push(tag);
+    }
+    let mut mutation = update_history_tags(handle, entry_id, tags)?;
+    mutation.action = "create-tagged-text".to_owned();
+    mutation.message = "已添加带标签的手动文本".to_owned();
+    let _ = handle.cloud_sync.request_now();
     Ok(mutation)
 }
 
@@ -1297,6 +1574,159 @@ pub unsafe extern "C" fn tiez_core_paste_emoji_favorite(
 }
 
 #[no_mangle]
+/// Return saved and in-use tags with counts, colors, and protected status.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_tag_catalog_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = tag_catalog_snapshot(handle)?;
+        into_owned_c_string(tag_catalog_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Return metadata-only entries that use one exact tag.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `tag_utf8` must remain a readable, NUL-terminated UTF-8 string for this
+/// call.
+pub unsafe extern "C" fn tiez_core_get_tag_entries_json(
+    handle: *mut TiezCoreHandle,
+    tag_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let tag = required_utf8(tag_utf8, "tag_utf8")?;
+        let snapshot = tag_entries_snapshot(handle, &tag)?;
+        into_owned_c_string(tag_entries_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Create a saved tag without creating a clipboard entry.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `name_utf8` must remain a readable, NUL-terminated UTF-8 string for this
+/// call.
+pub unsafe extern "C" fn tiez_core_create_tag_json(
+    handle: *mut TiezCoreHandle,
+    name_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let name = required_utf8(name_utf8, "name_utf8")?;
+        let mutation = create_tag(handle, &name)?;
+        into_owned_c_string(tag_catalog_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Rename one non-protected tag on every entry through the shared history
+/// mutation path, then merge its saved metadata.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// Both name pointers must remain readable, NUL-terminated UTF-8 strings for
+/// this call.
+pub unsafe extern "C" fn tiez_core_rename_tag_json(
+    handle: *mut TiezCoreHandle,
+    old_name_utf8: *const c_char,
+    new_name_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let old_name = required_utf8(old_name_utf8, "old_name_utf8")?;
+        let new_name = required_utf8(new_name_utf8, "new_name_utf8")?;
+        let mutation = rename_tag(handle, &old_name, &new_name)?;
+        into_owned_c_string(tag_catalog_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Permanently delete every entry using one non-protected tag, then remove its
+/// saved metadata.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `name_utf8` must remain a readable, NUL-terminated UTF-8 string for this
+/// call.
+pub unsafe extern "C" fn tiez_core_delete_tag_json(
+    handle: *mut TiezCoreHandle,
+    name_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let name = required_utf8(name_utf8, "name_utf8")?;
+        let mutation = delete_tag(handle, &name)?;
+        into_owned_c_string(tag_catalog_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Set or clear one tag's `#RRGGBB` display color.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// Both pointers must remain readable, NUL-terminated UTF-8 strings for this
+/// call. An empty color clears the custom color.
+pub unsafe extern "C" fn tiez_core_set_tag_color_json(
+    handle: *mut TiezCoreHandle,
+    name_utf8: *const c_char,
+    color_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let name = required_utf8(name_utf8, "name_utf8")?;
+        let color = required_utf8(color_utf8, "color_utf8")?;
+        let color = (!color.trim().is_empty()).then_some(color.as_str());
+        let mutation = set_tag_color(handle, &name, color)?;
+        into_owned_c_string(tag_catalog_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Add a manual UTF-8 text entry and assign one tag through the shared history
+/// ingestion and secure tag-update paths.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// Both pointers must remain readable, NUL-terminated UTF-8 strings for this
+/// call.
+pub unsafe extern "C" fn tiez_core_create_tagged_text_json(
+    handle: *mut TiezCoreHandle,
+    tag_utf8: *const c_char,
+    content_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let tag = required_utf8(tag_utf8, "tag_utf8")?;
+        let content = required_utf8(content_utf8, "content_utf8")?;
+        let mutation = create_tagged_text(handle, &tag, &content)?;
+        into_owned_c_string(mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Replace an entry's tags and return its structured mutation outcome as JSON.
 ///
 /// # Safety
@@ -1964,6 +2394,118 @@ mod tests {
             tiez_core_destroy(handle);
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tag_catalog_exports_create_color_add_rename_and_delete_workflow() {
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(
+            ClipboardHistory::synthetic(),
+        )));
+        let created_name = CString::new("待办").unwrap();
+        let renamed_name = CString::new("项目").unwrap();
+        let color = CString::new("#12abEF").unwrap();
+        let content = CString::new("  保留空格的手动记录  ").unwrap();
+        let protected = CString::new("password").unwrap();
+
+        unsafe {
+            let initial = tiez_core_get_tag_catalog_json(handle);
+            assert!(!initial.is_null());
+            let initial_json = CStr::from_ptr(initial).to_str().unwrap();
+            assert!(initial_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(initial_json.contains("\"name\":\"迁移\""));
+            assert!(initial_json.contains("\"name\":\"password\""));
+            assert!(initial_json.contains("\"protected\":true"));
+            tiez_core_string_free(initial);
+
+            let created = tiez_core_create_tag_json(handle, created_name.as_ptr());
+            assert!(!created.is_null());
+            assert!(CStr::from_ptr(created)
+                .to_str()
+                .unwrap()
+                .contains("\"action\":\"create\""));
+            tiez_core_string_free(created);
+
+            let colored =
+                tiez_core_set_tag_color_json(handle, created_name.as_ptr(), color.as_ptr());
+            assert!(!colored.is_null());
+            assert!(CStr::from_ptr(colored)
+                .to_str()
+                .unwrap()
+                .contains("\"color\":\"#12ABEF\""));
+            tiez_core_string_free(colored);
+
+            let added = tiez_core_create_tagged_text_json(
+                handle,
+                created_name.as_ptr(),
+                content.as_ptr(),
+            );
+            assert!(!added.is_null());
+            assert!(CStr::from_ptr(added)
+                .to_str()
+                .unwrap()
+                .contains("\"action\":\"create-tagged-text\""));
+            tiez_core_string_free(added);
+
+            let entries = tiez_core_get_tag_entries_json(handle, created_name.as_ptr());
+            assert!(!entries.is_null());
+            let entries_json = CStr::from_ptr(entries).to_str().unwrap();
+            assert!(entries_json.contains("\"tag\":\"待办\""));
+            assert!(entries_json.contains("保留空格的手动记录"));
+            assert!(entries_json.contains("\"total\":1"));
+            tiez_core_string_free(entries);
+
+            let renamed = tiez_core_rename_tag_json(
+                handle,
+                created_name.as_ptr(),
+                renamed_name.as_ptr(),
+            );
+            assert!(!renamed.is_null());
+            let renamed_json = CStr::from_ptr(renamed).to_str().unwrap();
+            assert!(renamed_json.contains("\"action\":\"rename\""));
+            assert!(renamed_json.contains("\"new_name\":\"项目\""));
+            assert!(renamed_json.contains("\"affected\":1"));
+            tiez_core_string_free(renamed);
+
+            let project_entries = tiez_core_get_tag_entries_json(handle, renamed_name.as_ptr());
+            assert!(!project_entries.is_null());
+            assert!(CStr::from_ptr(project_entries)
+                .to_str()
+                .unwrap()
+                .contains("\"total\":1"));
+            tiez_core_string_free(project_entries);
+
+            let deleted = tiez_core_delete_tag_json(handle, renamed_name.as_ptr());
+            assert!(!deleted.is_null());
+            let deleted_json = CStr::from_ptr(deleted).to_str().unwrap();
+            assert!(deleted_json.contains("\"action\":\"delete\""));
+            assert!(deleted_json.contains("\"affected\":1"));
+            tiez_core_string_free(deleted);
+
+            assert!(tiez_core_delete_tag_json(handle, protected.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("内置敏感标签不能删除"));
+            tiez_core_string_free(error);
+
+            let protected_content = CString::new("must not be stored in plaintext").unwrap();
+            assert!(tiez_core_create_tagged_text_json(
+                handle,
+                protected.as_ptr(),
+                protected_content.as_ptr(),
+            )
+            .is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("不能直接向内置敏感标签添加手动文本"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
     }
 
     #[test]

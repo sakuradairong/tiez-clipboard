@@ -23,4 +23,5 @@ pub mod privacy;
 pub mod production_history;
 pub mod production_mutation;
 pub mod runtime_instance;
+pub mod tag_catalog;
 pub mod ui_lifecycle;

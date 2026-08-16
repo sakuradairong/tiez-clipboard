@@ -25,9 +25,10 @@ during this validation until the signed upgrade and startup acceptance passes.
 Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
-2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v14;
+2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v15;
 3. verify Chinese-first search/details, protected history clearing, tags, pin ordering, capture, copy/paste,
    safe opening, settings, compact preview, Unicode and image Emoji favorites,
+   the native tag catalog and exact tagged-entry workflow,
    backup/restore, OCR/QR analysis,
    WebDAV background synchronization, and Windows login startup;
 4. verify the copied production-history adapter is genuinely read-only and the
@@ -97,32 +98,41 @@ Required negative tests:
    name), verify they persist after restart, paste one into the previous window,
    remove one, and confirm only the managed copy is deleted. Verify spoofed and
    oversized images are rejected and copied read-only mode disables add/remove;
-9. activate **Hide for 5 seconds** and verify the exact same process and Rust
+9. open **标签**, create a Chinese tag, change its color, add multiline text with
+   leading/trailing whitespace, restart, and verify the catalog count, color,
+   content, and exact tagged-entry list persist. Rename it onto an existing tag
+   and confirm entry tags deduplicate; then use the explicit destructive action
+   to permanently delete the tag's records and confirm tombstones/sync are
+   produced. Verify `sensitive`, `密码`, and `password` cannot be renamed,
+   deleted, or used by the manual-text action, sensitive previews remain
+   redacted, copied read-only mode disables all mutations, and a result above
+   1,000 entries reports both its total and cap;
+10. activate **Hide for 5 seconds** and verify the exact same process and Rust
    state return.
-10. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
+11. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
    error without a crash; clear it afterward.
-11. open details for a synthetic entry, delete it, and verify the list refreshes
+12. open details for a synthetic entry, delete it, and verify the list refreshes
    without crashing or corrupting the native details panel.
-12. verify the WebDAV password is never displayed, blank preserves it, explicit
+13. verify the WebDAV password is never displayed, blank preserves it, explicit
    clear requires confirmation, non-loopback HTTP is rejected, and the test
    action reports a Chinese result without blocking the UI or writing remotely.
-13. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
+14. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
     sign out/in and confirm TieZ remains tray-only until the configured global
     shortcut (Alt+C by default) or the tray icon is used. Disable it in Windows
     settings and verify the native UI explains
     that only Windows can re-enable a user-disabled startup task.
-14. with no TieZ process running, execute `test-single-instance.ps1` for 100
+15. with no TieZ process running, execute `test-single-instance.ps1` for 100
     lifecycle cycles; verify every real WM_CLOSE returns the same primary PID to
     the tray, the hidden duplicate exits without revealing the primary, the
     ordinary duplicate reveals the same primary PID, and both secondary exit
     codes are zero.
-15. enable Narrator, Tab from the type filters into a clipboard record, and
+16. enable Narrator, Tab from the type filters into a clipboard record, and
     verify it is announced as a Chinese list item with pinned/sensitive state,
     type, source, time, and only a non-sensitive preview. Enter or Space must
     open details without pasting, the next Tab must reach the card's action
     buttons, Shift+F10 must open the Chinese card menu, and a sensitive item must
     announce “预览已隐藏” without exposing its preview value.
-16. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
+17. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
     Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
     the hidden native window, and WM_CLOSE returns the same process to the tray.
     Verify the script then starts a separate `MouseMiddle` instance, real mouse

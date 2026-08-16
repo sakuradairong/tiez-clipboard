@@ -61,6 +61,20 @@ namespace tiez::probe
                 "tiez_core_remove_emoji_favorite_json");
             m_pasteEmojiFavorite = Resolve<TextActionFn>(
                 "tiez_core_paste_emoji_favorite");
+            m_tagCatalogJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_tag_catalog_json");
+            m_tagEntriesJson = Resolve<PathJsonFn>(
+                "tiez_core_get_tag_entries_json");
+            m_createTagJson = Resolve<PathJsonFn>(
+                "tiez_core_create_tag_json");
+            m_renameTagJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_rename_tag_json");
+            m_deleteTagJson = Resolve<PathJsonFn>(
+                "tiez_core_delete_tag_json");
+            m_setTagColorJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_set_tag_color_json");
+            m_createTaggedTextJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_create_tagged_text_json");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
                 "tiez_core_update_pinned_order_json");
@@ -287,6 +301,94 @@ namespace tiez::probe
             throw std::runtime_error("Rust Emoji favorite paste failed: " + TakeLastError());
         }
         return true;
+    }
+
+    std::string RustCoreBridge::TagCatalog() const
+    {
+        auto* result = m_tagCatalogJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tag catalog lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::TagEntries(std::string_view tag) const
+    {
+        std::string value{ tag };
+        auto* result = m_tagEntriesJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tag entries lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::CreateTag(std::string_view name) const
+    {
+        std::string value{ name };
+        auto* result = m_createTagJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tag creation failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::RenameTag(
+        std::string_view oldName,
+        std::string_view newName) const
+    {
+        std::string oldValue{ oldName };
+        std::string newValue{ newName };
+        auto* result = m_renameTagJson(m_handle, oldValue.c_str(), newValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust global tag rename failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::DeleteTag(std::string_view name) const
+    {
+        std::string value{ name };
+        auto* result = m_deleteTagJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust global tag deletion failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::SetTagColor(
+        std::string_view name,
+        std::string_view color) const
+    {
+        std::string nameValue{ name };
+        std::string colorValue{ color };
+        auto* result = m_setTagColorJson(m_handle, nameValue.c_str(), colorValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tag color update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::CreateTaggedText(
+        std::string_view tag,
+        std::string_view content) const
+    {
+        std::string tagValue{ tag };
+        std::string contentValue{ content };
+        auto* result = m_createTaggedTextJson(
+            m_handle,
+            tagValue.c_str(),
+            contentValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust tagged text creation failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
     }
 
     std::string RustCoreBridge::UpdateTags(

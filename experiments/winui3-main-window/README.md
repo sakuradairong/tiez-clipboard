@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v14
+        │ dynamic loading + C ABI v15
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · image_analysis · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -51,6 +51,8 @@ The C ABI interface is deliberately small:
 - paste transient UTF-8 text without manufacturing a clipboard-history row;
 - list, import, remove, and paste image-Emoji favorites through the existing
   `app.emoji_favorites` setting and managed `emoji_favorites/` directory;
+- list, search, create, recolor, rename, and permanently delete compatible tags,
+  fetch exact tagged entries, and create whitespace-preserving tagged text;
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
 - read and update a strict allowlist of non-secret daily-use settings;
@@ -87,6 +89,9 @@ versioned request/response structs or another explicitly versioned wire format.
 - a Chinese native Emoji and image-favorites picker with ten Unicode categories,
   keyboard/Narrator names, multi-file PNG/JPEG/GIF/WebP import, managed deletion,
   and Rust-coordinated paste back to the previous window;
+- a Chinese native tag manager with search, counts, colors, exact tagged-entry
+  browsing, manual text creation, protected privacy tags, and explicit permanent
+  deletion confirmation;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -349,7 +354,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v14 owns the native scheduler and writable
+single-pass runner are shared. ABI v15 owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -361,7 +366,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 14`.
+- [ ] Status shows `Rust ABI 15`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -416,6 +421,12 @@ recognition. Record the active adapter with every result.
 - [ ] Tag chips render, tag search finds matching items, and Chinese comma-separated edits persist.
 - [ ] Adding `sensitive`, `密码`, or `password` redacts the item; removing the last sensitive tag restores access.
 - [ ] Tagging a negative session ID follows the positive replacement ID without losing selection.
+- [ ] “标签” opens the Chinese native manager, combines saved and entry-derived tags, shows compatible colors and exact counts, and filters names without blocking the UI.
+- [ ] Create a Chinese tag, change its color, add multiline text with leading/trailing whitespace, restart, and confirm the tag, color, content, and exact tagged-entry list persist.
+- [ ] Rename a tag that is already present on some target entries; every entry keeps a deduplicated tag list, privacy transitions remain encrypted/redacted, and the old tag disappears only after all updates finish.
+- [ ] Permanently deleting an ordinary tag requires the destructive confirmation, removes every tagged record through tombstones and managed-attachment cleanup, and requests WebDAV sync; retrying after an interrupted partial operation completes safely.
+- [ ] `sensitive`, `密码`, and `password` cannot be renamed, deleted, or used by the two-step manual-text action; the UI explains how to save under an ordinary tag and then apply privacy through the secure details mutation. Copied read-only mode disables every tag mutation and never reveals sensitive entry previews.
+- [ ] A tag with more than 1,000 records reports the uncapped total and clearly labels the 1,000-record response limit.
 - [ ] Pinned cards reorder by drag-and-drop and by “上移”/“下移”, then retain that order after restart.
 - [ ] Pinned reordering is unavailable in searched, type-filtered, or read-only views.
 - [ ] The Chinese settings dialog reads existing TieZ values and never exposes secret keys.
@@ -502,7 +513,8 @@ window should call, and which extraction phase owns it.
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Unicode Emoji picker / direct paste | `paste_text_directly` | `tiez_core_paste_text` + Chinese native grouped dialog | 5 (connected) |
 | Emoji image favorites | `get_emoji_favorites` / `add_emoji_favorite` / `remove_emoji_favorite` / `paste_emoji_image` | shared `tiez-core::emoji_favorites` + ABI v14 + Chinese native preview/import/remove/paste dialog, retaining the existing setting, managed directory, backup, and cloud-sync contracts | 5 (connected) |
-| Tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
+| Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
+| File transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -573,10 +585,22 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
     deletes only canonicalized files inside the managed directory, writable
     mutations request synchronization, and copied read-only databases remain
     non-mutating.
+11. `TagCatalog` — **shared core and WinUI surface connected**: the native
+    manager reads the existing `saved_tags` and `entry_tags` schema, combines
+    compatible counts and colors, and exposes exact tagged-entry metadata with
+    sensitive previews redacted. Catalog metadata changes stay separate from
+    entry mutations; rename routes each entry through the secure tag-update path,
+    permanent delete routes each entry through the tombstone and attachment-
+    cleanup path, and catalog finalization happens only after all entry work
+    succeeds. Interrupted work is safely retryable, protected privacy tags are
+    immutable and reject non-atomic manual creation, copied read-only databases
+    cannot mutate, and one exact-entry
+    response is bounded to 1,000 records while retaining the uncapped total.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs signed installer upgrade, real-account multi-device sync endurance, and
-manual Windows 10/11, DPI, IME, accessibility, and long-run lifecycle acceptance.
+needs file transfer and remaining secondary-surface parity, signed installer
+upgrade, real-account multi-device sync endurance, and manual Windows 10/11,
+DPI, IME, accessibility, and long-run lifecycle acceptance.
 
 ## Primary references
 

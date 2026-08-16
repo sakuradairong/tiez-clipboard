@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <functional>

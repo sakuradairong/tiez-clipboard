@@ -656,6 +656,65 @@ namespace
         return capturedAt;
     }
 
+    std::wstring LowerText(winrt::hstring const& value)
+    {
+        std::wstring lowered{ value.c_str(), value.size() };
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t character)
+        {
+            return static_cast<wchar_t>(std::towlower(character));
+        });
+        return lowered;
+    }
+
+    bool IsProtectedTagName(winrt::hstring const& value)
+    {
+        auto const lowered = LowerText(value);
+        return lowered == L"sensitive" || lowered == L"password" || lowered == L"密码";
+    }
+
+    int HexDigit(wchar_t value)
+    {
+        if (value >= L'0' && value <= L'9') return value - L'0';
+        if (value >= L'a' && value <= L'f') return value - L'a' + 10;
+        if (value >= L'A' && value <= L'F') return value - L'A' + 10;
+        return -1;
+    }
+
+    winrt::Windows::UI::Color TagColor(winrt::hstring const& value)
+    {
+        winrt::Windows::UI::Color color{};
+        color.A = 255;
+        color.R = 0;
+        color.G = 120;
+        color.B = 212;
+        if (value.size() != 7 || value[0] != L'#')
+        {
+            return color;
+        }
+        auto const redHigh = HexDigit(value[1]);
+        auto const redLow = HexDigit(value[2]);
+        auto const greenHigh = HexDigit(value[3]);
+        auto const greenLow = HexDigit(value[4]);
+        auto const blueHigh = HexDigit(value[5]);
+        auto const blueLow = HexDigit(value[6]);
+        if (redHigh < 0 || redLow < 0 || greenHigh < 0 || greenLow < 0
+            || blueHigh < 0 || blueLow < 0)
+        {
+            return color;
+        }
+        color.R = static_cast<std::uint8_t>((redHigh << 4) | redLow);
+        color.G = static_cast<std::uint8_t>((greenHigh << 4) | greenLow);
+        color.B = static_cast<std::uint8_t>((blueHigh << 4) | blueLow);
+        return color;
+    }
+
+    winrt::hstring TagColorHex(winrt::Windows::UI::Color const& color)
+    {
+        wchar_t value[8]{};
+        swprintf_s(value, L"#%02X%02X%02X", color.R, color.G, color.B);
+        return winrt::hstring{ value };
+    }
+
     winrt::hstring ActionStatus(std::string_view action)
     {
         if (action == "pin") return L"置顶状态已更新";
@@ -1003,6 +1062,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::EmojiButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         ShowEmojiPickerAsync();
+    }
+
+    void MainWindow::TagButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ShowTagManagerAsync();
     }
 
     winrt::fire_and_forget MainWindow::ShowEmojiPickerAsync()
@@ -1373,6 +1437,623 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_suspendLifecycle = false;
             SetStatus(StatusMessage(
                 L"无法打开表情选择器：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::Windows::Foundation::IAsyncOperation<winrt::hstring>
+        MainWindow::RunRustOperationAsync(std::function<std::string()> operation)
+    {
+        co_await winrt::resume_background();
+        co_return tiez::probe::RustCoreBridge::Utf8ToHstring(operation());
+    }
+
+    winrt::fire_and_forget MainWindow::ShowTagManagerAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法管理标签。");
+            co_return;
+        }
+
+        try
+        {
+            m_suspendLifecycle = true;
+            winrt::hstring activeTag;
+            for (;;)
+            {
+                if (activeTag.empty())
+                {
+                    auto const response = JsonObject::Parse(
+                        tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->TagCatalog()));
+                    auto const readOnly = response.GetNamedBoolean(L"read_only", true);
+                    auto const tags = response.GetNamedArray(L"tags");
+                    winrt::hstring actionTag;
+                    winrt::hstring actionColor;
+                    std::wstring catalogAction;
+                    std::uint64_t actionCount{};
+
+                    ContentDialog dialog;
+                    dialog.XamlRoot(RootGrid().XamlRoot());
+                    dialog.Title(winrt::box_value(L"标签管理"));
+                    dialog.PrimaryButtonText(L"新建标签");
+                    dialog.IsPrimaryButtonEnabled(false);
+                    dialog.CloseButtonText(L"关闭");
+                    dialog.DefaultButton(ContentDialogButton::Close);
+                    dialog.MinWidth(760);
+
+                    StackPanel content;
+                    content.Spacing(12);
+
+                    TextBlock hint;
+                    hint.Text(readOnly
+                        ? L"当前是只读数据副本，可查看标签和记录，但不能修改。"
+                        : L"搜索或输入新标签；删除标签会永久删除使用该标签的全部记录。内置敏感标签受保护。");
+                    hint.TextWrapping(TextWrapping::Wrap);
+                    hint.Foreground(Application::Current().Resources()
+                        .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                    content.Children().Append(hint);
+
+                    TextBox search;
+                    search.PlaceholderText(L"搜索标签或输入新标签名称");
+                    AutomationProperties::SetName(search, L"搜索或新建标签");
+                    content.Children().Append(search);
+
+                    StackPanel tagList;
+                    tagList.Spacing(6);
+                    auto tagRows = std::make_shared<
+                        std::vector<std::pair<std::wstring, FrameworkElement>>>();
+
+                    for (std::uint32_t index = 0; index < tags.Size(); ++index)
+                    {
+                        auto const tag = tags.GetObjectAt(index);
+                        auto const name = tag.GetNamedString(L"name");
+                        auto const count = static_cast<std::uint64_t>(
+                            tag.GetNamedNumber(L"count", 0));
+                        auto const protectedTag = tag.GetNamedBoolean(L"protected", false);
+                        winrt::hstring color;
+                        auto const colorValue = tag.GetNamedValue(L"color");
+                        if (colorValue.ValueType() == JsonValueType::String)
+                        {
+                            color = colorValue.GetString();
+                        }
+
+                        Grid row;
+                        row.ColumnSpacing(8);
+                        ColumnDefinition dotColumn;
+                        dotColumn.Width(GridLengthHelper::Auto());
+                        ColumnDefinition nameColumn;
+                        nameColumn.Width(GridLength{ 1, GridUnitType::Star });
+                        ColumnDefinition countColumn;
+                        countColumn.Width(GridLengthHelper::Auto());
+                        ColumnDefinition renameColumn;
+                        renameColumn.Width(GridLengthHelper::Auto());
+                        ColumnDefinition colorColumn;
+                        colorColumn.Width(GridLengthHelper::Auto());
+                        ColumnDefinition deleteColumn;
+                        deleteColumn.Width(GridLengthHelper::Auto());
+                        row.ColumnDefinitions().Append(dotColumn);
+                        row.ColumnDefinitions().Append(nameColumn);
+                        row.ColumnDefinitions().Append(countColumn);
+                        row.ColumnDefinitions().Append(renameColumn);
+                        row.ColumnDefinitions().Append(colorColumn);
+                        row.ColumnDefinitions().Append(deleteColumn);
+
+                        Border dot;
+                        dot.Width(12);
+                        dot.Height(12);
+                        dot.CornerRadius(CornerRadiusHelper::FromUniformRadius(6));
+                        dot.VerticalAlignment(VerticalAlignment::Center);
+                        SolidColorBrush dotBrush;
+                        dotBrush.Color(TagColor(color));
+                        dot.Background(dotBrush);
+                        Grid::SetColumn(dot, 0);
+                        row.Children().Append(dot);
+
+                        Button view;
+                        view.Content(winrt::box_value(name));
+                        view.HorizontalAlignment(HorizontalAlignment::Stretch);
+                        view.HorizontalContentAlignment(HorizontalAlignment::Left);
+                        std::wstring viewName{ L"查看标签 " };
+                        viewName.append(name.c_str(), name.size());
+                        AutomationProperties::SetName(view, winrt::hstring{ viewName });
+                        view.Click([dialog, &catalogAction, &actionTag, name](auto const&, auto const&)
+                        {
+                            catalogAction = L"view";
+                            actionTag = name;
+                            dialog.Hide();
+                        });
+                        Grid::SetColumn(view, 1);
+                        row.Children().Append(view);
+
+                        TextBlock countText;
+                        std::wstringstream countLabel;
+                        countLabel << count << L" 条";
+                        countText.Text(winrt::hstring{ countLabel.str() });
+                        countText.VerticalAlignment(VerticalAlignment::Center);
+                        countText.Foreground(Application::Current().Resources()
+                            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                        Grid::SetColumn(countText, 2);
+                        row.Children().Append(countText);
+
+                        Button rename;
+                        rename.Content(winrt::box_value(L"重命名"));
+                        rename.IsEnabled(!readOnly && !protectedTag);
+                        AutomationProperties::SetName(rename, winrt::hstring{ L"重命名标签 " + std::wstring{ name } });
+                        rename.Click([dialog, &catalogAction, &actionTag, name](auto const&, auto const&)
+                        {
+                            catalogAction = L"rename";
+                            actionTag = name;
+                            dialog.Hide();
+                        });
+                        Grid::SetColumn(rename, 3);
+                        row.Children().Append(rename);
+
+                        Button colorButton;
+                        colorButton.Content(winrt::box_value(L"颜色"));
+                        colorButton.IsEnabled(!readOnly);
+                        AutomationProperties::SetName(colorButton, winrt::hstring{ L"设置标签颜色 " + std::wstring{ name } });
+                        colorButton.Click([
+                            dialog,
+                            &catalogAction,
+                            &actionTag,
+                            &actionColor,
+                            name,
+                            color](auto const&, auto const&)
+                        {
+                            catalogAction = L"color";
+                            actionTag = name;
+                            actionColor = color;
+                            dialog.Hide();
+                        });
+                        Grid::SetColumn(colorButton, 4);
+                        row.Children().Append(colorButton);
+
+                        Button remove;
+                        remove.Content(winrt::box_value(L"删除"));
+                        remove.IsEnabled(!readOnly && !protectedTag);
+                        AutomationProperties::SetName(remove, winrt::hstring{ L"删除标签及全部记录 " + std::wstring{ name } });
+                        remove.Click([
+                            dialog,
+                            &catalogAction,
+                            &actionTag,
+                            &actionCount,
+                            name,
+                            count](auto const&, auto const&)
+                        {
+                            catalogAction = L"delete";
+                            actionTag = name;
+                            actionCount = count;
+                            dialog.Hide();
+                        });
+                        Grid::SetColumn(remove, 5);
+                        row.Children().Append(remove);
+
+                        tagRows->emplace_back(LowerText(name), row);
+                        tagList.Children().Append(row);
+                    }
+
+                    if (tags.Size() == 0)
+                    {
+                        TextBlock empty;
+                        empty.Text(L"暂无标签。输入名称后选择“新建标签”。");
+                        empty.TextWrapping(TextWrapping::Wrap);
+                        empty.Foreground(Application::Current().Resources()
+                            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                        tagList.Children().Append(empty);
+                    }
+
+                    search.TextChanged([dialog, search, tagRows, readOnly](auto const&, auto const&)
+                    {
+                        auto const query = LowerText(search.Text());
+                        for (auto const& [name, element] : *tagRows)
+                        {
+                            element.Visibility(query.empty() || name.find(query) != std::wstring::npos
+                                ? Visibility::Visible
+                                : Visibility::Collapsed);
+                        }
+                        dialog.IsPrimaryButtonEnabled(
+                            !readOnly && !TrimHotkeyText(search.Text().c_str()).empty());
+                    });
+
+                    ScrollViewer scroller;
+                    scroller.MaxHeight(520);
+                    scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+                    scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+                    scroller.Content(tagList);
+                    content.Children().Append(scroller);
+                    dialog.Content(content);
+
+                    auto const result = co_await dialog.ShowAsync();
+                    if (result == ContentDialogResult::Primary)
+                    {
+                        auto const name = winrt::to_string(search.Text());
+                        auto const mutationText = co_await RunRustOperationAsync([
+                            core = m_core.get(),
+                            name]
+                        {
+                            return core->CreateTag(name);
+                        });
+                        auto const mutation = JsonObject::Parse(mutationText);
+                        SetStatus(mutation.GetNamedString(L"message", L"标签已创建。"));
+                        continue;
+                    }
+                    if (catalogAction == L"view")
+                    {
+                        activeTag = actionTag;
+                        continue;
+                    }
+                    if (catalogAction == L"rename")
+                    {
+                        ContentDialog renameDialog;
+                        renameDialog.XamlRoot(RootGrid().XamlRoot());
+                        renameDialog.Title(winrt::box_value(L"重命名标签"));
+                        renameDialog.PrimaryButtonText(L"保存");
+                        renameDialog.CloseButtonText(L"取消");
+                        renameDialog.DefaultButton(ContentDialogButton::Primary);
+                        TextBox newName;
+                        newName.Text(actionTag);
+                        newName.SelectAll();
+                        newName.MaxLength(64);
+                        AutomationProperties::SetName(newName, L"新标签名称");
+                        renameDialog.Content(newName);
+                        if (co_await renameDialog.ShowAsync() == ContentDialogResult::Primary)
+                        {
+                            auto const oldValue = winrt::to_string(actionTag);
+                            auto const newValue = winrt::to_string(newName.Text());
+                            auto const mutationText = co_await RunRustOperationAsync([
+                                core = m_core.get(),
+                                oldValue,
+                                newValue]
+                            {
+                                return core->RenameTag(oldValue, newValue);
+                            });
+                            auto const mutation = JsonObject::Parse(mutationText);
+                            SetStatus(mutation.GetNamedString(L"message", L"标签已重命名。"));
+                            RefreshItems();
+                        }
+                        continue;
+                    }
+                    if (catalogAction == L"color")
+                    {
+                        ContentDialog colorDialog;
+                        colorDialog.XamlRoot(RootGrid().XamlRoot());
+                        colorDialog.Title(winrt::box_value(L"设置标签颜色"));
+                        colorDialog.PrimaryButtonText(L"保存颜色");
+                        colorDialog.CloseButtonText(L"取消");
+                        colorDialog.DefaultButton(ContentDialogButton::Primary);
+                        ColorPicker picker;
+                        picker.IsAlphaEnabled(false);
+                        picker.IsColorSpectrumVisible(true);
+                        picker.IsColorSliderVisible(true);
+                        picker.Color(TagColor(actionColor));
+                        AutomationProperties::SetName(picker, L"标签颜色选择器");
+                        colorDialog.Content(picker);
+                        if (co_await colorDialog.ShowAsync() == ContentDialogResult::Primary)
+                        {
+                            auto const name = winrt::to_string(actionTag);
+                            auto const color = winrt::to_string(TagColorHex(picker.Color()));
+                            auto const mutationText = co_await RunRustOperationAsync([
+                                core = m_core.get(),
+                                name,
+                                color]
+                            {
+                                return core->SetTagColor(name, color);
+                            });
+                            auto const mutation = JsonObject::Parse(mutationText);
+                            SetStatus(mutation.GetNamedString(L"message", L"标签颜色已更新。"));
+                        }
+                        continue;
+                    }
+                    if (catalogAction == L"delete")
+                    {
+                        ContentDialog confirmation;
+                        confirmation.XamlRoot(RootGrid().XamlRoot());
+                        confirmation.Title(winrt::box_value(L"永久删除标签及记录？"));
+                        confirmation.PrimaryButtonText(L"永久删除");
+                        confirmation.CloseButtonText(L"取消");
+                        confirmation.DefaultButton(ContentDialogButton::Close);
+                        StackPanel warning;
+                        warning.Spacing(8);
+                        TextBlock message;
+                        std::wstringstream text;
+                        text << L"标签“" << actionTag.c_str() << L"”下的 " << actionCount
+                             << L" 条记录将被永久删除；同步设备也会收到删除墓碑。此操作无法撤销。";
+                        message.Text(winrt::hstring{ text.str() });
+                        message.TextWrapping(TextWrapping::Wrap);
+                        warning.Children().Append(message);
+                        confirmation.Content(warning);
+                        if (co_await confirmation.ShowAsync() == ContentDialogResult::Primary)
+                        {
+                            auto const name = winrt::to_string(actionTag);
+                            auto const mutationText = co_await RunRustOperationAsync([
+                                core = m_core.get(),
+                                name]
+                            {
+                                return core->DeleteTag(name);
+                            });
+                            auto const mutation = JsonObject::Parse(mutationText);
+                            SetStatus(mutation.GetNamedString(L"message", L"标签及记录已删除。"));
+                            RefreshItems();
+                        }
+                        continue;
+                    }
+
+                    m_suspendLifecycle = false;
+                    SetStatus(L"已关闭标签管理器。");
+                    SearchBox().Focus(FocusState::Programmatic);
+                    co_return;
+                }
+
+                auto const entriesResponse = JsonObject::Parse(
+                    tiez::probe::RustCoreBridge::Utf8ToHstring(
+                        m_core->TagEntries(winrt::to_string(activeTag))));
+                auto const readOnly = entriesResponse.GetNamedBoolean(L"read_only", true);
+                auto const total = static_cast<std::uint64_t>(
+                    entriesResponse.GetNamedNumber(L"total", 0));
+                auto const entries = entriesResponse.GetNamedArray(L"items");
+                auto const protectedTag = IsProtectedTagName(activeTag);
+                std::wstring entryAction;
+                std::int64_t actionEntryId{};
+
+                ContentDialog entriesDialog;
+                entriesDialog.XamlRoot(RootGrid().XamlRoot());
+                std::wstring entriesTitle{ L"标签：" };
+                entriesTitle.append(activeTag.c_str(), activeTag.size());
+                entriesDialog.Title(winrt::box_value(winrt::hstring{ entriesTitle }));
+                entriesDialog.PrimaryButtonText(L"添加文本");
+                entriesDialog.IsPrimaryButtonEnabled(!readOnly && !protectedTag);
+                entriesDialog.CloseButtonText(L"返回标签");
+                entriesDialog.DefaultButton(ContentDialogButton::Close);
+                entriesDialog.MinWidth(760);
+
+                StackPanel entriesContent;
+                entriesContent.Spacing(10);
+                TextBlock summary;
+                std::wstringstream summaryText;
+                summaryText << L"共 " << total << L" 条记录";
+                if (total > entries.Size())
+                {
+                    summaryText << L"，当前显示前 " << entries.Size() << L" 条";
+                }
+                if (protectedTag)
+                {
+                    summaryText << L"。内置敏感标签不直接接受手动文本；请先保存到普通标签，再从记录详情安全添加此标签";
+                }
+                summary.Text(winrt::hstring{ summaryText.str() });
+                summary.Foreground(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                entriesContent.Children().Append(summary);
+
+                StackPanel entryList;
+                entryList.Spacing(8);
+                for (std::uint32_t index = 0; index < entries.Size(); ++index)
+                {
+                    auto const entry = entries.GetObjectAt(index);
+                    auto const entryId = static_cast<std::int64_t>(entry.GetNamedNumber(L"id"));
+                    auto const sensitive = entry.GetNamedBoolean(L"is_sensitive", false);
+                    auto const pinned = entry.GetNamedBoolean(L"is_pinned", false);
+                    auto const preview = entry.GetNamedString(L"preview");
+                    auto const source = entry.GetNamedString(L"source_app");
+                    auto const type = ContentTypeLabel(entry.GetNamedString(L"content_type"));
+                    auto const captured = CapturedAtLabel(entry.GetNamedString(L"captured_at"));
+                    auto const useCount = static_cast<std::uint64_t>(
+                        entry.GetNamedNumber(L"use_count", 0));
+
+                    Grid row;
+                    row.ColumnSpacing(8);
+                    ColumnDefinition contentColumn;
+                    contentColumn.Width(GridLength{ 1, GridUnitType::Star });
+                    for (int button = 0; button < 3; ++button)
+                    {
+                        ColumnDefinition definition;
+                        definition.Width(GridLengthHelper::Auto());
+                        row.ColumnDefinitions().Append(button == 0 ? contentColumn : definition);
+                    }
+                    ColumnDefinition deleteColumn;
+                    deleteColumn.Width(GridLengthHelper::Auto());
+                    row.ColumnDefinitions().Append(deleteColumn);
+
+                    Button details;
+                    details.HorizontalAlignment(HorizontalAlignment::Stretch);
+                    details.HorizontalContentAlignment(HorizontalAlignment::Left);
+                    StackPanel detailsContent;
+                    detailsContent.Spacing(3);
+                    TextBlock previewText;
+                    previewText.Text(sensitive ? L"敏感内容，预览已隐藏" : preview);
+                    previewText.TextWrapping(TextWrapping::Wrap);
+                    previewText.MaxLines(3);
+                    previewText.TextTrimming(TextTrimming::CharacterEllipsis);
+                    detailsContent.Children().Append(previewText);
+                    TextBlock metadata;
+                    std::wstringstream metadataText;
+                    metadataText << type.c_str() << L" · " << source.c_str() << L" · "
+                                 << captured.c_str() << L" · 使用 " << useCount << L" 次";
+                    if (pinned) metadataText << L" · 已置顶";
+                    metadata.Text(winrt::hstring{ metadataText.str() });
+                    metadata.Foreground(Application::Current().Resources()
+                        .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                    detailsContent.Children().Append(metadata);
+                    details.Content(detailsContent);
+                    AutomationProperties::SetName(details, sensitive
+                        ? L"打开敏感记录详情，预览已隐藏"
+                        : winrt::hstring{ L"打开记录详情 " + std::wstring{ preview } });
+                    details.Click([
+                        entriesDialog,
+                        &entryAction,
+                        &actionEntryId,
+                        entryId](auto const&, auto const&)
+                    {
+                        entryAction = L"details";
+                        actionEntryId = entryId;
+                        entriesDialog.Hide();
+                    });
+                    Grid::SetColumn(details, 0);
+                    row.Children().Append(details);
+
+                    Button paste;
+                    paste.Content(winrt::box_value(L"粘贴"));
+                    paste.IsEnabled(!readOnly);
+                    AutomationProperties::SetName(paste, L"粘贴此标签记录");
+                    paste.Click([
+                        entriesDialog,
+                        &entryAction,
+                        &actionEntryId,
+                        entryId](auto const&, auto const&)
+                    {
+                        entryAction = L"paste";
+                        actionEntryId = entryId;
+                        entriesDialog.Hide();
+                    });
+                    Grid::SetColumn(paste, 1);
+                    row.Children().Append(paste);
+
+                    Button open;
+                    open.Content(winrt::box_value(L"打开"));
+                    open.IsEnabled(!sensitive);
+                    AutomationProperties::SetName(open, L"使用默认应用打开此记录");
+                    open.Click([
+                        entriesDialog,
+                        &entryAction,
+                        &actionEntryId,
+                        entryId](auto const&, auto const&)
+                    {
+                        entryAction = L"open";
+                        actionEntryId = entryId;
+                        entriesDialog.Hide();
+                    });
+                    Grid::SetColumn(open, 2);
+                    row.Children().Append(open);
+
+                    Button remove;
+                    remove.Content(winrt::box_value(L"删除"));
+                    remove.IsEnabled(!readOnly);
+                    AutomationProperties::SetName(remove, L"永久删除此标签记录");
+                    remove.Click([
+                        entriesDialog,
+                        &entryAction,
+                        &actionEntryId,
+                        entryId](auto const&, auto const&)
+                    {
+                        entryAction = L"delete";
+                        actionEntryId = entryId;
+                        entriesDialog.Hide();
+                    });
+                    Grid::SetColumn(remove, 3);
+                    row.Children().Append(remove);
+
+                    entryList.Children().Append(row);
+                }
+
+                if (entries.Size() == 0)
+                {
+                    TextBlock empty;
+                    empty.Text(L"该标签暂无记录。可选择“添加文本”创建一条手动记录。");
+                    empty.TextWrapping(TextWrapping::Wrap);
+                    empty.Foreground(Application::Current().Resources()
+                        .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                    entryList.Children().Append(empty);
+                }
+
+                ScrollViewer entriesScroller;
+                entriesScroller.MaxHeight(540);
+                entriesScroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+                entriesScroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+                entriesScroller.Content(entryList);
+                entriesContent.Children().Append(entriesScroller);
+                entriesDialog.Content(entriesContent);
+
+                auto const entriesResult = co_await entriesDialog.ShowAsync();
+                if (entriesResult == ContentDialogResult::Primary)
+                {
+                    ContentDialog addDialog;
+                    addDialog.XamlRoot(RootGrid().XamlRoot());
+                    addDialog.Title(winrt::box_value(L"添加带标签文本"));
+                    addDialog.PrimaryButtonText(L"添加");
+                    addDialog.CloseButtonText(L"取消");
+                    addDialog.DefaultButton(ContentDialogButton::Primary);
+                    TextBox text;
+                    text.PlaceholderText(L"输入要保存的文本；首尾空白会保留");
+                    text.AcceptsReturn(true);
+                    text.TextWrapping(TextWrapping::Wrap);
+                    text.MinHeight(180);
+                    text.MaxLength(1'000'000);
+                    AutomationProperties::SetName(text, L"手动文本内容");
+                    addDialog.Content(text);
+                    if (co_await addDialog.ShowAsync() == ContentDialogResult::Primary)
+                    {
+                        auto const tag = winrt::to_string(activeTag);
+                        auto const contentValue = winrt::to_string(text.Text());
+                        auto const mutationText = co_await RunRustOperationAsync([
+                            core = m_core.get(),
+                            tag,
+                            contentValue]
+                        {
+                            return core->CreateTaggedText(tag, contentValue);
+                        });
+                        auto const mutation = JsonObject::Parse(mutationText);
+                        SetStatus(mutation.GetNamedString(L"message", L"手动文本已添加。"));
+                        RefreshItems();
+                    }
+                    continue;
+                }
+                if (entryAction == L"details")
+                {
+                    SelectEntry(actionEntryId);
+                    ShowContent(actionEntryId);
+                    m_suspendLifecycle = false;
+                    co_return;
+                }
+                if (entryAction == L"paste")
+                {
+                    ApplyAction(actionEntryId, "paste-plain");
+                    co_return;
+                }
+                if (entryAction == L"open")
+                {
+                    m_suspendLifecycle = false;
+                    OpenEntry(actionEntryId);
+                    co_return;
+                }
+                if (entryAction == L"delete")
+                {
+                    ContentDialog confirmation;
+                    confirmation.XamlRoot(RootGrid().XamlRoot());
+                    confirmation.Title(winrt::box_value(L"永久删除记录？"));
+                    confirmation.Content(winrt::box_value(
+                        L"该记录会从本机和同步历史中删除；此操作无法撤销。"));
+                    confirmation.PrimaryButtonText(L"永久删除");
+                    confirmation.CloseButtonText(L"取消");
+                    confirmation.DefaultButton(ContentDialogButton::Close);
+                    if (co_await confirmation.ShowAsync() == ContentDialogResult::Primary)
+                    {
+                        auto const mutationText = co_await RunRustOperationAsync([
+                            core = m_core.get(),
+                            actionEntryId]
+                        {
+                            return core->ApplyAction(actionEntryId, "delete");
+                        });
+                        auto const mutation = JsonObject::Parse(mutationText);
+                        SetStatus(mutation.GetNamedString(L"message", L"记录已删除。"));
+                        RefreshItems();
+                    }
+                    continue;
+                }
+
+                activeTag.clear();
+            }
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"标签管理器失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"标签管理器失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }

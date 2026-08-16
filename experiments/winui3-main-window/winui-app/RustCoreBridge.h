@@ -29,6 +29,19 @@ namespace tiez::probe
         [[nodiscard]] std::string ImportEmojiFavorite(std::string_view sourcePath) const;
         [[nodiscard]] std::string RemoveEmojiFavorite(std::string_view favoritePath) const;
         bool PasteEmojiFavorite(std::string_view favoritePath) const;
+        [[nodiscard]] std::string TagCatalog() const;
+        [[nodiscard]] std::string TagEntries(std::string_view tag) const;
+        [[nodiscard]] std::string CreateTag(std::string_view name) const;
+        [[nodiscard]] std::string RenameTag(
+            std::string_view oldName,
+            std::string_view newName) const;
+        [[nodiscard]] std::string DeleteTag(std::string_view name) const;
+        [[nodiscard]] std::string SetTagColor(
+            std::string_view name,
+            std::string_view color) const;
+        [[nodiscard]] std::string CreateTaggedText(
+            std::string_view tag,
+            std::string_view content) const;
         [[nodiscard]] std::string UpdateTags(
             std::int64_t entryId,
             std::string_view tagsJson) const;
@@ -100,6 +113,13 @@ namespace tiez::probe
         PathJsonFn m_importEmojiFavoriteJson{};
         PathJsonFn m_removeEmojiFavoriteJson{};
         TextActionFn m_pasteEmojiFavorite{};
+        SettingsJsonFn m_tagCatalogJson{};
+        PathJsonFn m_tagEntriesJson{};
+        PathJsonFn m_createTagJson{};
+        UpdateSettingJsonFn m_renameTagJson{};
+        PathJsonFn m_deleteTagJson{};
+        UpdateSettingJsonFn m_setTagColorJson{};
+        UpdateSettingJsonFn m_createTaggedTextJson{};
         UpdateTagsJsonFn m_updateTagsJson{};
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};

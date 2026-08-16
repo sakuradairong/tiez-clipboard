@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 14,
+    TIEZ_CORE_ABI_VERSION = 15,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -118,6 +118,49 @@ TIEZ_CORE_API char* tiez_core_remove_emoji_favorite_json(
 TIEZ_CORE_API bool tiez_core_paste_emoji_favorite(
     TiezCoreHandle* handle,
     const char* favorite_path_utf8);
+
+// Returns saved and in-use tags with counts, colors, protected status, and
+// adapter metadata as newly allocated UTF-8 JSON.
+TIEZ_CORE_API char* tiez_core_get_tag_catalog_json(
+    TiezCoreHandle* handle);
+
+// Returns metadata-only entries for one exact tag. Sensitive previews remain
+// redacted. Results are capped and include the uncapped total.
+TIEZ_CORE_API char* tiez_core_get_tag_entries_json(
+    TiezCoreHandle* handle,
+    const char* tag_utf8);
+
+// Creates one saved tag without manufacturing a clipboard-history entry.
+TIEZ_CORE_API char* tiez_core_create_tag_json(
+    TiezCoreHandle* handle,
+    const char* name_utf8);
+
+// Renames a non-protected tag across history through the shared secure tag
+// mutation path, then merges the compatible saved-tag metadata.
+TIEZ_CORE_API char* tiez_core_rename_tag_json(
+    TiezCoreHandle* handle,
+    const char* old_name_utf8,
+    const char* new_name_utf8);
+
+// Permanently deletes every history entry using a non-protected tag, then
+// removes its saved metadata. Per-entry deletion keeps tombstone and attachment
+// cleanup semantics.
+TIEZ_CORE_API char* tiez_core_delete_tag_json(
+    TiezCoreHandle* handle,
+    const char* name_utf8);
+
+// Sets a compatible #RRGGBB tag color. An empty color clears the custom value.
+TIEZ_CORE_API char* tiez_core_set_tag_color_json(
+    TiezCoreHandle* handle,
+    const char* name_utf8,
+    const char* color_utf8);
+
+// Adds a manual UTF-8 text history entry to one non-protected tag without
+// trimming its content. Protected tags must use the atomic item-tag update.
+TIEZ_CORE_API char* tiez_core_create_tagged_text_json(
+    TiezCoreHandle* handle,
+    const char* tag_utf8,
+    const char* content_utf8);
 
 // Replaces an entry's tags from a UTF-8 JSON string array. Session-only
 // entries receive a positive replacement ID when the tag update persists them.
