@@ -50,6 +50,8 @@ namespace tiez::probe
         [[nodiscard]] std::string UpdateSetting(
             std::string_view key,
             std::string_view value) const;
+        [[nodiscard]] std::string SearchHotkey() const;
+        [[nodiscard]] std::string UpdateSearchHotkey(std::string_view value) const;
         [[nodiscard]] std::string AiSettings() const;
         [[nodiscard]] std::string UpdateAiSettings(std::string_view requestJson) const;
         [[nodiscard]] std::string ProbeAiProfile(std::string_view profileId) const;
@@ -146,6 +148,8 @@ namespace tiez::probe
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};
         UpdateSettingJsonFn m_updateSettingJson{};
+        SettingsJsonFn m_searchHotkeyJson{};
+        JsonRequestFn m_updateSearchHotkeyJson{};
         SettingsJsonFn m_aiSettingsJson{};
         JsonRequestFn m_updateAiSettingsJson{};
         JsonRequestFn m_probeAiProfileJson{};

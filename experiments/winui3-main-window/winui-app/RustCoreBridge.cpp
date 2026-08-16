@@ -81,6 +81,10 @@ namespace tiez::probe
             m_settingsJson = Resolve<SettingsJsonFn>("tiez_core_get_settings_json");
             m_updateSettingJson = Resolve<UpdateSettingJsonFn>(
                 "tiez_core_update_setting_json");
+            m_searchHotkeyJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_search_hotkey_json");
+            m_updateSearchHotkeyJson = Resolve<JsonRequestFn>(
+                "tiez_core_update_search_hotkey_json");
             m_aiSettingsJson = Resolve<SettingsJsonFn>("tiez_core_get_ai_settings_json");
             m_updateAiSettingsJson = Resolve<JsonRequestFn>(
                 "tiez_core_update_ai_settings_json");
@@ -483,6 +487,27 @@ namespace tiez::probe
             throw std::runtime_error("Rust setting update failed: " + TakeLastError());
         }
 
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::SearchHotkey() const
+    {
+        auto* result = m_searchHotkeyJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust search hotkey lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateSearchHotkey(std::string_view value) const
+    {
+        std::string hotkeyValue{ value };
+        auto* result = m_updateSearchHotkeyJson(m_handle, hotkeyValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust search hotkey update failed: " + TakeLastError());
+        }
         return ConsumeString(result);
     }
 

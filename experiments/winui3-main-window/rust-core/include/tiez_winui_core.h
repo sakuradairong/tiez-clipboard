@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 19,
+    TIEZ_CORE_ABI_VERSION = 20,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -181,6 +181,14 @@ TIEZ_CORE_API char* tiez_core_get_settings_json(TiezCoreHandle* handle);
 TIEZ_CORE_API char* tiez_core_update_setting_json(
     TiezCoreHandle* handle,
     const char* key_utf8,
+    const char* value_utf8);
+
+// Returns and updates only the legacy app.search_hotkey value. The native
+// host registers a candidate with Windows before persisting it.
+TIEZ_CORE_API char* tiez_core_get_search_hotkey_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_update_search_hotkey_json(
+    TiezCoreHandle* handle,
     const char* value_utf8);
 
 // Returns AI settings and profile summaries without API keys.

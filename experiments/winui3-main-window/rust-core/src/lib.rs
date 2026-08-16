@@ -51,6 +51,7 @@ use tiez_core::tag_catalog::{
 mod clipboard_relay_service;
 mod cloud_sync_service;
 mod file_transfer_service;
+mod search_hotkey_service;
 mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
@@ -61,8 +62,11 @@ use clipboard_relay_service::{
 };
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
+use search_hotkey_service::{
+    NativeSearchHotkey, NativeSearchHotkeyMutation, NativeSearchHotkeySnapshot,
+};
 
-const ABI_VERSION: u32 = 19;
+const ABI_VERSION: u32 = 20;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -98,6 +102,7 @@ pub struct TiezCoreHandle {
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
     clipboard_relay: NativeClipboardRelay,
+    search_hotkey: NativeSearchHotkey,
     file_transfer: NativeFileTransferService,
     session: Mutex<Option<win32_capture::Session>>,
 }
@@ -141,6 +146,7 @@ impl TiezCoreHandle {
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
             clipboard_relay: NativeClipboardRelay::unavailable(),
+            search_hotkey: NativeSearchHotkey::unavailable(),
             file_transfer,
             session: Mutex::new(None),
         }
@@ -212,6 +218,7 @@ impl TiezCoreHandle {
             );
             handle.clipboard_relay =
                 NativeClipboardRelay::new(&database_path, data_dir.clone(), read_only);
+            handle.search_hotkey = NativeSearchHotkey::new(&database_path, read_only);
             handle.file_transfer = NativeFileTransferService::new(
                 FileTransferPreferences::open_sqlite(
                     &database_path,
@@ -363,6 +370,20 @@ struct SettingMutationResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
     mutation: &'a NativeSettingMutation,
+}
+
+#[derive(Serialize)]
+struct SearchHotkeySnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativeSearchHotkeySnapshot,
+}
+
+#[derive(Serialize)]
+struct SearchHotkeyMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativeSearchHotkeyMutation,
 }
 
 #[derive(Serialize)]
@@ -568,6 +589,22 @@ fn setting_mutation_json(mutation: &NativeSettingMutation) -> Result<String, Str
         mutation,
     })
     .map_err(|error| format!("failed to serialize native setting mutation: {error}"))
+}
+
+fn search_hotkey_snapshot_json(snapshot: &NativeSearchHotkeySnapshot) -> Result<String, String> {
+    serde_json::to_string(&SearchHotkeySnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("无法序列化搜索快捷键状态：{error}"))
+}
+
+fn search_hotkey_mutation_json(mutation: &NativeSearchHotkeyMutation) -> Result<String, String> {
+    serde_json::to_string(&SearchHotkeyMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("无法序列化搜索快捷键结果：{error}"))
 }
 
 fn emoji_favorites_json(snapshot: &EmojiFavoritesSnapshot) -> Result<String, String> {
@@ -2148,6 +2185,40 @@ pub unsafe extern "C" fn tiez_core_update_setting_json(
 }
 
 #[no_mangle]
+/// Return the Tauri-compatible global search hotkey without other settings.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_search_hotkey_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle.search_hotkey.snapshot()?;
+        into_owned_c_string(search_hotkey_snapshot_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Persist the search hotkey after the native host has registered it.
+///
+/// # Safety
+/// `handle` and `value_utf8` must be valid readable pointers.
+pub unsafe extern "C" fn tiez_core_update_search_hotkey_json(
+    handle: *mut TiezCoreHandle,
+    value_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let value = required_utf8(value_utf8, "value_utf8")?;
+        let mutation = handle.search_hotkey.update(&value)?;
+        into_owned_c_string(search_hotkey_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Return AI settings and profile summaries without API keys.
 ///
 /// # Safety
@@ -2667,7 +2738,8 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `tiez_core_schedule_restore_json`, `tiez_core_apply_action_json`,
 /// `tiez_core_update_tags_json`, or
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
-/// `tiez_core_update_setting_json`, `tiez_core_get_cloud_sync_settings_json`,
+/// `tiez_core_update_setting_json`, `tiez_core_get_search_hotkey_json`,
+/// `tiez_core_update_search_hotkey_json`, `tiez_core_get_cloud_sync_settings_json`,
 /// `tiez_core_update_cloud_sync_settings_json`,
 /// `tiez_core_probe_cloud_sync_json`, `tiez_core_get_cloud_sync_status_json`,
 /// or `tiez_core_take_last_error`. A
@@ -3260,6 +3332,35 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("not exposed to native frontends"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn search_hotkey_export_is_sanitized_and_unavailable_without_production_data() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let value = CString::new("Ctrl+Alt+F").unwrap();
+
+        unsafe {
+            let snapshot = tiez_core_get_search_hotkey_json(handle);
+            assert!(!snapshot.is_null());
+            let json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(json.contains("\"available\":false"));
+            assert!(json.contains("\"hotkey\":\"\""));
+            assert!(!json.contains("password"));
+            tiez_core_string_free(snapshot);
+
+            assert!(tiez_core_update_search_hotkey_json(handle, value.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("生产数据模式"));
             tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }

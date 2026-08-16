@@ -99,6 +99,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void TeardownLifecycle();
         bool ApplyToggleHotkey(winrt::hstring const& configuredHotkey);
         void SaveToggleHotkey();
+        void LoadSearchHotkey();
+        void SaveSearchHotkey();
+        void ShowSearchFromHotkey();
         void SetupTrayIcon();
         void AddTrayIcon();
         void RemoveTrayIcon();
@@ -313,6 +316,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::TextBox m_hotkeyEditor{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_hotkeyApplyButton{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_hotkeySettingsStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_searchHotkeyEditor{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_searchHotkeyApplyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_searchHotkeyStatus{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncEnabledToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncAutoToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox m_cloudSyncUrlText{ nullptr };
@@ -356,6 +362,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         UINT m_relaySendHotkeyVirtualKey{};
         UINT m_relayFetchHotkeyModifiers{};
         UINT m_relayFetchHotkeyVirtualKey{};
+        UINT m_searchHotkeyModifiers{};
+        UINT m_searchHotkeyVirtualKey{};
         UINT m_taskbarCreatedMessage{};
         bool m_readyMarkerWritten{};
         bool m_pinned{};
@@ -364,6 +372,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_hotkeyRegistered{};
         bool m_relaySendHotkeyRegistered{};
         bool m_relayFetchHotkeyRegistered{};
+        bool m_searchHotkeyRegistered{};
         bool m_exitRequested{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
@@ -382,6 +391,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_relayWebDavConfigured{};
         bool m_relayHotkeysAvailable{};
         bool m_relayHotkeysReadOnly{};
+        bool m_searchHotkeyAvailable{};
+        bool m_searchHotkeyReadOnly{};
         bool m_fileTransferRunning{};
         bool m_fileTransferReadOnly{};
         bool m_fileTransferLoading{};
@@ -403,6 +414,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::hstring m_registeredRelaySendHotkey;
         winrt::hstring m_configuredRelayFetchHotkey;
         winrt::hstring m_registeredRelayFetchHotkey;
+        winrt::hstring m_configuredSearchHotkey;
+        winrt::hstring m_registeredSearchHotkey;
         winrt::hstring m_fileTransferQrBase64;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;

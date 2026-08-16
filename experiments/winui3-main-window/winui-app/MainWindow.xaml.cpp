@@ -19,6 +19,7 @@ namespace
     constexpr UINT kToggleHotkeyId = 1;
     constexpr UINT kRelaySendHotkeyId = 2;
     constexpr UINT kRelayFetchHotkeyId = 3;
+    constexpr UINT kSearchHotkeyId = 4;
     constexpr UINT_PTR kMessageWindowSubclassId = 1;
     constexpr UINT_PTR kMainWindowSubclassId = 2;
     constexpr UINT_PTR kHoverPreviewSubclassId = 3;
@@ -1056,6 +1057,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
             LoadSettings();
             LoadRelayHotkeys();
+            LoadSearchHotkey();
             RefreshAutostartStateAsync(true);
             if (m_productionData && !m_settingsReadOnly)
             {
@@ -5527,6 +5529,181 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::LoadSearchHotkey()
+    {
+        if (!m_core || m_hotkeyHwnd == nullptr)
+        {
+            return;
+        }
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->SearchHotkey()));
+            m_searchHotkeyAvailable = response.GetNamedBoolean(L"available", false);
+            m_searchHotkeyReadOnly = response.GetNamedBoolean(L"read_only", true);
+            auto const hotkey = response.GetNamedString(L"hotkey", L"");
+            m_configuredSearchHotkey = hotkey;
+            auto const applied = ApplyRelayHotkey(
+                kSearchHotkeyId,
+                hotkey,
+                m_searchHotkeyRegistered,
+                m_searchHotkeyModifiers,
+                m_searchHotkeyVirtualKey,
+                m_registeredSearchHotkey,
+                L"搜索");
+
+            if (m_searchHotkeyEditor)
+            {
+                m_searchHotkeyEditor.Text(hotkey);
+                m_searchHotkeyEditor.IsEnabled(
+                    m_searchHotkeyAvailable && !m_searchHotkeyReadOnly);
+            }
+            if (m_searchHotkeyApplyButton)
+            {
+                m_searchHotkeyApplyButton.IsEnabled(
+                    m_searchHotkeyAvailable && !m_searchHotkeyReadOnly);
+            }
+            if (m_searchHotkeyStatus)
+            {
+                std::wstring message;
+                if (!m_searchHotkeyAvailable)
+                {
+                    auto const reason = response.GetNamedValue(L"unavailable_reason");
+                    message = reason.ValueType() == JsonValueType::String
+                        ? reason.GetString().c_str()
+                        : L"当前运行模式不支持搜索快捷键。";
+                }
+                else if (hotkey.empty())
+                {
+                    message = L"搜索快捷键未设置。";
+                }
+                else
+                {
+                    message = applied ? L"搜索快捷键已启用：" : L"搜索快捷键当前不可用：";
+                    message.append(hotkey.c_str(), hotkey.size());
+                    if (m_searchHotkeyReadOnly)
+                    {
+                        message.append(L"。当前数据库为只读。");
+                    }
+                }
+                m_searchHotkeyStatus.Text(winrt::hstring{ message });
+            }
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"读取搜索快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            if (m_searchHotkeyStatus) m_searchHotkeyStatus.Text(message);
+            SetStatus(message);
+        }
+    }
+
+    void MainWindow::SaveSearchHotkey()
+    {
+        if (!m_core
+            || !m_searchHotkeyAvailable
+            || m_searchHotkeyReadOnly
+            || !m_searchHotkeyEditor)
+        {
+            auto const message = winrt::hstring{ L"当前模式不能修改搜索快捷键。" };
+            if (m_searchHotkeyStatus) m_searchHotkeyStatus.Text(message);
+            SetStatus(message);
+            return;
+        }
+
+        auto const candidate = winrt::hstring{
+            TrimHotkeyText(m_searchHotkeyEditor.Text().c_str()) };
+        auto const previousConfigured = m_configuredSearchHotkey;
+        auto const previousRegistered = m_searchHotkeyRegistered;
+        auto const previousRegisteredHotkey = m_registeredSearchHotkey;
+        if (!ApplyRelayHotkey(
+            kSearchHotkeyId,
+            candidate,
+            m_searchHotkeyRegistered,
+            m_searchHotkeyModifiers,
+            m_searchHotkeyVirtualKey,
+            m_registeredSearchHotkey,
+            L"搜索"))
+        {
+            m_searchHotkeyEditor.Text(previousConfigured);
+            if (m_searchHotkeyStatus)
+            {
+                m_searchHotkeyStatus.Text(
+                    L"快捷键格式无效、无法启用或已被占用；原设置保持不变。");
+            }
+            return;
+        }
+
+        try
+        {
+            (void)m_core->UpdateSearchHotkey(winrt::to_string(candidate));
+            m_configuredSearchHotkey = candidate;
+            m_searchHotkeyEditor.Text(candidate);
+            std::wstring message = candidate.empty()
+                ? L"搜索快捷键已停用。"
+                : L"搜索快捷键已保存并启用：";
+            if (!candidate.empty())
+            {
+                message.append(candidate.c_str(), candidate.size());
+            }
+            auto const status = winrt::hstring{ message };
+            if (m_searchHotkeyStatus) m_searchHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = ApplyRelayHotkey(
+                kSearchHotkeyId,
+                rollback,
+                m_searchHotkeyRegistered,
+                m_searchHotkeyModifiers,
+                m_searchHotkeyVirtualKey,
+                m_registeredSearchHotkey,
+                L"搜索");
+            m_configuredSearchHotkey = previousConfigured;
+            m_searchHotkeyEditor.Text(previousConfigured);
+            auto const base = StatusMessage(
+                L"保存搜索快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring message{ base.c_str(), base.size() };
+            message.append(restored ? L"；已恢复原快捷键。" : L"；无法恢复原快捷键。");
+            auto const status = winrt::hstring{ message };
+            if (m_searchHotkeyStatus) m_searchHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
+    }
+
+    void MainWindow::ShowSearchFromHotkey()
+    {
+        HideHoverPreview();
+        auto const window = GetWindowHandle();
+        if (!IsWindowVisible(window))
+        {
+            auto const foreground = GetForegroundWindow();
+            if (foreground != nullptr && foreground != window)
+            {
+                m_lastHwnd = foreground;
+            }
+            ShowWindow(window, SW_SHOW);
+        }
+        Activate();
+        SearchBox().Focus(FocusState::Programmatic);
+        std::wstring message{ L"已通过搜索快捷键" };
+        if (!m_registeredSearchHotkey.empty())
+        {
+            message.append(L" ");
+            message.append(
+                m_registeredSearchHotkey.c_str(),
+                m_registeredSearchHotkey.size());
+        }
+        message.append(L"打开并聚焦搜索框。");
+        SetStatus(winrt::hstring{ message });
+    }
+
     void MainWindow::TeardownLifecycle()
     {
         RemoveTrayIcon();
@@ -5556,6 +5733,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
             {
                 UnregisterHotKey(m_hotkeyHwnd, kRelayFetchHotkeyId);
                 m_relayFetchHotkeyRegistered = false;
+            }
+            if (m_searchHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kSearchHotkeyId);
+                m_searchHotkeyRegistered = false;
             }
             m_hotkeyRegistered = false;
             RemoveWindowSubclass(
@@ -5773,6 +5955,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kRelayFetchHotkeyId)
         {
             FetchRelayClipboardAsync();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kSearchHotkeyId)
+        {
+            ShowSearchFromHotkey();
             return true;
         }
         if (hwnd == m_hotkeyHwnd
@@ -7168,6 +7355,46 @@ namespace winrt::Tiez::WinUIProbe::implementation
             Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
         m_settingsPanel.Children().Append(m_hotkeySettingsStatus);
 
+        TextBlock searchHotkeyTitle;
+        searchHotkeyTitle.Text(L"搜索快捷键");
+        searchHotkeyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(searchHotkeyTitle);
+
+        TextBlock searchHotkeyDescription;
+        searchHotkeyDescription.Text(
+            L"在其他应用中按下后直接显示 TieZ 并聚焦搜索框，同时保留该应用作为后续粘贴目标。沿用旧版设置键 app.search_hotkey，默认 Alt+F；留空可停用。");
+        searchHotkeyDescription.TextWrapping(TextWrapping::Wrap);
+        searchHotkeyDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(searchHotkeyDescription);
+
+        m_searchHotkeyEditor = TextBox();
+        m_searchHotkeyEditor.Header(winrt::box_value(L"全局搜索快捷键"));
+        m_searchHotkeyEditor.PlaceholderText(L"例如 Alt+F 或 Ctrl+Shift+F；留空停用");
+        m_searchHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_searchHotkeyEditor, L"全局搜索快捷键");
+        AutomationProperties::SetHelpText(
+            m_searchHotkeyEditor,
+            L"输入键盘快捷键并用加号连接。新组合会先向 Windows 注册，确认可用后才保存。留空可停用。");
+        m_settingsPanel.Children().Append(m_searchHotkeyEditor);
+
+        m_searchHotkeyApplyButton = Button();
+        m_searchHotkeyApplyButton.Content(winrt::box_value(L"应用搜索快捷键"));
+        AutomationProperties::SetName(m_searchHotkeyApplyButton, L"应用全局搜索快捷键");
+        m_settingsPanel.Children().Append(m_searchHotkeyApplyButton);
+
+        m_searchHotkeyStatus = TextBlock();
+        m_searchHotkeyStatus.Text(L"正在读取已保存的搜索快捷键……");
+        m_searchHotkeyStatus.TextWrapping(TextWrapping::Wrap);
+        m_searchHotkeyStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_searchHotkeyStatus, L"搜索快捷键状态");
+        AutomationProperties::SetLiveSetting(
+            m_searchHotkeyStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        m_settingsPanel.Children().Append(m_searchHotkeyStatus);
+
         TextBlock historyTitle;
         historyTitle.Text(L"历史与捕获");
         historyTitle.Style(Application::Current().Resources()
@@ -7491,6 +7718,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 SaveToggleHotkey();
             }
         });
+        m_searchHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading)
+            {
+                SaveSearchHotkey();
+            }
+        });
         m_compactModeToggle.Toggled([this](auto const&, auto const&)
         {
             if (m_settingsLoading) return;
@@ -7621,6 +7855,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 LoadSettings();
             }
         });
+        LoadSearchHotkey();
     }
 
     void MainWindow::LoadSettings()
