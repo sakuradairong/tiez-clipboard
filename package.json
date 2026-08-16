@@ -12,6 +12,7 @@
     "verify:versions": "node scripts/verify-release-versions.mjs",
     "verify:windows-release": "node scripts/verify-windows-native-release.mjs",
     "winui:build": "pwsh -NoProfile -File experiments/winui3-main-window/build.ps1 -Configuration Release",
+    "winui:test:release": "pwsh -NoProfile -File experiments/winui3-main-window/test-release-readiness.ps1 -Configuration Release",
     "winui:package": "pwsh -NoProfile -File experiments/winui3-main-window/package-msix.ps1 -Configuration Release -SkipBuild",
     "preview": "vite preview",
     "tauri": "tauri",

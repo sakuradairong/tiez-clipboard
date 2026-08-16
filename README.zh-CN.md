@@ -74,8 +74,11 @@ TieZ 将常用剪贴板内容保留在本地，不依赖托管服务存储历史
 ```powershell
 npm install
 npm run winui:build
+npm run winui:test:release
 npm run winui:package
 ```
+
+发布就绪命令会启动 5 个互相隔离的原生进程，在首个进程中执行 100 次显示/关闭到托盘循环，并在允许发布 Windows 安装包前强制检查启动延迟和内存上限。
 
 Linux/macOS 开发以及 Windows 源码级回退仍保留 Tauri 前端，并需要对应平台的 Tauri 2 前置依赖：
 

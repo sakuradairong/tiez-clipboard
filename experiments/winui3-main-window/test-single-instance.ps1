@@ -57,6 +57,7 @@ $Primary = $null
 $HiddenSecondary = $null
 $MinimizedSecondary = $null
 $VisibleSecondary = $null
+$ReadyStopwatch = $null
 
 try {
     [Environment]::SetEnvironmentVariable("TIEZ_WINUI_CORE_DLL", $CoreDll, "Process")
@@ -70,6 +71,7 @@ try {
         (Join-Path $TestDirectory "ready.txt"),
         "Process")
 
+    $ReadyStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $Primary = Start-Process `
         -FilePath $Executable `
         -ArgumentList "--autostart" `
@@ -88,10 +90,14 @@ try {
         }
         Start-Sleep -Milliseconds 50
     }
+    $ReadyStopwatch.Stop()
+    $RequestedToReadyMs = [Math]::Round($ReadyStopwatch.Elapsed.TotalMilliseconds, 1)
 
     Start-Sleep -Milliseconds 400
     $Primary.Refresh()
     $InitialHandle = [int64]$Primary.MainWindowHandle
+    $InitialWorkingSetMiB = [Math]::Round($Primary.WorkingSet64 / 1MB, 2)
+    $InitialPrivateMemoryMiB = [Math]::Round($Primary.PrivateMemorySize64 / 1MB, 2)
 
     $HiddenSecondary = Start-Process `
         -FilePath $Executable `
@@ -174,9 +180,15 @@ try {
         }
     }
 
+    $Primary.Refresh()
+    $FinalWorkingSetMiB = [Math]::Round($Primary.WorkingSet64 / 1MB, 2)
+    $FinalPrivateMemoryMiB = [Math]::Round($Primary.PrivateMemorySize64 / 1MB, 2)
+    $PeakWorkingSetMiB = [Math]::Round($Primary.PeakWorkingSet64 / 1MB, 2)
+
     [pscustomobject]@{
         PrimaryPid = $Primary.Id
         PrimaryAlive = -not $Primary.HasExited
+        RequestedToReadyMs = $RequestedToReadyMs
         InitialHiddenHandle = $InitialHandle
         HiddenSecondaryExitCode = $HiddenExitCode
         HandleAfterHiddenRedirect = $HandleAfterHiddenRedirect
@@ -186,6 +198,15 @@ try {
         VisibleSecondaryExitCode = $VisibleExitCode
         LastShownHandle = $ShownHandle
         FinalHiddenHandle = $FinalHiddenHandle
+        InitialWorkingSetMiB = $InitialWorkingSetMiB
+        FinalWorkingSetMiB = $FinalWorkingSetMiB
+        PeakWorkingSetMiB = $PeakWorkingSetMiB
+        InitialPrivateMemoryMiB = $InitialPrivateMemoryMiB
+        FinalPrivateMemoryMiB = $FinalPrivateMemoryMiB
+        PrivateMemoryGrowthMiB = [Math]::Round(
+            $FinalPrivateMemoryMiB - $InitialPrivateMemoryMiB,
+            2)
+        HandleCount = $Primary.HandleCount
         DatabaseCreated = Test-Path -LiteralPath (
             [Environment]::GetEnvironmentVariable("TIEZ_WINUI_DB_PATH", "Process"))
     }
@@ -203,6 +224,7 @@ finally {
             $process.Refresh()
             if (-not $process.HasExited) {
                 Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                $null = $process.WaitForExit(5000)
             }
         }
         catch {

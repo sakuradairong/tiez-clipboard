@@ -29,6 +29,7 @@ The published Windows application is the native WinUI 3 build:
 ```powershell
 npm install
 npm run winui:build
+npm run winui:test:release
 npm run winui:package
 ```
 
@@ -46,7 +47,7 @@ npm run build
 npm run verify:windows-release
 ```
 
-Changes to the native Windows app should also run the focused Rust/ABI tests through `npm run winui:build`. Before a Windows release, run the lifecycle and global-hotkey scripts documented in `experiments/winui3-main-window/README.md`; publishing additionally requires the controlled MSIX signing certificate and timestamp service.
+Changes to the native Windows app should also run the focused Rust/ABI tests through `npm run winui:build`. Before a Windows release, `npm run winui:test:release` must pass its five independent startups, 100-cycle lifecycle, startup-latency, and memory gates; also run the global-hotkey script documented in `experiments/winui3-main-window/README.md`. Publishing additionally requires the controlled MSIX signing certificate and timestamp service.
 
 ## Pull request guidelines
 

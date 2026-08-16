@@ -219,6 +219,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 6. stamps `TieZ.exe` with the synchronized product version and places it beside
    the Rust DLL. Release builds enable the production-data adapter by default.
 
+Before packaging, run the same release-readiness gate used by Windows CI and
+signed releases:
+
+```powershell
+.\test-release-readiness.ps1 -Configuration Release
+```
+
+It creates five independent isolated databases and processes. The first process
+must survive 100 activation and `WM_CLOSE`-to-tray cycles; all five contribute
+requested-to-ready and memory samples. The gate requires a median no greater
+than 750 ms, every one of the worst five samples no greater than 1500 ms, peak
+working set no greater than 512 MiB, and private-memory growth no greater than
+64 MiB. It never reads the production database or the user's configured hotkey.
+
 ### Package, sign, install, and upgrade
 
 Create and re-open an unsigned MSIX for local/CI structural validation:
@@ -389,7 +403,7 @@ recognition. Record the active adapter with every result.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
 - [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
 - [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
-- [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` passes against an isolated temporary database.
+- [ ] `test-release-readiness.ps1 -Configuration Release` passes five independent starts, including 100 lifecycle cycles in the first run, against isolated temporary databases.
 - [ ] `test-hotkey.ps1 -Configuration Release` proves an isolated keyboard shortcut owns its registration, then independently proves real keyboard and mouse-middle input activate the hidden window and survive close-to-tray.
 - [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
 - [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
@@ -485,8 +499,8 @@ recognition. Record the active adapter with every result.
 
 ### Evidence before a real product slice
 
-- [ ] At least five independent release memory runs.
-- [ ] `test-single-instance.ps1 -Configuration Release -LifecycleCycles 100` completes 100 show/WM_CLOSE-to-tray cycles without changing the primary PID or exiting the Rust owner.
+- [ ] `test-release-readiness.ps1 -Configuration Release` records at least five independent release memory runs.
+- [ ] The same readiness command completes 100 show/WM_CLOSE-to-tray cycles without changing the first primary PID or exiting its Rust owner.
 - [ ] `test-hotkey.ps1 -Configuration Release` completes without touching the production database or the user's configured shortcut.
 - [ ] Median requested-to-ready no more than 750 ms.
 - [ ] Worst five requested-to-ready samples no more than 1500 ms.

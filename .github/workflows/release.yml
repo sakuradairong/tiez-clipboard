@@ -172,9 +172,9 @@ jobs:
         shell: pwsh
         run: ./experiments/winui3-main-window/build.ps1 -Configuration Release
 
-      - name: Test native WinUI single-instance activation
+      - name: Test native WinUI release readiness
         shell: pwsh
-        run: ./experiments/winui3-main-window/test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
+        run: ./experiments/winui3-main-window/test-release-readiness.ps1 -Configuration Release
 
       - name: Test configured native WinUI global hotkey
         shell: pwsh

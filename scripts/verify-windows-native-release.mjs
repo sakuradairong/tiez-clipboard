@@ -57,6 +57,7 @@ for (const forbidden of [
 for (const expected of [
   "name: Windows x64 native WinUI MSIX",
   "      - publish-tauri",
+  "test-release-readiness.ps1 -Configuration Release",
   "RequireSigning = $true",
   "AppInstallerBaseUri =",
   "Expected signed MSIX, SHA256, and App Installer assets",
@@ -96,9 +97,46 @@ requireText(
 );
 requireText(
   nativeWorkflow,
+  "run: ./test-release-readiness.ps1 -Configuration Release",
+  "Native Windows CI must enforce the five-run, 100-cycle readiness gate.",
+);
+requireText(
+  nativeWorkflow,
   "run: ./package-msix.ps1 -SkipBuild",
   "Native Windows CI must structurally validate an MSIX.",
 );
+
+forbidText(
+  releaseWorkflow + nativeWorkflow,
+  "LifecycleCycles 10",
+  "Production Windows workflows must not reduce lifecycle validation to ten cycles.",
+);
+
+const readinessScript = read(
+  "experiments/winui3-main-window/test-release-readiness.ps1",
+);
+for (const expected of [
+  "[int]$RunCount = 5",
+  "[int]$LifecycleCycles = 100",
+  "[double]$MaxMedianReadyMs = 750",
+  "[double]$MaxWorstReadyMs = 1500",
+  "[double]$MaxPeakWorkingSetMiB = 512",
+  "[double]$MaxPrivateMemoryGrowthMiB = 64",
+]) {
+  requireText(
+    readinessScript,
+    expected,
+    "The native release-readiness defaults must retain their production thresholds.",
+  );
+}
+
+const packageManifest = JSON.parse(read("package.json"));
+if (
+  packageManifest.scripts?.["winui:test:release"] !==
+  "pwsh -NoProfile -File experiments/winui3-main-window/test-release-readiness.ps1 -Configuration Release"
+) {
+  throw new Error("package.json must expose the canonical WinUI release-readiness command.");
+}
 
 const readme = read("README.md");
 requireText(

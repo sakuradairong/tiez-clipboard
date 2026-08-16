@@ -74,8 +74,13 @@ For the production Windows application, install Node.js LTS, Rust, PowerShell 7,
 ```powershell
 npm install
 npm run winui:build
+npm run winui:test:release
 npm run winui:package
 ```
+
+The release-readiness command starts five isolated native processes, runs 100
+show/close-to-tray cycles in the first process, and enforces startup-latency and
+memory ceilings before a Windows package can be published.
 
 Linux/macOS development and the source-level Windows rollback path retain the Tauri frontend and its platform prerequisites:
 

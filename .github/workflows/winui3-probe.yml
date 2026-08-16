@@ -67,10 +67,10 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Configuration Release -Platform x64
 
-      - name: Test native single-instance activation
+      - name: Test native release readiness
         working-directory: experiments/winui3-main-window
         shell: pwsh
-        run: ./test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
+        run: ./test-release-readiness.ps1 -Configuration Release
 
       - name: Test configured native global hotkey
         working-directory: experiments/winui3-main-window

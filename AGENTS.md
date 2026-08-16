@@ -12,6 +12,7 @@ Run commands from the repository root unless noted otherwise.
 | --- | --- | --- |
 | Install exactly from the lockfile | `npm ci` | This is what CI uses. `npm install` is the documented first-time setup command. |
 | Build the production Windows app | `npm run winui:build` | Uses PowerShell 7 to build the x64 Release WinUI 3 executable and run the focused Rust/ABI tests. |
+| Test Windows release readiness | `npm run winui:test:release` | Runs five isolated Release starts, 100 lifecycle cycles, and startup/memory limits without touching production data. |
 | Validate an unsigned Windows package | `npm run winui:package` | Packages the existing Release build as an unsigned MSIX for structural validation; published packages must be signed. |
 | Run the Tauri desktop app | `npm run tauri:dev` | Linux/macOS implementation and local Windows rollback; requires the platform's Tauri 2 prerequisites. |
 | Run only the Vite frontend | `npm run dev` | Fixed port `1420`; this does not provide the Rust commands/events used by most features. |
@@ -31,7 +32,7 @@ Expected baseline behavior:
 ## Release and packaging workflow
 
 - `.github/workflows/build-platforms.yml` validates unsigned Linux x64 DEB/AppImage and macOS ARM/Intel app/DMG Tauri bundles on pull requests, `master`, and manual runs. It uses `.github/tauri-build-test.conf.json` to disable updater artifacts during build validation.
-- `.github/workflows/winui3-probe.yml` validates the native Windows Release build, lifecycle, global hotkey, and unsigned MSIX structure on pull requests, `master`, and manual runs.
+- `.github/workflows/winui3-probe.yml` validates the native Windows Release build, five-run/100-cycle startup and memory readiness gate, global hotkey, and unsigned MSIX structure on pull requests, `master`, and manual runs.
 - `.github/workflows/release.yml` runs for `v*` tags or manual dispatch. It creates a draft release containing a signed native Windows MSIX/checksum/App Installer feed plus the Linux and macOS Tauri packages. It must never publish a Windows Tauri NSIS/MSI.
 - Linux/macOS Tauri release builds require `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Native Windows publishing additionally requires the controlled `WINUI_MSIX_CERTIFICATE_BASE64`, password, matching Publisher, and RFC 3161 timestamp URL. `.env.example` intentionally leaves inherited hosted services and the Tauri updater disabled for local builds.
 - Release version validation covers the root package files, Tauri config/Cargo files, and `experiments/winui3-main-window/rust-core` Cargo files. Keep all eight reported sources synchronized.
