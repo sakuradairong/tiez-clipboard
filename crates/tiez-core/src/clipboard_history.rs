@@ -3,8 +3,8 @@ use crate::content_identity::{
     calc_image_hash, calc_text_hash, is_text_type, uses_text_content_hash,
 };
 use crate::database_mutation::{
-    delete_record, load_stored_record, save_prepared_record, set_pinned, DeleteRecordPlan,
-    update_pinned_orders, PreparedClipboardRecord, StoredClipboardRecord,
+    delete_record, load_stored_record, save_prepared_record, set_pinned, update_pinned_orders,
+    DeleteRecordPlan, PreparedClipboardRecord, StoredClipboardRecord,
 };
 use crate::encryption::{decrypt_value, encrypt_value, ENCRYPT_PREFIX};
 use crate::privacy::contains_sensitive_info;
@@ -444,10 +444,7 @@ impl MemoryHistory {
         })
     }
 
-    fn reorder_pinned(
-        &mut self,
-        ordered_ids: Vec<i64>,
-    ) -> Result<PinnedOrderResult, HistoryError> {
+    fn reorder_pinned(&mut self, ordered_ids: Vec<i64>) -> Result<PinnedOrderResult, HistoryError> {
         validate_pinned_order(
             self.items
                 .iter()
@@ -730,9 +727,11 @@ impl SqliteHistory {
                         .map_err(|error| {
                             storage_error("failed to prepare clipboard clear", error)
                         })?;
-                    let rows = statement.query_map([], |row| row.get::<_, i64>(0)).map_err(
-                        |error| storage_error("failed to query clearable clipboard entries", error),
-                    )?;
+                    let rows = statement
+                        .query_map([], |row| row.get::<_, i64>(0))
+                        .map_err(|error| {
+                            storage_error("failed to query clearable clipboard entries", error)
+                        })?;
                     rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
                         storage_error("failed to read clearable clipboard entries", error)
                     })?
@@ -746,9 +745,7 @@ impl SqliteHistory {
                     .retain(|entry| entry.is_pinned || !entry.tags.is_empty());
                 let removed_session = previous_session_len - self.session.len();
                 let removed_count = persisted_ids.len() + removed_session;
-                self.last_action = format!(
-                    "Cleared {removed_count} unprotected clipboard entries"
-                );
+                self.last_action = format!("Cleared {removed_count} unprotected clipboard entries");
                 (None, removed_count > 0, None)
             }
             "paste-plain" | "paste-rich" | "copy-plain" | "copy-rich" => {
@@ -832,10 +829,7 @@ impl SqliteHistory {
         })
     }
 
-    fn reorder_pinned(
-        &mut self,
-        ordered_ids: Vec<i64>,
-    ) -> Result<PinnedOrderResult, HistoryError> {
+    fn reorder_pinned(&mut self, ordered_ids: Vec<i64>) -> Result<PinnedOrderResult, HistoryError> {
         if self.read_only {
             return Err(HistoryError::new(
                 HistoryErrorKind::ReadOnly,
@@ -851,7 +845,9 @@ impl SqliteHistory {
                     .query_map([], |row| row.get::<_, i64>(0))?
                     .collect::<Result<Vec<_>, _>>()
             })
-            .map_err(|error| storage_error("failed to load pinned entries for reordering", error))?;
+            .map_err(|error| {
+                storage_error("failed to load pinned entries for reordering", error)
+            })?;
         validate_pinned_order(persisted_ids.into_iter(), &ordered_ids)?;
         let item_count = i64::try_from(ordered_ids.len()).unwrap_or(i64::MAX);
         let orders: Vec<(i64, i64)> = ordered_ids
@@ -1072,12 +1068,13 @@ impl SqliteHistory {
             .ok_or_else(|| entry_not_found(session_id))?;
         entry.is_pinned = true;
         let replacement_id = self.persist_entry(connection, &entry, 0)?;
-        let pinned = set_pinned(connection, replacement_id, true, now_unix_ms()).map_err(|error| {
-            HistoryError::new(
-                HistoryErrorKind::Storage,
-                format!("failed to finalize persisted pin state: {error}"),
-            )
-        })?;
+        let pinned =
+            set_pinned(connection, replacement_id, true, now_unix_ms()).map_err(|error| {
+                HistoryError::new(
+                    HistoryErrorKind::Storage,
+                    format!("failed to finalize persisted pin state: {error}"),
+                )
+            })?;
         if !pinned {
             return Err(entry_not_found(replacement_id));
         }
@@ -1116,8 +1113,7 @@ impl SqliteHistory {
             let rows = statement
                 .query_map([count - limit], |row| row.get::<_, i64>(0))
                 .map_err(|error| storage_error("failed to query history limit", error))?;
-            rows
-                .collect::<Result<Vec<_>, _>>()
+            rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|error| storage_error("failed to read history limit row", error))?
         };
         for entry_id in &deleted_ids {
@@ -1322,16 +1318,12 @@ fn load_privacy_policy(connection: &Connection) -> Result<PrivacyPolicy, History
     .filter(|value| !value.is_empty())
     .map(str::to_owned)
     .collect();
-    let custom_rules = load_setting(
-        connection,
-        "app.privacy_protection_custom_rules",
-        "",
-    )?
-    .lines()
-    .map(str::trim)
-    .filter(|value| !value.is_empty())
-    .map(str::to_owned)
-    .collect();
+    let custom_rules = load_setting(connection, "app.privacy_protection_custom_rules", "")?
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect();
     Ok(PrivacyPolicy {
         enabled,
         kinds,
@@ -2214,10 +2206,7 @@ fn filter_items(items: &[HistoryItem], query: &str) -> Vec<HistoryItem> {
 fn item_matches_query(item: &HistoryItem, query: &str) -> bool {
     match parse_snapshot_query(query) {
         SnapshotQuery::Latest => true,
-        SnapshotQuery::Type {
-            content_type,
-            text,
-        } => {
+        SnapshotQuery::Type { content_type, text } => {
             item.content_type.eq_ignore_ascii_case(content_type)
                 && (text.is_empty() || item_matches_text(item, text))
         }
@@ -2599,11 +2588,7 @@ mod tests {
         let tagged = history
             .update_tags(
                 102,
-                vec![
-                    "  发布  ".to_owned(),
-                    "发布".to_owned(),
-                    "密码".to_owned(),
-                ],
+                vec!["  发布  ".to_owned(), "发布".to_owned(), "密码".to_owned()],
             )
             .unwrap();
 
@@ -2622,9 +2607,7 @@ mod tests {
         assert_eq!(item.preview, SENSITIVE_PREVIEW);
         assert!(!history.content(102).unwrap().available);
 
-        history
-            .update_tags(102, vec!["发布".to_owned()])
-            .unwrap();
+        history.update_tags(102, vec!["发布".to_owned()]).unwrap();
         let item = history
             .snapshot("发布")
             .unwrap()
@@ -2845,14 +2828,16 @@ mod tests {
         assert_eq!(decrypted.0, "hello\nfull content");
         assert_eq!(decrypted.1, "hello world");
         assert_eq!(decrypted.2, "[\"工作\"]");
-        assert!(!history
-            .snapshot("")
-            .unwrap()
-            .items
-            .iter()
-            .find(|item| item.id == 1)
-            .unwrap()
-            .is_sensitive);
+        assert!(
+            !history
+                .snapshot("")
+                .unwrap()
+                .items
+                .iter()
+                .find(|item| item.id == 1)
+                .unwrap()
+                .is_sensitive
+        );
 
         drop(connection);
         drop(history);
@@ -3200,7 +3185,13 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(orders, vec![(1, 1, "winui-test".to_owned()), (2, 2, "winui-test".to_owned())]);
+        assert_eq!(
+            orders,
+            vec![
+                (1, 1, "winui-test".to_owned()),
+                (2, 2, "winui-test".to_owned())
+            ]
+        );
         connection
             .execute_batch(
                 "CREATE TRIGGER reject_second_pin_order
@@ -3463,9 +3454,7 @@ mod tests {
         let mut history = ClipboardHistory::open_sqlite_read_write(path.clone()).unwrap();
         let plain = "person@example.com";
 
-        let result = history
-            .ingest_text(plain.to_owned(), "邮件")
-            .unwrap();
+        let result = history.ingest_text(plain.to_owned(), "邮件").unwrap();
         let entry_id = result.effective_id.unwrap();
 
         let connection = Connection::open(&path).unwrap();
@@ -3606,7 +3595,10 @@ mod tests {
         let session_id = first.effective_id.unwrap();
         assert!(session_id < 0);
         assert_eq!(sqlite_session_len(&history), 1);
-        assert_eq!(history.content(session_id).unwrap().content, "session value");
+        assert_eq!(
+            history.content(session_id).unwrap().content,
+            "session value"
+        );
 
         let duplicate = history
             .ingest_text("session value".to_owned(), "Terminal")
@@ -3722,10 +3714,7 @@ mod tests {
         assert!(session_id < 0);
 
         let tagged = history
-            .update_tags(
-                session_id,
-                vec!["工作".to_owned(), "sensitive".to_owned()],
-            )
+            .update_tags(session_id, vec!["工作".to_owned(), "sensitive".to_owned()])
             .unwrap();
 
         let replacement_id = tagged.replacement_id.unwrap();

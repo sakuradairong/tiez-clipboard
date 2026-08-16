@@ -109,7 +109,7 @@ pub struct TiezCoreHandle {
     tag_catalog: Mutex<TagCatalog>,
     ai_settings: Mutex<AiSettings>,
     cloud_settings: Mutex<CloudSyncSettings>,
-    cloud_sync: NativeCloudSyncService,
+    cloud_sync: Arc<NativeCloudSyncService>,
     clipboard_relay: NativeClipboardRelay,
     paste_hotkeys: NativePasteHotkeys,
     search_hotkey: NativeSearchHotkey,
@@ -155,7 +155,7 @@ impl TiezCoreHandle {
             tag_catalog: Mutex::new(TagCatalog::in_memory()),
             ai_settings: Mutex::new(ai_settings),
             cloud_settings: Mutex::new(cloud_settings),
-            cloud_sync: NativeCloudSyncService::unavailable(),
+            cloud_sync: Arc::new(NativeCloudSyncService::unavailable()),
             clipboard_relay: NativeClipboardRelay::unavailable(),
             paste_hotkeys: NativePasteHotkeys::unavailable(),
             search_hotkey: NativeSearchHotkey::unavailable(),
@@ -212,7 +212,7 @@ impl TiezCoreHandle {
                     .map_err(|error| format!("{}: {error}", database_path.display()))?,
             );
             let inner = Arc::clone(&handle.inner);
-            handle.cloud_sync = NativeCloudSyncService::new(
+            handle.cloud_sync = Arc::new(NativeCloudSyncService::new(
                 &database_path,
                 data_dir.clone(),
                 read_only,
@@ -227,7 +227,7 @@ impl TiezCoreHandle {
                         notify_changed(&inner, generation);
                     }
                 },
-            );
+            ));
             handle.clipboard_relay =
                 NativeClipboardRelay::new(&database_path, data_dir.clone(), read_only);
             handle.paste_hotkeys = NativePasteHotkeys::new(&database_path, read_only);
@@ -980,9 +980,33 @@ fn apply_history_action(
         return Ok(mutation);
     }
 
-    history
+    let mutation = history
         .apply_action(entry_id, action)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    drop(history);
+    if matches!(action, "pin" | "delete" | "clear") {
+        request_cloud_sync_for_history_mutation(handle, &mutation);
+    }
+    Ok(mutation)
+}
+
+fn request_cloud_sync_after_change(handle: &TiezCoreHandle) {
+    if let Err(error) = handle.cloud_sync.request_change() {
+        eprintln!(">>> [CLOUD SYNC] Unable to request automatic sync: {error}");
+    }
+}
+
+fn request_cloud_sync_for_history_mutation(
+    handle: &TiezCoreHandle,
+    mutation: &HistoryMutationResult,
+) {
+    let persisted = mutation.requested_id > 0
+        || mutation.effective_id.is_some_and(|entry_id| entry_id > 0)
+        || mutation.replacement_id.is_some_and(|entry_id| entry_id > 0)
+        || (mutation.action == "clear" && mutation.removed);
+    if persisted {
+        request_cloud_sync_after_change(handle);
+    }
 }
 
 fn paste_latest_history(
@@ -1028,6 +1052,7 @@ fn paste_latest_history(
             .map_err(|error| error.to_string())?;
         deleted.action = action.to_owned();
         deleted.message = format!("{}；粘贴后已删除未保护记录", mutation.message);
+        request_cloud_sync_for_history_mutation(handle, &deleted);
         return Ok(deleted);
     }
     mutation.message = format!("已通过{label}快捷键粘贴最新记录；{}", mutation.message);
@@ -1097,6 +1122,7 @@ fn paste_next_sequential(
                 Ok(mut deleted) => {
                     deleted.action = action.to_owned();
                     deleted.message = format!("{}；顺序粘贴后已删除未保护记录", mutation.message);
+                    request_cloud_sync_for_history_mutation(handle, &deleted);
                     return Ok(deleted);
                 }
                 Err(error) => {
@@ -1201,7 +1227,7 @@ fn import_emoji_favorite(
         .import_file(source_path)
         .map_err(|error| error.to_string())?;
     if mutation.changed {
-        let _ = handle.cloud_sync.request_now();
+        request_cloud_sync_after_change(handle);
     }
     Ok(mutation)
 }
@@ -1217,7 +1243,7 @@ fn remove_emoji_favorite(
         .remove(favorite_path)
         .map_err(|error| error.to_string())?;
     if mutation.changed {
-        let _ = handle.cloud_sync.request_now();
+        request_cloud_sync_after_change(handle);
     }
     Ok(mutation)
 }
@@ -1302,7 +1328,7 @@ fn apply_tag_rename_plan(handle: &TiezCoreHandle, plan: &TagRenamePlan) -> Resul
         notify_changed(&handle.inner, generation);
     }
     if applied > 0 {
-        let _ = handle.cloud_sync.request_now();
+        request_cloud_sync_after_change(handle);
     }
     if let Some(error) = failure {
         return Err(format!(
@@ -1361,7 +1387,7 @@ fn apply_tag_delete_plan(handle: &TiezCoreHandle, plan: &TagDeletePlan) -> Resul
         notify_changed(&handle.inner, generation);
     }
     if applied > 0 {
-        let _ = handle.cloud_sync.request_now();
+        request_cloud_sync_after_change(handle);
     }
     if let Some(error) = failure {
         return Err(format!(
@@ -1430,7 +1456,6 @@ fn create_tagged_text(
     let mut mutation = update_history_tags(handle, entry_id, tags)?;
     mutation.action = "create-tagged-text".to_owned();
     mutation.message = "已添加带标签的手动文本".to_owned();
-    let _ = handle.cloud_sync.request_now();
     Ok(mutation)
 }
 
@@ -1450,6 +1475,7 @@ fn update_history_tags(
             .map_err(|error| error.to_string())?
     };
     notify_changed(&handle.inner, mutation.generation);
+    request_cloud_sync_for_history_mutation(handle, &mutation);
     Ok(mutation)
 }
 
@@ -1468,6 +1494,7 @@ fn reorder_history_pins(
             .map_err(|error| error.to_string())?
     };
     notify_changed(&handle.inner, result.generation);
+    request_cloud_sync_after_change(handle);
     Ok(result)
 }
 
@@ -1607,6 +1634,14 @@ pub(crate) fn ingest_captured_snapshot(
     inner: &TiezCoreInner,
     snapshot: ClipboardSnapshot,
 ) -> Result<Option<u64>, String> {
+    ingest_captured_snapshot_result(inner, snapshot)
+        .map(|result| result.map(|(generation, _)| generation))
+}
+
+pub(crate) fn ingest_captured_snapshot_result(
+    inner: &TiezCoreInner,
+    snapshot: ClipboardSnapshot,
+) -> Result<Option<(u64, bool)>, String> {
     let Some(mut payload) = classify_snapshot(snapshot) else {
         return Ok(None);
     };
@@ -1657,8 +1692,10 @@ pub(crate) fn ingest_captured_snapshot(
             Err(_) => eprintln!(">>> [SEQUENTIAL PASTE] Queue lock is poisoned"),
         }
     }
-    notify_changed(inner, mutation.generation);
-    Ok(Some(mutation.generation))
+    let generation = mutation.generation;
+    let persisted = mutation.effective_id.is_some_and(|entry_id| entry_id > 0);
+    notify_changed(inner, generation);
+    Ok(Some((generation, persisted)))
 }
 
 fn payload_written_to_clipboard(
@@ -1707,7 +1744,16 @@ fn start_capture(handle: &TiezCoreHandle) -> Result<(), String> {
     if session.is_some() {
         return Ok(());
     }
-    *session = Some(win32_capture::start(Arc::clone(&handle.inner))?);
+    let cloud_sync = Arc::clone(&handle.cloud_sync);
+    let request_cloud_sync = Arc::new(move || {
+        if let Err(error) = cloud_sync.request_change() {
+            eprintln!(">>> [CLOUD SYNC] Unable to distribute captured item: {error}");
+        }
+    });
+    *session = Some(win32_capture::start(
+        Arc::clone(&handle.inner),
+        request_cloud_sync,
+    )?);
     Ok(())
 }
 

@@ -572,7 +572,7 @@ capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
 | Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
-| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy and OCR/QR connected, cloud later | 3 |
+| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy, OCR/QR, and automatic WebDAV change distribution connected | 5 (connected) |
 | Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
 | Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
 | Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
@@ -632,7 +632,8 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    priority (files, rich text, image, text), CRLF normalization without trim,
    consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
    worker that never reads the clipboard in WndProc. Configured privacy tagging
-   and protected persistence are connected; cloud distribution remains later;
+   and protected persistence are connected. Positive persisted captures request
+   automatic WebDAV distribution only when both cloud sync and auto sync are enabled;
 6. `ContentOpening` — **WinUI native shell connected**: the shared core rejects
    sensitive/unavailable payloads and dangerous URL protocols, normalizes web
    links, resolves existing files, and creates unique UTF-8/HTML/image temporary

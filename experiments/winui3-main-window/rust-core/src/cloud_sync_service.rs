@@ -116,6 +116,25 @@ impl NativeCloudSyncService {
         self.start_with_trigger(true, true)
     }
 
+    pub fn request_change(&self) -> Result<bool, String> {
+        let database_path = self
+            .database_path
+            .as_ref()
+            .ok_or_else(|| "云同步仅在 WinUI 生产数据模式下可用".to_owned())?;
+        if self.read_only {
+            return Err("当前数据库为只读，不能请求自动云同步".to_owned());
+        }
+        let snapshot = CloudSyncSettings::open_sqlite(database_path, false)
+            .map_err(|error| format!("无法读取自动云同步设置：{error}"))?
+            .snapshot()
+            .map_err(|error| format!("无法读取自动云同步设置：{error}"))?;
+        if !snapshot.enabled || !snapshot.auto_sync {
+            return Ok(false);
+        }
+        self.start_with_trigger(false, false)?;
+        Ok(true)
+    }
+
     fn start_with_trigger(&self, manual: bool, force_snapshot: bool) -> Result<(), String> {
         let database_path = self
             .database_path
@@ -521,6 +540,60 @@ mod tests {
         service.stop();
         assert_eq!(service.status().state, "stopped");
         assert!(!service.status().service_started);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn change_requests_require_enabled_automatic_sync() {
+        let root = std::env::temp_dir().join(format!(
+            "tiez-winui-cloud-change-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let database_path = root.join("clipboard.db");
+        open_database_with_decrypt(&database_path, tiez_core::encryption::decrypt_value).unwrap();
+        let service = NativeCloudSyncService::new(&database_path, &root, false, || {});
+
+        assert!(!service.request_change().unwrap());
+        assert!(!service.status().service_started);
+
+        let connection = rusqlite::Connection::open(&database_path).unwrap();
+        connection
+            .execute(
+                "UPDATE settings SET value = 'true' WHERE key = 'cloud_sync_enabled'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('cloud_sync_auto', 'false')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .unwrap();
+        assert!(!service.request_change().unwrap());
+        assert!(!service.status().service_started);
+
+        connection
+            .execute(
+                "UPDATE settings SET value = 'true' WHERE key = 'cloud_sync_auto'",
+                [],
+            )
+            .unwrap();
+        assert!(service.request_change().unwrap());
+        drop(connection);
+        for _ in 0..100 {
+            if service.status().state != "starting" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(service.status().service_started);
+
+        service.stop();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

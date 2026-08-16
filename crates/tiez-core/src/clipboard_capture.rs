@@ -102,7 +102,9 @@ pub fn extract_html_fragment(raw: &str) -> Option<String> {
         }
     }
     if trimmed.contains("Version:") && trimmed.contains("StartHTML:") {
-        return trimmed.find('<').map(|idx| trimmed[idx..].trim().to_owned());
+        return trimmed
+            .find('<')
+            .map(|idx| trimmed[idx..].trim().to_owned());
     }
     if trimmed.contains('<') && trimmed.contains('>') {
         return Some(trimmed.to_owned());
@@ -148,9 +150,9 @@ impl CapturedPayload {
 
     pub fn content(&self) -> String {
         match self {
-            Self::Text { content, .. } | Self::RichText { content, .. } | Self::Image { content } => {
-                content.clone()
-            }
+            Self::Text { content, .. }
+            | Self::RichText { content, .. }
+            | Self::Image { content } => content.clone(),
             Self::Files { paths } => paths.join("\n"),
         }
     }
@@ -390,9 +392,7 @@ mod tests {
         assert!(filter
             .accept_payload_with_dedup(duplicate.clone(), false)
             .is_ok());
-        assert!(filter
-            .accept_payload_with_dedup(duplicate, false)
-            .is_ok());
+        assert!(filter.accept_payload_with_dedup(duplicate, false).is_ok());
 
         filter.note_self_write("echo");
         let echo = classify_snapshot(ClipboardSnapshot {

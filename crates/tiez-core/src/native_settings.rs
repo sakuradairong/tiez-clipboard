@@ -232,11 +232,9 @@ impl NativeSettings {
                 }
                 for &(key, default_value, max_length) in COMPATIBILITY_TEXT_SETTINGS {
                     let value = connection
-                        .query_row(
-                            "SELECT value FROM settings WHERE key = ?1",
-                            [key],
-                            |row| row.get::<_, String>(0),
-                        )
+                        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                            row.get::<_, String>(0)
+                        })
                         .optional()
                         .map_err(|error| {
                             storage_error(
@@ -344,17 +342,15 @@ impl NativeSettings {
         Ok(CapturePreferences {
             deduplicate: bool_value(&snapshot.values, "app.deduplicate", true),
             capture_files: bool_value(&snapshot.values, "app.capture_files", false),
-            capture_rich_text: bool_value(
-                &snapshot.values,
-                "app.capture_rich_text",
-                false,
-            ),
+            capture_rich_text: bool_value(&snapshot.values, "app.capture_rich_text", false),
         })
     }
 }
 
 fn setting_definition(key: &str) -> Option<&'static SettingDefinition> {
-    NATIVE_SETTINGS.iter().find(|definition| definition.key == key)
+    NATIVE_SETTINGS
+        .iter()
+        .find(|definition| definition.key == key)
 }
 
 fn default_values() -> BTreeMap<String, String> {
@@ -366,9 +362,11 @@ fn default_values() -> BTreeMap<String, String> {
                 definition.default_value.to_owned(),
             )
         })
-        .chain(COMPATIBILITY_TEXT_SETTINGS.iter().map(
-            |(key, default_value, _)| ((*key).to_owned(), (*default_value).to_owned()),
-        ))
+        .chain(
+            COMPATIBILITY_TEXT_SETTINGS
+                .iter()
+                .map(|(key, default_value, _)| ((*key).to_owned(), (*default_value).to_owned())),
+        )
         .collect()
 }
 
@@ -380,14 +378,14 @@ fn normalize_value(
         SettingKind::Bool => match value.trim().to_ascii_lowercase().as_str() {
             "true" | "1" => Ok("true".to_owned()),
             "false" | "0" => Ok("false".to_owned()),
-            _ => Err(validation_error(
-                definition.key,
-                "must be true or false",
-            )),
+            _ => Err(validation_error(definition.key, "must be true or false")),
         },
         SettingKind::Integer { min, max } => {
             let parsed = value.trim().parse::<i64>().map_err(|_| {
-                validation_error(definition.key, &format!("must be an integer from {min} to {max}"))
+                validation_error(
+                    definition.key,
+                    &format!("must be an integer from {min} to {max}"),
+                )
             })?;
             if !(min..=max).contains(&parsed) {
                 return Err(validation_error(
@@ -485,18 +483,27 @@ mod tests {
     fn memory_settings_are_allowlisted_and_validated() {
         let mut settings = NativeSettings::in_memory();
         let snapshot = settings.snapshot().unwrap();
-        assert_eq!(snapshot.values.get("app.compact_mode"), Some(&"false".to_owned()));
+        assert_eq!(
+            snapshot.values.get("app.compact_mode"),
+            Some(&"false".to_owned())
+        );
         assert!(!snapshot.values.contains_key("mqtt_password"));
 
         let mutation = settings.update("app.compact_mode", "1").unwrap();
         assert_eq!(mutation.value, "true");
         assert_eq!(mutation.generation, 2);
         assert_eq!(
-            settings.update("mqtt_password", "secret").unwrap_err().kind(),
+            settings
+                .update("mqtt_password", "secret")
+                .unwrap_err()
+                .kind(),
             NativeSettingsErrorKind::Validation
         );
         assert_eq!(
-            settings.update("app.persistent_limit", "100001").unwrap_err().kind(),
+            settings
+                .update("app.persistent_limit", "100001")
+                .unwrap_err()
+                .kind(),
             NativeSettingsErrorKind::Validation
         );
     }
@@ -508,8 +515,14 @@ mod tests {
         let mut settings = NativeSettings::open_sqlite(path.clone(), false).unwrap();
 
         let snapshot = settings.snapshot().unwrap();
-        assert_eq!(snapshot.values.get("app.compact_mode"), Some(&"true".to_owned()));
-        assert_eq!(snapshot.values.get("app.persistent_limit"), Some(&"500".to_owned()));
+        assert_eq!(
+            snapshot.values.get("app.compact_mode"),
+            Some(&"true".to_owned())
+        );
+        assert_eq!(
+            snapshot.values.get("app.persistent_limit"),
+            Some(&"500".to_owned())
+        );
         assert!(!snapshot.values.contains_key("mqtt_password"));
         settings.update("app.capture_files", "true").unwrap();
 
@@ -584,7 +597,10 @@ mod tests {
 
         assert!(settings.snapshot().unwrap().read_only);
         assert_eq!(
-            settings.update("app.compact_mode", "false").unwrap_err().kind(),
+            settings
+                .update("app.compact_mode", "false")
+                .unwrap_err()
+                .kind(),
             NativeSettingsErrorKind::ReadOnly
         );
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 #[cfg(all(windows, not(test)))]
-use crate::ingest_captured_snapshot;
+use crate::ingest_captured_snapshot_result;
 #[cfg(all(windows, not(test)))]
 use crate::win32_paste::{decode_cf_dib, decode_hdrop};
 #[cfg(all(windows, not(test)))]
@@ -82,14 +82,18 @@ impl Drop for Session {
     }
 }
 
-pub fn start(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
+pub fn start(
+    inner: Arc<TiezCoreInner>,
+    on_persisted_change: Arc<dyn Fn() + Send + Sync>,
+) -> Result<Session, String> {
     #[cfg(all(windows, not(test)))]
     {
-        start_windows(inner)
+        start_windows(inner, on_persisted_change)
     }
     #[cfg(not(all(windows, not(test))))]
     {
         let _ = inner;
+        let _ = on_persisted_change;
         Ok(Session {
             stop: Arc::new(AtomicBool::new(false)),
             hwnd: Arc::new(AtomicIsize::new(0)),
@@ -100,7 +104,10 @@ pub fn start(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
 }
 
 #[cfg(all(windows, not(test)))]
-fn start_windows(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
+fn start_windows(
+    inner: Arc<TiezCoreInner>,
+    on_persisted_change: Arc<dyn Fn() + Send + Sync>,
+) -> Result<Session, String> {
     if let Some(existing) = read_clipboard_snapshot() {
         if let Some(payload) = classify_snapshot(existing) {
             if let Ok(mut filter) = inner.capture.lock() {
@@ -115,6 +122,7 @@ fn start_windows(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
 
     let worker_inner = Arc::clone(&inner);
     let worker_stop = Arc::clone(&stop);
+    let worker_change = Arc::clone(&on_persisted_change);
     let worker = thread::Builder::new()
         .name("tiez-winui-clipboard-worker".into())
         .spawn(move || {
@@ -126,7 +134,12 @@ fn start_windows(inner: Arc<TiezCoreInner>) -> Result<Session, String> {
                 let Some(snapshot) = read_clipboard_snapshot() else {
                     continue;
                 };
-                let _ = ingest_captured_snapshot(&worker_inner, snapshot);
+                if matches!(
+                    ingest_captured_snapshot_result(&worker_inner, snapshot),
+                    Ok(Some((_, true)))
+                ) {
+                    worker_change();
+                }
             }
         })
         .map_err(|error| format!("failed to start clipboard worker: {error}"))?;

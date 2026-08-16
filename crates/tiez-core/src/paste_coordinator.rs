@@ -236,10 +236,7 @@ fn looks_like_absolute_path(value: &str) -> bool {
 }
 
 /// Runs the hide → restore-focus → apply → keystroke sequence.
-pub fn execute_paste<E: PasteExecutor>(
-    plan: &PastePlan,
-    executor: &mut E,
-) -> Result<(), String> {
+pub fn execute_paste<E: PasteExecutor>(plan: &PastePlan, executor: &mut E) -> Result<(), String> {
     if plan.hide_window {
         executor.hide_window()?;
     }
@@ -358,7 +355,9 @@ mod tests {
             html_content: None,
             available: false,
             is_sensitive: true,
-            unavailable_reason: Some("Sensitive entry requires the production privacy adapter".to_owned()),
+            unavailable_reason: Some(
+                "Sensitive entry requires the production privacy adapter".to_owned(),
+            ),
         };
         match plan_paste(&unavailable, PasteFormat::Plain, false).unwrap_err() {
             PasteError::Unavailable { item_id, reason } => {
