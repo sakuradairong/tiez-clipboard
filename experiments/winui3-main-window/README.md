@@ -32,7 +32,7 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v21
+        │ dynamic loading + C ABI v22
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
@@ -72,6 +72,9 @@ The C ABI interface is deliberately small:
   translation action for one approved history entry;
 - read and update the exact rich/plain latest-paste shortcut keys, report the
   compatible delete-after-paste policy, and execute either shortcut without
+  exposing unrelated or secret settings;
+- read and update the exact sequential-paste mode/shortcut keys, enqueue native
+  captures in a bounded FIFO, and paste or safely requeue the next record without
   exposing unrelated or secret settings;
 - inspect relay readiness without returning credentials, manage the strict
   shared key in the Windows credential vault, read and update the existing
@@ -135,9 +138,14 @@ versioned request/response structs or another explicitly versioned wire format.
   (disabled by default); both work while the tray process is hidden, release
   held shortcut modifiers before Ctrl+V, and honor `app.delete_after_paste`
   without deleting pinned or tagged records;
+- an independently editable sequential-paste mode and shortcut inherited from
+  `app.sequential_mode` and `app.sequential_hotkey` (default Alt+V); while enabled,
+  native captures enter a bounded FIFO in copy order, a copy after any sequential
+  paste starts a new queue, failures are requeued, and holding Alt while tapping V
+  repeatedly remains usable because the hidden action restores Alt afterward;
 - native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
 - process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
-- a Chinese native settings dialog for theme, compact list, global toggle/search/latest-paste shortcuts, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
+- a Chinese native settings dialog for theme, compact list, global toggle/search/latest/sequential-paste shortcuts, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
 - packaged login startup through the MSIX `StartupTask` contract, plus a current-EXE HKCU Run fallback for unpackaged development; startup activation stays hidden in the tray and packaged ownership removes legacy Tauri Run values;
 - immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
 - a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
@@ -159,7 +167,9 @@ local path or `data:image/` payload write CF_DIB (and PNG when the source is PNG
 File lists write CF_HDROP. Ctrl+V is sent after hiding and restoring the last
 foreground window. Global paste shortcuts explicitly release Ctrl/Alt/Shift/Win
 before the coordinator sends Ctrl+V, so the registered chord does not leak into
-the destination. Synthetic image/file placeholders are not pasteable; use a real
+the destination. Sequential paste restores a physically held Alt key after each
+hidden action so Alt+V can advance the FIFO continuously; failed actions put the
+record back at the front. Synthetic image/file placeholders are not pasteable; use a real
 `clipboard.db` to try those types. Writable SQLite mode decrypts protected payloads
 only inside the Rust core for approved copy/paste operations; native cards and the
 details pane remain redacted. Read-only inspection never exposes protected payloads.
@@ -417,7 +427,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 21`.
+- [ ] Status shows `Rust ABI 22`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -457,6 +467,9 @@ recognition. Record the active adapter with every result.
 - [ ] The Chinese settings dialog reads exact `app.rich_paste_hotkey` / `app.plain_paste_hotkey` values (Alt+Shift+V / disabled when absent), registers them independently before persistence, and keeps the previous saved/working shortcut after invalid input, conflicts, or write failures.
 - [ ] From a hidden tray process, the rich shortcut pastes the newest record with HTML when available, the plain shortcut rejects a newest non-text record and publishes no HTML, and both release their modifiers before Ctrl+V without revealing the main window.
 - [ ] With `app.delete_after_paste=true`, a successful latest-item shortcut removes an unprotected record but preserves pinned or tagged records; read-only mode disables both actions, and shutdown releases both dedicated Win32 registrations.
+- [ ] The Chinese settings dialog reads exact `app.sequential_mode` / `app.sequential_hotkey` values (disabled / Alt+V when absent), registers the shortcut only while the mode is enabled, persists only after Windows accepts a candidate, and restores the previous saved/working state after conflicts or write failures.
+- [ ] While sequential mode is enabled, new native captures enter a FIFO in copy order; each shortcut invocation pastes one rich/plain/image/file payload while the main window stays hidden, a failed paste returns the record to the front, and the first external copy after a successful sequential paste discards the remaining old queue and starts a new one.
+- [ ] Holding Alt and repeatedly tapping V advances the sequential queue without a stuck or leaked modifier; `app.delete_after_paste=true` removes only unprotected successfully pasted records, read-only mode disables the action, the queue is bounded to the newest 200 records, and shutdown releases the dedicated Win32 registration.
 - [ ] The relay panel reads `app.relay_send_hotkey` and `app.relay_fetch_hotkey`, registers both independently, persists only after Windows accepts a candidate, and leaves the previous saved/working shortcut intact after a conflict or database-write failure.
 - [ ] Relay shortcuts run while the main window is hidden, report Chinese success/error through the tray, never reveal the window, and release both registrations during shutdown.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
@@ -554,6 +567,7 @@ capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns
 | Configured keyboard/mouse-middle toggle (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | allowlisted native settings read/write + parsed WinUI `RegisterHotKey` or scoped `WH_MOUSE_LL`, registration-first persistence, rollback, teardown, and last HWND | 5 (connected) |
 | Global search shortcut (default Alt+F) | `focus-search-input` + `app.search_hotkey` | ABI v20 exact-key adapter + parsed WinUI `RegisterHotKey`, registration-first persistence/rollback, hidden-window wake, search focus, and last-HWND preservation | 5 (connected) |
 | Rich/plain latest-paste shortcuts | `paste_latest` + `app.rich_paste_hotkey` / `app.plain_paste_hotkey` / `app.delete_after_paste` | ABI v21 exact-key adapter + independent WinUI `RegisterHotKey`, held-modifier release, hidden-window latest-item paste, text-only plain guard, protected delete-after policy, rollback, and teardown | 5 (connected) |
+| Sequential paste mode / shortcut | paste queue + `app.sequential_mode` / `app.sequential_hotkey` / `app.delete_after_paste` | ABI v22 bounded native-capture FIFO + mode-scoped WinUI `RegisterHotKey`, hidden rich/plain/image/file paste, failure requeue, post-paste new-copy reset, held-Alt restoration, protected delete-after policy, rollback, and teardown | 5 (connected) |
 | Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
 | System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
 | Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
@@ -600,15 +614,17 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    **write** adapter now persists pin/delete/tag/pinned-order changes when the probe is the
    only process. Pinning or tagging session entries returns the positive
    replacement ID, while sensitive tag changes synchronously protect storage;
-3. `PasteCoordinator` — **latest-paste shortcuts connected**: payload planning,
+3. `PasteCoordinator` — **latest and sequential paste shortcuts connected**: payload planning,
    hide/restore-focus/Ctrl+V contract, delete-after-paste intent, and a bounded
    paste-queue policy. ABI v21 reads the compatible rich/plain shortcut keys,
    releases held modifiers, pastes the newest eligible record while hidden, and
-   preserves pinned/tagged records under delete-after-paste. WinUI executes
+   preserves pinned/tagged records under delete-after-paste. ABI v22 also owns
+   the compatible sequential-mode/hotkey settings and a 200-record native-capture
+   FIFO with failure requeue and post-paste new-copy reset. WinUI executes
    Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
    Tauri still wraps the existing Win32 clipboard/keystroke path after planning
    text payloads;
-4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable keyboard/mouse-middle toggle plus ABI v21 search and latest-paste shortcuts, Esc hide,
+4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable keyboard/mouse-middle toggle plus ABI v22 search, latest-paste, and sequential-paste shortcuts, Esc hide,
    deactivate hide unless pinned, last-foreground HWND for paste, native tray,
    close-to-hide, explicit tray exit, Explorer restart recovery, AppLifecycle
    launch redirection, and shared per-database single-instance ownership;

@@ -22,6 +22,7 @@ namespace
     constexpr UINT kSearchHotkeyId = 4;
     constexpr UINT kRichPasteHotkeyId = 5;
     constexpr UINT kPlainPasteHotkeyId = 6;
+    constexpr UINT kSequentialPasteHotkeyId = 7;
     constexpr UINT_PTR kMessageWindowSubclassId = 1;
     constexpr UINT_PTR kMainWindowSubclassId = 2;
     constexpr UINT_PTR kHoverPreviewSubclassId = 3;
@@ -101,6 +102,24 @@ namespace
             inputs,
             static_cast<int>(sizeof(INPUT)));
         Sleep(50);
+    }
+
+    bool IsAltKeyDown()
+    {
+        return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    }
+
+    void RestoreSequentialAlt(bool wasDown)
+    {
+        if (!wasDown)
+        {
+            return;
+        }
+        Sleep(20);
+        INPUT input{};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = VK_MENU;
+        SendInput(1, &input, static_cast<int>(sizeof(INPUT)));
     }
 
     std::wstring UpperAscii(std::wstring value)
@@ -1078,6 +1097,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             LoadRelayHotkeys();
             LoadSearchHotkey();
             LoadPasteHotkeys();
+            LoadSequentialPaste();
             RefreshAutostartStateAsync(true);
             if (m_productionData && !m_settingsReadOnly)
             {
@@ -5960,6 +5980,298 @@ namespace winrt::Tiez::WinUIProbe::implementation
         m_suspendLifecycle = false;
     }
 
+    void MainWindow::LoadSequentialPaste()
+    {
+        if (!m_core || m_hotkeyHwnd == nullptr)
+        {
+            return;
+        }
+        m_sequentialPasteLoading = true;
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->SequentialPaste()));
+            m_sequentialPasteAvailable = response.GetNamedBoolean(L"available", false);
+            m_sequentialPasteReadOnly = response.GetNamedBoolean(L"read_only", true);
+            m_sequentialPasteEnabled = response.GetNamedBoolean(L"enabled", false);
+            auto const hotkey = response.GetNamedString(L"hotkey", L"");
+            auto const queuedItems = static_cast<std::uint32_t>(
+                response.GetNamedNumber(L"queued_items", 0));
+            m_configuredSequentialPasteHotkey = hotkey;
+            auto const canRegister = m_sequentialPasteAvailable
+                && !m_sequentialPasteReadOnly
+                && m_sequentialPasteEnabled;
+            auto const applied = ApplyRelayHotkey(
+                kSequentialPasteHotkeyId,
+                canRegister ? hotkey : winrt::hstring{},
+                m_sequentialPasteHotkeyRegistered,
+                m_sequentialPasteHotkeyModifiers,
+                m_sequentialPasteHotkeyVirtualKey,
+                m_registeredSequentialPasteHotkey,
+                L"顺序粘贴");
+
+            if (m_sequentialModeToggle)
+            {
+                m_sequentialModeToggle.IsOn(m_sequentialPasteEnabled);
+                m_sequentialModeToggle.IsEnabled(
+                    m_sequentialPasteAvailable && !m_sequentialPasteReadOnly);
+            }
+            if (m_sequentialHotkeyEditor)
+            {
+                m_sequentialHotkeyEditor.Text(hotkey);
+                m_sequentialHotkeyEditor.IsEnabled(
+                    m_sequentialPasteAvailable && !m_sequentialPasteReadOnly);
+            }
+            if (m_sequentialHotkeyApplyButton)
+            {
+                m_sequentialHotkeyApplyButton.IsEnabled(
+                    m_sequentialPasteAvailable && !m_sequentialPasteReadOnly);
+            }
+            if (m_sequentialPasteStatus)
+            {
+                std::wstring message;
+                if (!m_sequentialPasteAvailable)
+                {
+                    auto const reason = response.GetNamedValue(L"unavailable_reason");
+                    message = reason.ValueType() == JsonValueType::String
+                        ? reason.GetString().c_str()
+                        : L"当前运行模式不支持顺序粘贴。";
+                }
+                else if (m_sequentialPasteReadOnly)
+                {
+                    message = L"当前数据库为只读，顺序粘贴和快捷键均已停用。";
+                }
+                else if (!m_sequentialPasteEnabled)
+                {
+                    message = L"顺序粘贴模式已关闭；已保留快捷键设置：";
+                    message.append(hotkey.empty() ? L"未设置" : hotkey.c_str());
+                }
+                else
+                {
+                    message = applied ? L"顺序粘贴已启用：" : L"顺序粘贴快捷键当前不可用：";
+                    message.append(hotkey.empty() ? L"未设置" : hotkey.c_str());
+                    message.append(L"；队列中有 ");
+                    message.append(std::to_wstring(queuedItems));
+                    message.append(L" 条。新一轮复制会重置剩余队列。");
+                }
+                m_sequentialPasteStatus.Text(winrt::hstring{ message });
+            }
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"读取顺序粘贴设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(message);
+            SetStatus(message);
+        }
+        m_sequentialPasteLoading = false;
+    }
+
+    void MainWindow::SaveSequentialHotkey()
+    {
+        if (!m_core
+            || !m_sequentialPasteAvailable
+            || m_sequentialPasteReadOnly
+            || !m_sequentialHotkeyEditor)
+        {
+            auto const message = winrt::hstring{ L"当前模式不能修改顺序粘贴快捷键。" };
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(message);
+            SetStatus(message);
+            return;
+        }
+        auto const candidate = winrt::hstring{
+            TrimHotkeyText(m_sequentialHotkeyEditor.Text().c_str()) };
+        if (!ParseHotkey(candidate.c_str()))
+        {
+            m_sequentialHotkeyEditor.Text(m_configuredSequentialPasteHotkey);
+            if (m_sequentialPasteStatus)
+            {
+                m_sequentialPasteStatus.Text(L"快捷键格式无效；原设置保持不变。");
+            }
+            return;
+        }
+        auto const previousConfigured = m_configuredSequentialPasteHotkey;
+        auto const previousRegistered = m_sequentialPasteHotkeyRegistered;
+        auto const previousRegisteredHotkey = m_registeredSequentialPasteHotkey;
+        if (m_sequentialPasteEnabled
+            && !ApplyRelayHotkey(
+                kSequentialPasteHotkeyId,
+                candidate,
+                m_sequentialPasteHotkeyRegistered,
+                m_sequentialPasteHotkeyModifiers,
+                m_sequentialPasteHotkeyVirtualKey,
+                m_registeredSequentialPasteHotkey,
+                L"顺序粘贴"))
+        {
+            m_sequentialHotkeyEditor.Text(previousConfigured);
+            if (m_sequentialPasteStatus)
+            {
+                m_sequentialPasteStatus.Text(
+                    L"快捷键无法启用或已被占用；原设置保持不变。");
+            }
+            return;
+        }
+
+        try
+        {
+            (void)m_core->UpdateSequentialPaste("hotkey", winrt::to_string(candidate));
+            m_configuredSequentialPasteHotkey = candidate;
+            m_sequentialHotkeyEditor.Text(candidate);
+            std::wstring message = candidate.empty()
+                ? L"顺序粘贴快捷键已停用。"
+                : m_sequentialPasteEnabled
+                    ? L"顺序粘贴快捷键已保存并启用："
+                    : L"顺序粘贴快捷键已保存；开启模式后启用：";
+            if (!candidate.empty())
+            {
+                message.append(candidate.c_str(), candidate.size());
+            }
+            auto const status = winrt::hstring{ message };
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(status);
+            SetStatus(status);
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = !m_sequentialPasteEnabled || ApplyRelayHotkey(
+                kSequentialPasteHotkeyId,
+                rollback,
+                m_sequentialPasteHotkeyRegistered,
+                m_sequentialPasteHotkeyModifiers,
+                m_sequentialPasteHotkeyVirtualKey,
+                m_registeredSequentialPasteHotkey,
+                L"顺序粘贴");
+            m_configuredSequentialPasteHotkey = previousConfigured;
+            m_sequentialHotkeyEditor.Text(previousConfigured);
+            auto const base = StatusMessage(
+                L"保存顺序粘贴快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring message{ base.c_str(), base.size() };
+            message.append(restored ? L"；已恢复原快捷键。" : L"；无法恢复原快捷键。");
+            auto const status = winrt::hstring{ message };
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(status);
+            SetStatus(status);
+        }
+    }
+
+    void MainWindow::SetSequentialMode(bool enabled)
+    {
+        if (!m_core || !m_sequentialPasteAvailable || m_sequentialPasteReadOnly)
+        {
+            return;
+        }
+        auto const previousEnabled = m_sequentialPasteEnabled;
+        auto const previousRegistered = m_sequentialPasteHotkeyRegistered;
+        auto const previousRegisteredHotkey = m_registeredSequentialPasteHotkey;
+        if (!ApplyRelayHotkey(
+            kSequentialPasteHotkeyId,
+            enabled ? m_configuredSequentialPasteHotkey : winrt::hstring{},
+            m_sequentialPasteHotkeyRegistered,
+            m_sequentialPasteHotkeyModifiers,
+            m_sequentialPasteHotkeyVirtualKey,
+            m_registeredSequentialPasteHotkey,
+            L"顺序粘贴"))
+        {
+            m_sequentialPasteLoading = true;
+            if (m_sequentialModeToggle) m_sequentialModeToggle.IsOn(previousEnabled);
+            m_sequentialPasteLoading = false;
+            if (m_sequentialPasteStatus)
+            {
+                m_sequentialPasteStatus.Text(
+                    L"无法切换顺序粘贴：快捷键格式无效或已被占用。");
+            }
+            return;
+        }
+
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(
+                    m_core->UpdateSequentialPaste("enabled", enabled ? "true" : "false")));
+            m_sequentialPasteEnabled = enabled;
+            auto const queuedItems = static_cast<std::uint32_t>(
+                response.GetNamedNumber(L"queued_items", 0));
+            std::wstring message = enabled
+                ? L"顺序粘贴模式已开启；等待复制内容，当前队列 "
+                : L"顺序粘贴模式已关闭；已保留队列 ";
+            message.append(std::to_wstring(queuedItems));
+            message.append(L" 条。");
+            auto const status = winrt::hstring{ message };
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(status);
+            SetStatus(status);
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = ApplyRelayHotkey(
+                kSequentialPasteHotkeyId,
+                previousEnabled ? rollback : winrt::hstring{},
+                m_sequentialPasteHotkeyRegistered,
+                m_sequentialPasteHotkeyModifiers,
+                m_sequentialPasteHotkeyVirtualKey,
+                m_registeredSequentialPasteHotkey,
+                L"顺序粘贴");
+            m_sequentialPasteLoading = true;
+            if (m_sequentialModeToggle) m_sequentialModeToggle.IsOn(previousEnabled);
+            m_sequentialPasteLoading = false;
+            auto const base = StatusMessage(
+                L"保存顺序粘贴模式失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring message{ base.c_str(), base.size() };
+            message.append(restored ? L"；已恢复原状态。" : L"；无法恢复原快捷键。");
+            auto const status = winrt::hstring{ message };
+            if (m_sequentialPasteStatus) m_sequentialPasteStatus.Text(status);
+            SetStatus(status);
+        }
+    }
+
+    void MainWindow::PasteSequentialFromHotkey()
+    {
+        if (!m_core || !m_sequentialPasteEnabled)
+        {
+            return;
+        }
+        auto const foreground = GetForegroundWindow();
+        if (foreground != nullptr && foreground != GetWindowHandle())
+        {
+            m_lastHwnd = foreground;
+        }
+        PreparePasteTarget();
+        auto const altWasDown = IsAltKeyDown();
+        ReleasePasteShortcutModifiers();
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(
+                    m_core->PasteNextSequential()));
+            RefreshItems();
+            auto const queuedItems = static_cast<std::uint32_t>(
+                response.GetNamedNumber(L"queued_items", 0));
+            std::wstring message = queuedItems == 0
+                ? L"已完成本轮顺序粘贴；队列为空。"
+                : L"已按复制顺序粘贴；队列剩余 ";
+            if (queuedItems != 0)
+            {
+                message.append(std::to_wstring(queuedItems));
+                message.append(L" 条。");
+            }
+            SetStatus(winrt::hstring{ message });
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"顺序粘贴失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+        RestoreSequentialAlt(altWasDown);
+        m_suspendLifecycle = false;
+    }
+
     void MainWindow::TeardownLifecycle()
     {
         RemoveTrayIcon();
@@ -6004,6 +6316,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
             {
                 UnregisterHotKey(m_hotkeyHwnd, kPlainPasteHotkeyId);
                 m_plainPasteHotkeyRegistered = false;
+            }
+            if (m_sequentialPasteHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kSequentialPasteHotkeyId);
+                m_sequentialPasteHotkeyRegistered = false;
             }
             m_hotkeyRegistered = false;
             RemoveWindowSubclass(
@@ -6236,6 +6553,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kPlainPasteHotkeyId)
         {
             PasteLatestFromHotkey(false);
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kSequentialPasteHotkeyId)
+        {
+            PasteSequentialFromHotkey();
             return true;
         }
         if (hwnd == m_hotkeyHwnd
@@ -7671,6 +7993,54 @@ namespace winrt::Tiez::WinUIProbe::implementation
             Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
         m_settingsPanel.Children().Append(m_searchHotkeyStatus);
 
+        TextBlock sequentialPasteTitle;
+        sequentialPasteTitle.Text(L"顺序粘贴");
+        sequentialPasteTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(sequentialPasteTitle);
+
+        TextBlock sequentialPasteDescription;
+        sequentialPasteDescription.Text(
+            L"开启后，TieZ 会把随后复制的记录按复制顺序加入当前会话队列。每按一次专用快捷键粘贴下一条；开始新一轮复制时自动丢弃上一轮未粘贴完的剩余队列。沿用旧版 app.sequential_mode 与 app.sequential_hotkey（默认 Alt+V），触发时保持主窗口隐藏，并在 Ctrl+V 后恢复仍被按住的 Alt，便于按住 Alt 连续点按 V。");
+        sequentialPasteDescription.TextWrapping(TextWrapping::Wrap);
+        sequentialPasteDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(sequentialPasteDescription);
+
+        m_sequentialModeToggle = SettingToggle(
+            L"开启顺序粘贴模式",
+            L"只对开启后复制的记录建立先进先出队列；只读数据库不会注册该快捷键。");
+        AutomationProperties::SetName(m_sequentialModeToggle, L"开启顺序粘贴模式");
+        m_settingsPanel.Children().Append(m_sequentialModeToggle);
+
+        m_sequentialHotkeyEditor = TextBox();
+        m_sequentialHotkeyEditor.Header(winrt::box_value(L"顺序粘贴快捷键"));
+        m_sequentialHotkeyEditor.PlaceholderText(L"例如 Alt+V 或 Ctrl+Alt+F22；留空停用");
+        m_sequentialHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_sequentialHotkeyEditor, L"顺序粘贴快捷键");
+        AutomationProperties::SetHelpText(
+            m_sequentialHotkeyEditor,
+            L"模式开启时，新组合会先向 Windows 注册，确认可用后才保存；模式关闭时仅验证格式并保存。留空可停用。");
+        m_settingsPanel.Children().Append(m_sequentialHotkeyEditor);
+
+        m_sequentialHotkeyApplyButton = Button();
+        m_sequentialHotkeyApplyButton.Content(winrt::box_value(L"应用顺序粘贴快捷键"));
+        AutomationProperties::SetName(
+            m_sequentialHotkeyApplyButton,
+            L"应用顺序粘贴快捷键");
+        m_settingsPanel.Children().Append(m_sequentialHotkeyApplyButton);
+
+        m_sequentialPasteStatus = TextBlock();
+        m_sequentialPasteStatus.Text(L"正在读取顺序粘贴设置……");
+        m_sequentialPasteStatus.TextWrapping(TextWrapping::Wrap);
+        m_sequentialPasteStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_sequentialPasteStatus, L"顺序粘贴状态");
+        AutomationProperties::SetLiveSetting(
+            m_sequentialPasteStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        m_settingsPanel.Children().Append(m_sequentialPasteStatus);
+
         TextBlock pasteHotkeyTitle;
         pasteHotkeyTitle.Text(L"粘贴最新记录快捷键");
         pasteHotkeyTitle.Style(Application::Current().Resources()
@@ -8060,6 +8430,20 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 SaveSearchHotkey();
             }
         });
+        m_sequentialHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading && !m_sequentialPasteLoading)
+            {
+                SaveSequentialHotkey();
+            }
+        });
+        m_sequentialModeToggle.Toggled([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading && !m_sequentialPasteLoading)
+            {
+                SetSequentialMode(m_sequentialModeToggle.IsOn());
+            }
+        });
         m_richPasteHotkeyApplyButton.Click([this](auto const&, auto const&)
         {
             if (!m_settingsLoading)
@@ -8206,6 +8590,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         });
         LoadSearchHotkey();
         LoadPasteHotkeys();
+        LoadSequentialPaste();
     }
 
     void MainWindow::LoadSettings()

@@ -53,6 +53,7 @@ mod cloud_sync_service;
 mod file_transfer_service;
 mod paste_hotkey_service;
 mod search_hotkey_service;
+mod sequential_paste_service;
 mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
@@ -69,8 +70,11 @@ use paste_hotkey_service::{
 use search_hotkey_service::{
     NativeSearchHotkey, NativeSearchHotkeyMutation, NativeSearchHotkeySnapshot,
 };
+use sequential_paste_service::{
+    NativeSequentialPaste, NativeSequentialPasteMutation, NativeSequentialPasteSnapshot,
+};
 
-const ABI_VERSION: u32 = 21;
+const ABI_VERSION: u32 = 22;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -94,6 +98,7 @@ pub(crate) struct TiezCoreInner {
     history: Mutex<ClipboardHistory>,
     settings: Mutex<NativeSettings>,
     capture: Mutex<CaptureFilter>,
+    sequential_paste: Mutex<NativeSequentialPaste>,
     changed: Mutex<Option<ChangedSink>>,
 }
 
@@ -137,6 +142,7 @@ impl TiezCoreHandle {
             history: Mutex::new(history),
             settings: Mutex::new(settings),
             capture: Mutex::new(CaptureFilter::new()),
+            sequential_paste: Mutex::new(NativeSequentialPaste::unavailable()),
             changed: Mutex::new(None),
         });
         let file_transfer = NativeFileTransferService::new(
@@ -226,6 +232,12 @@ impl TiezCoreHandle {
                 NativeClipboardRelay::new(&database_path, data_dir.clone(), read_only);
             handle.paste_hotkeys = NativePasteHotkeys::new(&database_path, read_only);
             handle.search_hotkey = NativeSearchHotkey::new(&database_path, read_only);
+            *handle
+                .inner
+                .sequential_paste
+                .lock()
+                .map_err(|_| "SequentialPaste lock is poisoned".to_owned())? =
+                NativeSequentialPaste::new(&database_path, read_only);
             handle.file_transfer = NativeFileTransferService::new(
                 FileTransferPreferences::open_sqlite(
                     &database_path,
@@ -405,6 +417,29 @@ struct PasteHotkeyMutationResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
     mutation: &'a NativePasteHotkeyMutation,
+}
+
+#[derive(Serialize)]
+struct SequentialPasteSnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativeSequentialPasteSnapshot,
+}
+
+#[derive(Serialize)]
+struct SequentialPasteMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativeSequentialPasteMutation,
+}
+
+#[derive(Serialize)]
+struct SequentialPasteActionResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a HistoryMutationResult,
+    queued_items: usize,
+    queue_finished: bool,
 }
 
 #[derive(Serialize)]
@@ -642,6 +677,39 @@ fn paste_hotkey_mutation_json(mutation: &NativePasteHotkeyMutation) -> Result<St
         mutation,
     })
     .map_err(|error| format!("无法序列化粘贴快捷键结果：{error}"))
+}
+
+fn sequential_paste_snapshot_json(
+    snapshot: &NativeSequentialPasteSnapshot,
+) -> Result<String, String> {
+    serde_json::to_string(&SequentialPasteSnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("无法序列化顺序粘贴状态：{error}"))
+}
+
+fn sequential_paste_mutation_json(
+    mutation: &NativeSequentialPasteMutation,
+) -> Result<String, String> {
+    serde_json::to_string(&SequentialPasteMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("无法序列化顺序粘贴设置结果：{error}"))
+}
+
+fn sequential_paste_action_json(
+    mutation: &HistoryMutationResult,
+    queued_items: usize,
+) -> Result<String, String> {
+    serde_json::to_string(&SequentialPasteActionResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+        queued_items,
+        queue_finished: queued_items == 0,
+    })
+    .map_err(|error| format!("无法序列化顺序粘贴结果：{error}"))
 }
 
 fn emoji_favorites_json(snapshot: &EmojiFavoritesSnapshot) -> Result<String, String> {
@@ -964,6 +1032,105 @@ fn paste_latest_history(
     }
     mutation.message = format!("已通过{label}快捷键粘贴最新记录；{}", mutation.message);
     Ok(mutation)
+}
+
+fn paste_next_sequential(
+    handle: &TiezCoreHandle,
+) -> Result<(HistoryMutationResult, usize), String> {
+    let entry_id = {
+        let mut sequential = handle
+            .inner
+            .sequential_paste
+            .lock()
+            .map_err(|_| "SequentialPaste lock is poisoned".to_owned())?;
+        let snapshot = sequential.snapshot()?;
+        if !snapshot.available {
+            return Err(snapshot
+                .unavailable_reason
+                .unwrap_or_else(|| "顺序粘贴当前不可用".to_owned()));
+        }
+        if snapshot.read_only {
+            return Err("当前数据库为只读，顺序粘贴已停用".to_owned());
+        }
+        if !snapshot.enabled {
+            return Err("请先在设置中开启顺序粘贴模式".to_owned());
+        }
+        sequential
+            .pop_next()
+            .ok_or_else(|| "顺序粘贴队列为空；请先复制需要依次粘贴的内容".to_owned())?
+    };
+
+    let attempt = (|| -> Result<HistoryMutationResult, String> {
+        let (content, protected) = {
+            let history = handle
+                .inner
+                .history
+                .lock()
+                .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+            let item = history
+                .snapshot("")
+                .map_err(|error| error.to_string())?
+                .items
+                .into_iter()
+                .find(|item| item.id == entry_id)
+                .ok_or_else(|| format!("顺序粘贴记录 {entry_id} 已不可用"))?;
+            let content = history
+                .content(entry_id)
+                .map_err(|error| error.to_string())?;
+            (content, item.is_pinned || !item.tags.is_empty())
+        };
+        let action = if content.content_type == "rich_text" && content.html_content.is_some() {
+            "paste-rich"
+        } else {
+            "paste-plain"
+        };
+        let delete_after = handle.paste_hotkeys.delete_after_paste()?;
+        let mut mutation = apply_history_action(handle, entry_id, action)?;
+        if delete_after && !protected {
+            let deletion = handle
+                .inner
+                .history
+                .lock()
+                .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?
+                .apply_action(entry_id, "delete");
+            match deletion {
+                Ok(mut deleted) => {
+                    deleted.action = action.to_owned();
+                    deleted.message = format!("{}；顺序粘贴后已删除未保护记录", mutation.message);
+                    return Ok(deleted);
+                }
+                Err(error) => {
+                    mutation.message = format!(
+                        "{}；顺序粘贴成功，但自动删除失败：{error}",
+                        mutation.message
+                    );
+                    return Ok(mutation);
+                }
+            }
+        }
+        mutation.message = format!("已按复制顺序粘贴记录；{}", mutation.message);
+        Ok(mutation)
+    })();
+
+    let mutation = match attempt {
+        Ok(mutation) => mutation,
+        Err(error) => {
+            if let Ok(mut sequential) = handle.inner.sequential_paste.lock() {
+                sequential.requeue_front(entry_id);
+            }
+            return Err(error);
+        }
+    };
+    let queued_items = {
+        let mut sequential = handle
+            .inner
+            .sequential_paste
+            .lock()
+            .map_err(|_| "SequentialPaste lock is poisoned".to_owned())?;
+        sequential.mark_pasted();
+        sequential.snapshot()?.queued_items
+    };
+    Ok((mutation, queued_items))
 }
 
 fn paste_transient_text(handle: &TiezCoreHandle, text: &str) -> Result<(), String> {
@@ -1480,6 +1647,16 @@ pub(crate) fn ingest_captured_snapshot(
             .ingest(accepted, "Clipboard")
             .map_err(|error| error.to_string())?
     };
+    if let Some(entry_id) = mutation.effective_id {
+        match inner.sequential_paste.lock() {
+            Ok(mut sequential) => {
+                if let Err(error) = sequential.record_capture(entry_id) {
+                    eprintln!(">>> [SEQUENTIAL PASTE] Unable to enqueue capture: {error}");
+                }
+            }
+            Err(_) => eprintln!(">>> [SEQUENTIAL PASTE] Queue lock is poisoned"),
+        }
+    }
     notify_changed(inner, mutation.generation);
     Ok(Some(mutation.generation))
 }
@@ -2359,6 +2536,68 @@ pub unsafe extern "C" fn tiez_core_paste_latest_json(
 }
 
 #[no_mangle]
+/// Return exact sequential-paste settings and the current FIFO length.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_sequential_paste_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle
+            .inner
+            .sequential_paste
+            .lock()
+            .map_err(|_| "SequentialPaste lock is poisoned".to_owned())?
+            .snapshot()?;
+        into_owned_c_string(sequential_paste_snapshot_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Persist `hotkey` or `enabled` after the native host applies registration.
+///
+/// # Safety
+/// `handle`, `field_utf8`, and `value_utf8` must be valid readable pointers.
+pub unsafe extern "C" fn tiez_core_update_sequential_paste_json(
+    handle: *mut TiezCoreHandle,
+    field_utf8: *const c_char,
+    value_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let field = required_utf8(field_utf8, "field_utf8")?;
+        let value = required_utf8(value_utf8, "value_utf8")?;
+        let mutation = handle
+            .inner
+            .sequential_paste
+            .lock()
+            .map_err(|_| "SequentialPaste lock is poisoned".to_owned())?
+            .update(&field, &value)?;
+        into_owned_c_string(sequential_paste_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Paste and consume the next captured entry from the sequential FIFO.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_paste_next_sequential_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let (mutation, queued_items) = paste_next_sequential(handle)?;
+        into_owned_c_string(sequential_paste_action_json(&mutation, queued_items)?)
+    })
+}
+
+#[no_mangle]
 /// Return AI settings and profile summaries without API keys.
 ///
 /// # Safety
@@ -2881,6 +3120,9 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `tiez_core_update_setting_json`, `tiez_core_get_search_hotkey_json`,
 /// `tiez_core_update_search_hotkey_json`, `tiez_core_get_paste_hotkeys_json`,
 /// `tiez_core_update_paste_hotkey_json`, `tiez_core_paste_latest_json`,
+/// `tiez_core_get_sequential_paste_json`,
+/// `tiez_core_update_sequential_paste_json`,
+/// `tiez_core_paste_next_sequential_json`,
 /// `tiez_core_get_cloud_sync_settings_json`,
 /// `tiez_core_update_cloud_sync_settings_json`,
 /// `tiez_core_probe_cloud_sync_json`, `tiez_core_get_cloud_sync_status_json`,
@@ -3630,6 +3872,145 @@ mod tests {
             tiez_core_destroy(protected_handle);
         }
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sequential_paste_exports_fifo_delete_policy_and_failure_requeue() {
+        let root = temporary_database_root("sequential-paste");
+        std::fs::create_dir_all(&root).unwrap();
+        let settings_path = root.join("settings.db");
+        rusqlite::Connection::open(&settings_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('app.sequential_mode', 'true'),
+                    ('app.sequential_hotkey', 'Alt+V'),
+                    ('app.delete_after_paste', 'true'),
+                    ('mqtt_password', 'must-not-leak');",
+            )
+            .unwrap();
+        let history = ClipboardHistory::in_memory(vec![
+            HistoryItem {
+                id: 1,
+                content_type: "text".to_owned(),
+                preview: "first".to_owned(),
+                source_app: "Notepad".to_owned(),
+                captured_at: "Just now".to_owned(),
+                is_pinned: false,
+                tags: Vec::new(),
+                is_sensitive: false,
+            },
+            HistoryItem {
+                id: 2,
+                content_type: "text".to_owned(),
+                preview: "second protected".to_owned(),
+                source_app: "Notepad".to_owned(),
+                captured_at: "Just now".to_owned(),
+                is_pinned: false,
+                tags: vec!["work".to_owned()],
+                is_sensitive: false,
+            },
+        ]);
+        let mut handle = TiezCoreHandle::wrap(history);
+        handle.paste_hotkeys = NativePasteHotkeys::new(&settings_path, false);
+        {
+            let mut sequential = handle.inner.sequential_paste.lock().unwrap();
+            *sequential = NativeSequentialPaste::new(&settings_path, false);
+            sequential.record_capture(1).unwrap();
+            sequential.record_capture(2).unwrap();
+        }
+        let handle = Box::into_raw(Box::new(handle));
+
+        unsafe {
+            let snapshot = tiez_core_get_sequential_paste_json(handle);
+            assert!(!snapshot.is_null());
+            let json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(json.contains("\"enabled\":true"));
+            assert!(json.contains("\"hotkey\":\"Alt+V\""));
+            assert!(json.contains("\"queued_items\":2"));
+            assert!(!json.contains("must-not-leak"));
+            tiez_core_string_free(snapshot);
+
+            let first = tiez_core_paste_next_sequential_json(handle);
+            assert!(!first.is_null());
+            let json = CStr::from_ptr(first).to_str().unwrap();
+            assert!(json.contains("\"requested_id\":1"));
+            assert!(json.contains("\"removed\":true"));
+            assert!(json.contains("\"queued_items\":1"));
+            assert!(json.contains("顺序粘贴后已删除未保护记录"));
+            tiez_core_string_free(first);
+
+            let second = tiez_core_paste_next_sequential_json(handle);
+            assert!(!second.is_null());
+            let json = CStr::from_ptr(second).to_str().unwrap();
+            assert!(json.contains("\"requested_id\":2"));
+            assert!(json.contains("\"removed\":false"));
+            assert!(json.contains("\"queue_finished\":true"));
+            tiez_core_string_free(second);
+
+            let handle_ref = &*handle;
+            {
+                let mut sequential = handle_ref.inner.sequential_paste.lock().unwrap();
+                sequential.record_capture(2).unwrap();
+            }
+            {
+                let mut history = handle_ref.inner.history.lock().unwrap();
+                history
+                    .update_tags(2, vec!["sensitive".to_owned()])
+                    .unwrap();
+            }
+            assert!(tiez_core_paste_next_sequential_json(handle).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            tiez_core_string_free(error);
+            assert_eq!(
+                handle_ref
+                    .inner
+                    .sequential_paste
+                    .lock()
+                    .unwrap()
+                    .queued_ids(),
+                vec![2]
+            );
+            tiez_core_destroy(handle);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn captured_entries_reset_and_refill_the_sequential_fifo_after_paste() {
+        let root = temporary_database_root("sequential-capture");
+        std::fs::create_dir_all(&root).unwrap();
+        let settings_path = root.join("settings.db");
+        rusqlite::Connection::open(&settings_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('app.sequential_mode', 'true'),
+                    ('app.sequential_hotkey', 'Alt+V');",
+            )
+            .unwrap();
+        let handle = TiezCoreHandle::wrap(ClipboardHistory::in_memory(Vec::new()));
+        {
+            let mut sequential = handle.inner.sequential_paste.lock().unwrap();
+            *sequential = NativeSequentialPaste::new(&settings_path, false);
+        }
+        ingest_captured_text(&handle.inner, "first copied").unwrap();
+        ingest_captured_text(&handle.inner, "second copied").unwrap();
+        assert_eq!(
+            handle.inner.sequential_paste.lock().unwrap().queued_ids(),
+            vec![1, 2]
+        );
+        handle.inner.sequential_paste.lock().unwrap().mark_pasted();
+        ingest_captured_text(&handle.inner, "new copy sequence").unwrap();
+        assert_eq!(
+            handle.inner.sequential_paste.lock().unwrap().queued_ids(),
+            vec![3]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

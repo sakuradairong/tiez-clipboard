@@ -105,6 +105,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void LoadPasteHotkeys();
         void SavePasteHotkey(bool rich);
         void PasteLatestFromHotkey(bool rich);
+        void LoadSequentialPaste();
+        void SaveSequentialHotkey();
+        void SetSequentialMode(bool enabled);
+        void PasteSequentialFromHotkey();
         void SetupTrayIcon();
         void AddTrayIcon();
         void RemoveTrayIcon();
@@ -327,6 +331,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::TextBox m_plainPasteHotkeyEditor{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_plainPasteHotkeyApplyButton{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_pasteHotkeyStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_sequentialModeToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_sequentialHotkeyEditor{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_sequentialHotkeyApplyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_sequentialPasteStatus{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncEnabledToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch m_cloudSyncAutoToggle{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox m_cloudSyncUrlText{ nullptr };
@@ -376,6 +384,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         UINT m_richPasteHotkeyVirtualKey{};
         UINT m_plainPasteHotkeyModifiers{};
         UINT m_plainPasteHotkeyVirtualKey{};
+        UINT m_sequentialPasteHotkeyModifiers{};
+        UINT m_sequentialPasteHotkeyVirtualKey{};
         UINT m_taskbarCreatedMessage{};
         bool m_readyMarkerWritten{};
         bool m_pinned{};
@@ -387,6 +397,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_searchHotkeyRegistered{};
         bool m_richPasteHotkeyRegistered{};
         bool m_plainPasteHotkeyRegistered{};
+        bool m_sequentialPasteHotkeyRegistered{};
         bool m_exitRequested{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
@@ -410,6 +421,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_pasteHotkeysAvailable{};
         bool m_pasteHotkeysReadOnly{};
         bool m_deleteAfterPaste{};
+        bool m_sequentialPasteAvailable{};
+        bool m_sequentialPasteReadOnly{};
+        bool m_sequentialPasteEnabled{};
+        bool m_sequentialPasteLoading{};
         bool m_fileTransferRunning{};
         bool m_fileTransferReadOnly{};
         bool m_fileTransferLoading{};
@@ -437,6 +452,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::hstring m_registeredRichPasteHotkey;
         winrt::hstring m_configuredPlainPasteHotkey;
         winrt::hstring m_registeredPlainPasteHotkey;
+        winrt::hstring m_configuredSequentialPasteHotkey;
+        winrt::hstring m_registeredSequentialPasteHotkey;
         winrt::hstring m_fileTransferQrBase64;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;

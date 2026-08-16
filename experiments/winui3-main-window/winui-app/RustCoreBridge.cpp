@@ -91,6 +91,12 @@ namespace tiez::probe
                 "tiez_core_update_paste_hotkey_json");
             m_pasteLatestJson = Resolve<JsonRequestFn>(
                 "tiez_core_paste_latest_json");
+            m_sequentialPasteJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_sequential_paste_json");
+            m_updateSequentialPasteJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_update_sequential_paste_json");
+            m_pasteNextSequentialJson = Resolve<SettingsJsonFn>(
+                "tiez_core_paste_next_sequential_json");
             m_aiSettingsJson = Resolve<SettingsJsonFn>("tiez_core_get_ai_settings_json");
             m_updateAiSettingsJson = Resolve<JsonRequestFn>(
                 "tiez_core_update_ai_settings_json");
@@ -551,6 +557,43 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust latest-item paste failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::SequentialPaste() const
+    {
+        auto* result = m_sequentialPasteJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust sequential-paste lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateSequentialPaste(
+        std::string_view field,
+        std::string_view value) const
+    {
+        std::string settingField{ field };
+        std::string settingValue{ value };
+        auto* result = m_updateSequentialPasteJson(
+            m_handle,
+            settingField.c_str(),
+            settingValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust sequential-paste update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::PasteNextSequential() const
+    {
+        auto* result = m_pasteNextSequentialJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust sequential paste failed: " + TakeLastError());
         }
         return ConsumeString(result);
     }

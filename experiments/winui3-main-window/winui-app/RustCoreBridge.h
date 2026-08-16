@@ -57,6 +57,11 @@ namespace tiez::probe
             std::string_view kind,
             std::string_view value) const;
         [[nodiscard]] std::string PasteLatest(std::string_view kind) const;
+        [[nodiscard]] std::string SequentialPaste() const;
+        [[nodiscard]] std::string UpdateSequentialPaste(
+            std::string_view field,
+            std::string_view value) const;
+        [[nodiscard]] std::string PasteNextSequential() const;
         [[nodiscard]] std::string AiSettings() const;
         [[nodiscard]] std::string UpdateAiSettings(std::string_view requestJson) const;
         [[nodiscard]] std::string ProbeAiProfile(std::string_view profileId) const;
@@ -158,6 +163,9 @@ namespace tiez::probe
         SettingsJsonFn m_pasteHotkeysJson{};
         UpdateSettingJsonFn m_updatePasteHotkeyJson{};
         JsonRequestFn m_pasteLatestJson{};
+        SettingsJsonFn m_sequentialPasteJson{};
+        UpdateSettingJsonFn m_updateSequentialPasteJson{};
+        SettingsJsonFn m_pasteNextSequentialJson{};
         SettingsJsonFn m_aiSettingsJson{};
         JsonRequestFn m_updateAiSettingsJson{};
         JsonRequestFn m_probeAiProfileJson{};

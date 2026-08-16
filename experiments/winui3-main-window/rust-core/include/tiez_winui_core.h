@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 21,
+    TIEZ_CORE_ABI_VERSION = 22,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -202,6 +202,17 @@ TIEZ_CORE_API char* tiez_core_update_paste_hotkey_json(
 TIEZ_CORE_API char* tiez_core_paste_latest_json(
     TiezCoreHandle* handle,
     const char* kind_utf8);
+
+// Returns/updates app.sequential_mode and app.sequential_hotkey plus the
+// current process-local FIFO length. The host owns Win32 registration.
+TIEZ_CORE_API char* tiez_core_get_sequential_paste_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_update_sequential_paste_json(
+    TiezCoreHandle* handle,
+    const char* field_utf8,
+    const char* value_utf8);
+TIEZ_CORE_API char* tiez_core_paste_next_sequential_json(
+    TiezCoreHandle* handle);
 
 // Returns AI settings and profile summaries without API keys.
 TIEZ_CORE_API char* tiez_core_get_ai_settings_json(TiezCoreHandle* handle);
