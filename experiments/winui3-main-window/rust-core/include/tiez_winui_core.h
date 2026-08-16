@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 13,
+    TIEZ_CORE_ABI_VERSION = 14,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -95,6 +95,29 @@ TIEZ_CORE_API char* tiez_core_apply_action_json(
 TIEZ_CORE_API bool tiez_core_paste_text(
     TiezCoreHandle* handle,
     const char* text_utf8);
+
+// Returns the ordered image Emoji favorites from the existing SQLite setting
+// and managed data directory as newly allocated UTF-8 JSON.
+TIEZ_CORE_API char* tiez_core_get_emoji_favorites_json(
+    TiezCoreHandle* handle);
+
+// Validates and copies a local image into the managed Emoji favorites folder,
+// updates the compatible setting, and returns the mutation as allocated JSON.
+TIEZ_CORE_API char* tiez_core_import_emoji_favorite_json(
+    TiezCoreHandle* handle,
+    const char* source_path_utf8);
+
+// Removes one favorite from the compatible setting. Only files inside the
+// managed Emoji favorites directory may be deleted.
+TIEZ_CORE_API char* tiez_core_remove_emoji_favorite_json(
+    TiezCoreHandle* handle,
+    const char* favorite_path_utf8);
+
+// Pastes an image that is currently registered as an Emoji favorite. The
+// native host owns hiding/focus restoration; Rust owns clipboard + Ctrl+V.
+TIEZ_CORE_API bool tiez_core_paste_emoji_favorite(
+    TiezCoreHandle* handle,
+    const char* favorite_path_utf8);
 
 // Replaces an entry's tags from a UTF-8 JSON string array. Session-only
 // entries receive a positive replacement ID when the tag update persists them.

@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v13
+        │ dynamic loading + C ABI v14
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · cloud_sync runner/SQLite host · image_analysis · content_opening · paste_coordinator · ui_lifecycle
+  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · image_analysis · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -49,6 +49,8 @@ The C ABI interface is deliberately small:
 - report the active adapter and whether it is read-only;
 - apply `pin`, `delete`, protected `clear`, and plain/rich paste or copy actions (memory or writable SQLite);
 - paste transient UTF-8 text without manufacturing a clipboard-history row;
+- list, import, remove, and paste image-Emoji favorites through the existing
+  `app.emoji_favorites` setting and managed `emoji_favorites/` directory;
 - replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
 - replace the complete pinned order from a UTF-8 JSON integer array;
 - read and update a strict allowlist of non-secret daily-use settings;
@@ -82,7 +84,9 @@ versioned request/response structs or another explicitly versioned wire format.
 - a native master-detail view backed by full-content lookup;
 - pin/unpin and delete, including SQLite writes when the probe is the only process;
 - a Chinese “清空历史” confirmation that preserves pinned, tagged, and sensitive-protected entries and is disabled for read-only adapters;
-- a Chinese native Emoji picker with ten grouped categories, keyboard/Narrator names, and Rust-coordinated paste back to the previous window;
+- a Chinese native Emoji and image-favorites picker with ten Unicode categories,
+  keyboard/Narrator names, multi-file PNG/JPEG/GIF/WebP import, managed deletion,
+  and Rust-coordinated paste back to the previous window;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -345,7 +349,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v13 owns the native scheduler and writable
+single-pass runner are shared. ABI v14 owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -357,7 +361,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 13`.
+- [ ] Status shows `Rust ABI 14`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -377,7 +381,9 @@ recognition. Record the active adapter with every result.
 - [ ] Type chips send `type:text` / `type:image` / `type:url` / `type:code` / `type:file`.
 - [ ] Pin/unpin changes the card and generation.
 - [ ] Delete removes an entry.
-- [ ] “表情” opens a Chinese grouped native picker; Tab and Narrator identify every Emoji, selecting one pastes it into the previous window, and no synthetic history row or echo duplicate is created.
+- [ ] “表情” opens a Chinese grouped native picker; Tab and Narrator identify every Unicode Emoji and favorite image, selecting either pastes it into the previous window, and no synthetic history row or echo duplicate is created.
+- [ ] Add several PNG/JPEG/GIF/WebP favorites, restart, and confirm the order and previews survive through the existing `app.emoji_favorites` setting and `emoji_favorites/` directory; spoofed or oversized files are rejected.
+- [ ] Removing a managed favorite updates the setting and deletes only its managed copy; a copied read-only adapter disables add/remove, and a favorite path outside the managed directory is never deleted.
 - [ ] Mutation status shows the Rust result message and generation.
 - [ ] Plain/rich paste writes the system clipboard and sends Ctrl+V after restoring the last HWND.
 - [ ] Image paste writes CF_DIB (and PNG when applicable); file paste writes CF_HDROP.
@@ -488,14 +494,15 @@ window should call, and which extraction phase owns it.
 | Windows login startup / silent activation | Tauri Run value + minimized argument | MSIX `StartupTask` + AppLifecycle activation, with current-EXE Run fallback for unpackaged development | 5 (connected) |
 | Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
 | Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
-| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + ABI 13 + write-only secret and read-only `PROPFIND` | 5 (connected) |
+| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + current ABI + write-only secret and read-only `PROPFIND` | 5 (connected) |
 | WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
 | Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
 | Cloud-sync runner host boundary | Tauri `AppHandle`, repositories, settings, emoji and events | shared `tiez-core::cloud_sync_runner::CloudSyncHost`; typed runtime state/events and bounded remote planning, with no window handle in the port | 5 (defined) |
-| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; WinUI ABI v13 owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; the current WinUI ABI owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
 | Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
 | Unicode Emoji picker / direct paste | `paste_text_directly` | `tiez_core_paste_text` + Chinese native grouped dialog | 5 (connected) |
-| Emoji image favorites, tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
+| Emoji image favorites | `get_emoji_favorites` / `add_emoji_favorite` / `remove_emoji_favorite` / `paste_emoji_image` | shared `tiez-core::emoji_favorites` + ABI v14 + Chinese native preview/import/remove/paste dialog, retaining the existing setting, managed directory, backup, and cloud-sync contracts | 5 (connected) |
+| Tag manager, file transfer, advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -544,7 +551,7 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    and QR decoding run off the UI thread, Tauri keeps its command contract,
    cached text is searchable from native snapshots, and sensitive/encrypted
    results are memory-only with a pre-write privacy recheck.
-9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: ABI v13
+9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: the current ABI
    reads and transactionally writes the existing WebDAV keys, keeps passwords
    write-only, validates HTTPS and safe remote paths, and runs a redirect-free
    read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the
@@ -559,6 +566,13 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    cancellation, worker teardown, and credential-free status; WinUI renders it
    in Chinese. Real-account endurance and multi-device installer testing remain
    required before default cutover.
+10. `EmojiFavorites` — **shared core and WinUI surface connected**: the native
+    picker reads and repairs the existing ordered `app.emoji_favorites` path
+    list, stores validated PNG/JPEG/GIF/WebP bytes in `emoji_favorites/`, and
+    reuses the existing backup/data-path/cloud-sync representation. Removal
+    deletes only canonicalized files inside the managed directory, writable
+    mutations request synchronization, and copied read-only databases remain
+    non-mutating.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
 needs signed installer upgrade, real-account multi-device sync endurance, and

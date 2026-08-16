@@ -72,6 +72,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void LaunchOpenPlan(Windows::Data::Json::JsonObject const& plan);
         void ApplyAction(std::int64_t entryId, std::string_view action);
         void PasteTransientText(winrt::hstring const& text);
+        void PasteFavoriteImage(
+            winrt::hstring const& path,
+            winrt::hstring const& fileName);
         Microsoft::UI::Xaml::UIElement CreateItemCard(
             Windows::Data::Json::JsonObject const& item,
             bool readOnly,

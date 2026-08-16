@@ -523,6 +523,59 @@ namespace
         return selected;
     }
 
+    std::vector<std::filesystem::path> SelectEmojiImagePaths(HWND owner)
+    {
+        winrt::com_ptr<IFileOpenDialog> dialog;
+        winrt::check_hresult(CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            __uuidof(IFileOpenDialog),
+            dialog.put_void()));
+
+        COMDLG_FILTERSPEC filters[] = {
+            { L"支持的图片", L"*.png;*.jpg;*.jpeg;*.gif;*.webp" },
+            { L"所有文件 (*.*)", L"*.*" },
+        };
+        winrt::check_hresult(dialog->SetFileTypes(
+            static_cast<UINT>(std::size(filters)),
+            filters));
+        winrt::check_hresult(dialog->SetTitle(L"添加图片表情收藏"));
+
+        FILEOPENDIALOGOPTIONS options{};
+        winrt::check_hresult(dialog->GetOptions(&options));
+        options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST;
+        options |= FOS_ALLOWMULTISELECT;
+        winrt::check_hresult(dialog->SetOptions(options));
+
+        auto const shown = dialog->Show(owner);
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        {
+            return {};
+        }
+        winrt::check_hresult(shown);
+
+        winrt::com_ptr<IShellItemArray> results;
+        winrt::check_hresult(dialog->GetResults(results.put()));
+        DWORD count{};
+        winrt::check_hresult(results->GetCount(&count));
+        std::vector<std::filesystem::path> selected;
+        selected.reserve(count);
+        for (DWORD index = 0; index < count; ++index)
+        {
+            winrt::com_ptr<IShellItem> item;
+            winrt::check_hresult(results->GetItemAt(index, item.put()));
+            PWSTR rawPath{};
+            winrt::check_hresult(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath));
+            if (rawPath != nullptr)
+            {
+                selected.emplace_back(rawPath);
+                CoTaskMemFree(rawPath);
+            }
+        }
+        return selected;
+    }
+
     winrt::hstring BackupSummary(
         winrt::Windows::Data::Json::JsonObject const& information,
         std::wstring_view prefix)
@@ -961,98 +1014,354 @@ namespace winrt::Tiez::WinUIProbe::implementation
             co_return;
         }
 
-        winrt::hstring selectedEmoji;
         try
         {
-            ContentDialog dialog;
-            dialog.XamlRoot(RootGrid().XamlRoot());
-            dialog.Title(winrt::box_value(L"选择 Emoji 表情"));
-            dialog.CloseButtonText(L"取消");
-            dialog.DefaultButton(ContentDialogButton::Close);
-            dialog.MinWidth(620);
-
-            StackPanel content;
-            content.Spacing(12);
-
-            TextBlock hint;
-            hint.Text(L"选择后会立即粘贴到呼出 TieZ 前使用的窗口；按 Tab 可逐个浏览表情。");
-            hint.TextWrapping(TextWrapping::Wrap);
-            hint.Foreground(Application::Current().Resources()
-                .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
-            content.Children().Append(hint);
-
-            StackPanel groups;
-            groups.Spacing(16);
-            for (auto const& group : EmojiGroups())
-            {
-                TextBlock title;
-                title.Text(winrt::hstring{ group.name });
-                title.Style(Application::Current().Resources()
-                    .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
-                groups.Children().Append(title);
-
-                Grid grid;
-                grid.ColumnSpacing(4);
-                grid.RowSpacing(4);
-                for (int column = 0; column < 8; ++column)
-                {
-                    ColumnDefinition definition;
-                    definition.Width(GridLength{ 1, GridUnitType::Star });
-                    grid.ColumnDefinitions().Append(definition);
-                }
-                auto const rowCount = (group.values.size() + 7) / 8;
-                for (std::size_t row = 0; row < rowCount; ++row)
-                {
-                    RowDefinition definition;
-                    definition.Height(GridLengthHelper::Auto());
-                    grid.RowDefinitions().Append(definition);
-                }
-
-                for (std::size_t index = 0; index < group.values.size(); ++index)
-                {
-                    auto const emoji = winrt::hstring{ group.values[index] };
-                    Button button;
-                    button.Content(winrt::box_value(emoji));
-                    button.FontSize(24);
-                    button.MinWidth(54);
-                    button.Height(46);
-                    button.HorizontalAlignment(HorizontalAlignment::Stretch);
-                    std::wstring accessibleName{ L"表情 " };
-                    accessibleName.append(emoji.c_str(), emoji.size());
-                    AutomationProperties::SetName(button, winrt::hstring{ accessibleName });
-                    AutomationProperties::SetHelpText(button, L"选择后粘贴到上一个窗口");
-                    ToolTipService::SetToolTip(button, winrt::box_value(emoji));
-                    Grid::SetRow(button, static_cast<int>(index / 8));
-                    Grid::SetColumn(button, static_cast<int>(index % 8));
-                    button.Click([dialog, &selectedEmoji, emoji](auto const&, auto const&)
-                    {
-                        selectedEmoji = emoji;
-                        dialog.Hide();
-                    });
-                    grid.Children().Append(button);
-                }
-                groups.Children().Append(grid);
-            }
-
-            ScrollViewer scroller;
-            scroller.MaxHeight(520);
-            scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
-            scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
-            scroller.Content(groups);
-            content.Children().Append(scroller);
-            dialog.Content(content);
-
             m_suspendLifecycle = true;
-            co_await dialog.ShowAsync();
-            if (selectedEmoji.empty())
+            for (;;)
             {
+                auto const favoriteResponse = JsonObject::Parse(
+                    tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->EmojiFavorites()));
+                auto const readOnly = favoriteResponse.GetNamedBoolean(L"read_only", true);
+                auto const favorites = favoriteResponse.GetNamedArray(L"items");
+                winrt::hstring selectedEmoji;
+                winrt::hstring selectedFavoritePath;
+                winrt::hstring selectedFavoriteName;
+                winrt::hstring favoriteToRemove;
+
+                ContentDialog dialog;
+                dialog.XamlRoot(RootGrid().XamlRoot());
+                dialog.Title(winrt::box_value(L"Emoji 与图片表情"));
+                dialog.PrimaryButtonText(L"添加图片");
+                dialog.IsPrimaryButtonEnabled(!readOnly);
+                dialog.CloseButtonText(L"关闭");
+                dialog.DefaultButton(ContentDialogButton::Close);
+                dialog.MinWidth(700);
+
+                StackPanel content;
+                content.Spacing(12);
+
+                TextBlock hint;
+                hint.Text(L"选择后会立即粘贴到呼出 TieZ 前使用的窗口；按 Tab 可浏览全部按钮。");
+                hint.TextWrapping(TextWrapping::Wrap);
+                hint.Foreground(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                content.Children().Append(hint);
+
+                StackPanel groups;
+                groups.Spacing(16);
+
+                TextBlock favoritesTitle;
+                std::wstringstream favoritesLabel;
+                favoritesLabel << L"图片收藏（" << favorites.Size() << L"）";
+                if (readOnly)
+                {
+                    favoritesLabel << L" · 只读";
+                }
+                favoritesTitle.Text(winrt::hstring{ favoritesLabel.str() });
+                favoritesTitle.Style(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+                groups.Children().Append(favoritesTitle);
+
+                if (favorites.Size() == 0)
+                {
+                    TextBlock empty;
+                    empty.Text(readOnly
+                        ? L"当前只读数据副本没有图片表情收藏。"
+                        : L"暂无图片收藏。选择“添加图片”可一次导入多张图片。");
+                    empty.TextWrapping(TextWrapping::Wrap);
+                    empty.Foreground(Application::Current().Resources()
+                        .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+                    groups.Children().Append(empty);
+                }
+                else
+                {
+                    Grid favoriteGrid;
+                    favoriteGrid.ColumnSpacing(8);
+                    favoriteGrid.RowSpacing(8);
+                    for (int column = 0; column < 4; ++column)
+                    {
+                        ColumnDefinition definition;
+                        definition.Width(GridLength{ 1, GridUnitType::Star });
+                        favoriteGrid.ColumnDefinitions().Append(definition);
+                    }
+                    auto const rowCount = (favorites.Size() + 3) / 4;
+                    for (std::uint32_t row = 0; row < rowCount; ++row)
+                    {
+                        RowDefinition definition;
+                        definition.Height(GridLengthHelper::Auto());
+                        favoriteGrid.RowDefinitions().Append(definition);
+                    }
+
+                    for (std::uint32_t index = 0; index < favorites.Size(); ++index)
+                    {
+                        auto const favorite = favorites.GetObjectAt(index);
+                        auto const path = favorite.GetNamedString(L"path");
+                        auto const fileName = favorite.GetNamedString(L"file_name", L"图片表情");
+
+                        StackPanel card;
+                        card.Spacing(4);
+
+                        Button preview;
+                        preview.MinHeight(96);
+                        preview.HorizontalAlignment(HorizontalAlignment::Stretch);
+                        preview.HorizontalContentAlignment(HorizontalAlignment::Center);
+                        preview.VerticalContentAlignment(VerticalAlignment::Center);
+                        try
+                        {
+                            std::wstring displayPath{ path.c_str(), path.size() };
+                            if (displayPath.rfind(L"\\\\?\\", 0) == 0)
+                            {
+                                displayPath.erase(0, 4);
+                            }
+                            std::replace(displayPath.begin(), displayPath.end(), L'\\', L'/');
+                            Microsoft::UI::Xaml::Controls::Image image;
+                            image.Width(112);
+                            image.Height(82);
+                            image.Stretch(Stretch::Uniform);
+                            Microsoft::UI::Xaml::Media::Imaging::BitmapImage bitmap;
+                            bitmap.UriSource(Windows::Foundation::Uri{ L"file:///" + displayPath });
+                            image.Source(bitmap);
+                            preview.Content(image);
+                        }
+                        catch (winrt::hresult_error const&)
+                        {
+                            preview.Content(winrt::box_value(L"无法预览"));
+                        }
+                        std::wstring previewName{ L"粘贴收藏图片 " };
+                        previewName.append(fileName.c_str(), fileName.size());
+                        AutomationProperties::SetName(preview, winrt::hstring{ previewName });
+                        AutomationProperties::SetHelpText(preview, L"选择后粘贴到上一个窗口");
+                        ToolTipService::SetToolTip(preview, winrt::box_value(fileName));
+                        preview.Click([
+                            dialog,
+                            &selectedFavoritePath,
+                            &selectedFavoriteName,
+                            path,
+                            fileName](auto const&, auto const&)
+                        {
+                            selectedFavoritePath = path;
+                            selectedFavoriteName = fileName;
+                            dialog.Hide();
+                        });
+                        card.Children().Append(preview);
+
+                        Button remove;
+                        remove.Content(winrt::box_value(L"删除"));
+                        remove.HorizontalAlignment(HorizontalAlignment::Stretch);
+                        remove.Visibility(readOnly ? Visibility::Collapsed : Visibility::Visible);
+                        std::wstring removeName{ L"删除收藏图片 " };
+                        removeName.append(fileName.c_str(), fileName.size());
+                        AutomationProperties::SetName(remove, winrt::hstring{ removeName });
+                        AutomationProperties::SetHelpText(remove, L"从图片表情收藏中移除");
+                        remove.Click([dialog, &favoriteToRemove, path](auto const&, auto const&)
+                        {
+                            favoriteToRemove = path;
+                            dialog.Hide();
+                        });
+                        card.Children().Append(remove);
+
+                        Grid::SetRow(card, static_cast<int>(index / 4));
+                        Grid::SetColumn(card, static_cast<int>(index % 4));
+                        favoriteGrid.Children().Append(card);
+                    }
+                    groups.Children().Append(favoriteGrid);
+                }
+
+                Border separator;
+                separator.Height(1);
+                separator.Background(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"DividerStrokeColorDefaultBrush")).as<Brush>());
+                groups.Children().Append(separator);
+
+                TextBlock unicodeTitle;
+                unicodeTitle.Text(L"Unicode Emoji");
+                unicodeTitle.Style(Application::Current().Resources()
+                    .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+                groups.Children().Append(unicodeTitle);
+
+                for (auto const& group : EmojiGroups())
+                {
+                    TextBlock title;
+                    title.Text(winrt::hstring{ group.name });
+                    title.Style(Application::Current().Resources()
+                        .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+                    groups.Children().Append(title);
+
+                    Grid grid;
+                    grid.ColumnSpacing(4);
+                    grid.RowSpacing(4);
+                    for (int column = 0; column < 8; ++column)
+                    {
+                        ColumnDefinition definition;
+                        definition.Width(GridLength{ 1, GridUnitType::Star });
+                        grid.ColumnDefinitions().Append(definition);
+                    }
+                    auto const emojiRowCount = (group.values.size() + 7) / 8;
+                    for (std::size_t row = 0; row < emojiRowCount; ++row)
+                    {
+                        RowDefinition definition;
+                        definition.Height(GridLengthHelper::Auto());
+                        grid.RowDefinitions().Append(definition);
+                    }
+
+                    for (std::size_t index = 0; index < group.values.size(); ++index)
+                    {
+                        auto const emoji = winrt::hstring{ group.values[index] };
+                        Button button;
+                        button.Content(winrt::box_value(emoji));
+                        button.FontSize(24);
+                        button.MinWidth(54);
+                        button.Height(46);
+                        button.HorizontalAlignment(HorizontalAlignment::Stretch);
+                        std::wstring accessibleName{ L"表情 " };
+                        accessibleName.append(emoji.c_str(), emoji.size());
+                        AutomationProperties::SetName(button, winrt::hstring{ accessibleName });
+                        AutomationProperties::SetHelpText(button, L"选择后粘贴到上一个窗口");
+                        ToolTipService::SetToolTip(button, winrt::box_value(emoji));
+                        Grid::SetRow(button, static_cast<int>(index / 8));
+                        Grid::SetColumn(button, static_cast<int>(index % 8));
+                        button.Click([dialog, &selectedEmoji, emoji](auto const&, auto const&)
+                        {
+                            selectedEmoji = emoji;
+                            dialog.Hide();
+                        });
+                        grid.Children().Append(button);
+                    }
+                    groups.Children().Append(grid);
+                }
+
+                ScrollViewer scroller;
+                scroller.MaxHeight(560);
+                scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+                scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+                scroller.Content(groups);
+                content.Children().Append(scroller);
+                dialog.Content(content);
+
+                auto const result = co_await dialog.ShowAsync();
+                if (!favoriteToRemove.empty())
+                {
+                    auto const uiThread = winrt::apartment_context{};
+                    auto const path = winrt::to_string(favoriteToRemove);
+                    std::string response;
+                    std::string failure;
+                    co_await winrt::resume_background();
+                    try
+                    {
+                        response = m_core->RemoveEmojiFavorite(path);
+                    }
+                    catch (std::exception const& error)
+                    {
+                        failure = error.what();
+                    }
+                    try
+                    {
+                        co_await uiThread;
+                    }
+                    catch (...)
+                    {
+                        co_return;
+                    }
+                    if (!failure.empty())
+                    {
+                        SetStatus(StatusMessage(
+                            L"删除图片表情失败：",
+                            tiez::probe::RustCoreBridge::Utf8ToHstring(failure)));
+                    }
+                    else
+                    {
+                        auto const mutation = JsonObject::Parse(
+                            tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+                        SetStatus(mutation.GetNamedString(L"message", L"已删除图片表情。"));
+                    }
+                    continue;
+                }
+
+                if (result == ContentDialogResult::Primary)
+                {
+                    auto const selected = SelectEmojiImagePaths(GetWindowHandle());
+                    if (selected.empty())
+                    {
+                        SetStatus(L"已取消添加图片表情。");
+                        continue;
+                    }
+
+                    std::vector<std::string> paths;
+                    paths.reserve(selected.size());
+                    for (auto const& path : selected)
+                    {
+                        paths.push_back(winrt::to_string(winrt::hstring{ path.wstring() }));
+                    }
+                    auto const uiThread = winrt::apartment_context{};
+                    std::vector<std::string> responses;
+                    std::vector<std::string> failures;
+                    co_await winrt::resume_background();
+                    for (auto const& path : paths)
+                    {
+                        try
+                        {
+                            responses.push_back(m_core->ImportEmojiFavorite(path));
+                        }
+                        catch (std::exception const& error)
+                        {
+                            failures.push_back(error.what());
+                        }
+                    }
+                    try
+                    {
+                        co_await uiThread;
+                    }
+                    catch (...)
+                    {
+                        co_return;
+                    }
+
+                    std::size_t imported{};
+                    std::size_t existing{};
+                    for (auto const& response : responses)
+                    {
+                        auto const mutation = JsonObject::Parse(
+                            tiez::probe::RustCoreBridge::Utf8ToHstring(response));
+                        if (mutation.GetNamedBoolean(L"changed", false))
+                        {
+                            ++imported;
+                        }
+                        else
+                        {
+                            ++existing;
+                        }
+                    }
+                    std::wstringstream status;
+                    status << L"图片表情导入完成：新增 " << imported << L" 个";
+                    if (existing > 0)
+                    {
+                        status << L"，已存在 " << existing << L" 个";
+                    }
+                    if (!failures.empty())
+                    {
+                        status << L"，失败 " << failures.size() << L" 个。首个错误："
+                            << tiez::probe::RustCoreBridge::Utf8ToHstring(failures.front()).c_str();
+                    }
+                    SetStatus(winrt::hstring{ status.str() });
+                    continue;
+                }
+
+                if (!selectedFavoritePath.empty())
+                {
+                    PasteFavoriteImage(selectedFavoritePath, selectedFavoriteName);
+                    co_return;
+                }
+                if (!selectedEmoji.empty())
+                {
+                    PasteTransientText(selectedEmoji);
+                    co_return;
+                }
+
                 m_suspendLifecycle = false;
-                SetStatus(L"已取消选择表情。");
+                SetStatus(L"已关闭表情选择器。");
                 SearchBox().Focus(FocusState::Programmatic);
                 co_return;
             }
-
-            PasteTransientText(selectedEmoji);
         }
         catch (winrt::hresult_error const& error)
         {
@@ -2096,6 +2405,27 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             SetStatus(StatusMessage(
                 L"粘贴表情失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+        m_suspendLifecycle = false;
+    }
+
+    void MainWindow::PasteFavoriteImage(
+        winrt::hstring const& path,
+        winrt::hstring const& fileName)
+    {
+        PreparePasteTarget();
+        try
+        {
+            m_core->PasteEmojiFavorite(winrt::to_string(path));
+            std::wstring status{ L"已粘贴图片表情：" };
+            status.append(fileName.c_str(), fileName.size());
+            SetStatus(winrt::hstring{ status });
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                L"粘贴图片表情失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
         m_suspendLifecycle = false;

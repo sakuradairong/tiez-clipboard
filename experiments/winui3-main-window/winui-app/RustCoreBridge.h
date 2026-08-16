@@ -25,6 +25,10 @@ namespace tiez::probe
             std::int64_t entryId,
             std::string_view action) const;
         bool PasteText(std::string_view text) const;
+        [[nodiscard]] std::string EmojiFavorites() const;
+        [[nodiscard]] std::string ImportEmojiFavorite(std::string_view sourcePath) const;
+        [[nodiscard]] std::string RemoveEmojiFavorite(std::string_view favoritePath) const;
+        bool PasteEmojiFavorite(std::string_view favoritePath) const;
         [[nodiscard]] std::string UpdateTags(
             std::int64_t entryId,
             std::string_view tagsJson) const;
@@ -92,6 +96,10 @@ namespace tiez::probe
         PathJsonFn m_scheduleRestore{};
         ApplyActionJsonFn m_applyActionJson{};
         TextActionFn m_pasteText{};
+        SettingsJsonFn m_emojiFavoritesJson{};
+        PathJsonFn m_importEmojiFavoriteJson{};
+        PathJsonFn m_removeEmojiFavoriteJson{};
+        TextActionFn m_pasteEmojiFavorite{};
         UpdateTagsJsonFn m_updateTagsJson{};
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};

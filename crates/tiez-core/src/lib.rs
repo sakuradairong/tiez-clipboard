@@ -15,6 +15,7 @@ pub mod database_bootstrap;
 pub mod database_migrations;
 pub mod database_mutation;
 pub mod encryption;
+pub mod emoji_favorites;
 pub mod image_analysis;
 pub mod native_settings;
 pub mod paste_coordinator;

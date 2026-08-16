@@ -53,6 +53,14 @@ namespace tiez::probe
             m_scheduleRestore = Resolve<PathJsonFn>("tiez_core_schedule_restore_json");
             m_applyActionJson = Resolve<ApplyActionJsonFn>("tiez_core_apply_action_json");
             m_pasteText = Resolve<TextActionFn>("tiez_core_paste_text");
+            m_emojiFavoritesJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_emoji_favorites_json");
+            m_importEmojiFavoriteJson = Resolve<PathJsonFn>(
+                "tiez_core_import_emoji_favorite_json");
+            m_removeEmojiFavoriteJson = Resolve<PathJsonFn>(
+                "tiez_core_remove_emoji_favorite_json");
+            m_pasteEmojiFavorite = Resolve<TextActionFn>(
+                "tiez_core_paste_emoji_favorite");
             m_updateTagsJson = Resolve<UpdateTagsJsonFn>("tiez_core_update_tags_json");
             m_updatePinnedOrderJson = Resolve<UpdatePinnedOrderJsonFn>(
                 "tiez_core_update_pinned_order_json");
@@ -235,6 +243,48 @@ namespace tiez::probe
         if (!m_pasteText(m_handle, textValue.c_str()))
         {
             throw std::runtime_error("Rust transient text paste failed: " + TakeLastError());
+        }
+        return true;
+    }
+
+    std::string RustCoreBridge::EmojiFavorites() const
+    {
+        auto* result = m_emojiFavoritesJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust Emoji favorites lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ImportEmojiFavorite(std::string_view sourcePath) const
+    {
+        std::string path{ sourcePath };
+        auto* result = m_importEmojiFavoriteJson(m_handle, path.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust Emoji favorite import failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::RemoveEmojiFavorite(std::string_view favoritePath) const
+    {
+        std::string path{ favoritePath };
+        auto* result = m_removeEmojiFavoriteJson(m_handle, path.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust Emoji favorite removal failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    bool RustCoreBridge::PasteEmojiFavorite(std::string_view favoritePath) const
+    {
+        std::string path{ favoritePath };
+        if (!m_pasteEmojiFavorite(m_handle, path.c_str()))
+        {
+            throw std::runtime_error("Rust Emoji favorite paste failed: " + TakeLastError());
         }
         return true;
     }

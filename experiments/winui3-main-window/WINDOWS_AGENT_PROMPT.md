@@ -25,9 +25,10 @@ during this validation until the signed upgrade and startup acceptance passes.
 Goals:
 
 1. prove that the unpackaged C++/WinRT WinUI 3 app builds and launches;
-2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v13;
+2. prove that it loads `tiez_winui_core.dll` in-process through C ABI v14;
 3. verify Chinese-first search/details, protected history clearing, tags, pin ordering, capture, copy/paste,
-   safe opening, settings, compact preview, backup/restore, OCR/QR analysis,
+   safe opening, settings, compact preview, Unicode and image Emoji favorites,
+   backup/restore, OCR/QR analysis,
    WebDAV background synchronization, and Windows login startup;
 4. verify the copied production-history adapter is genuinely read-only and the
    writable adapter remains schema/data compatible with Tauri;
@@ -92,32 +93,36 @@ Required negative tests:
 7. open **表情**, use Tab and Narrator to inspect multiple categories, then
    select a multi-code-point Emoji and verify it is pasted into the previous
    window without adding a synthetic or echo clipboard-history row;
-8. activate **Hide for 5 seconds** and verify the exact same process and Rust
+8. in **表情**, import valid PNG/JPEG/GIF/WebP files (including a Chinese file
+   name), verify they persist after restart, paste one into the previous window,
+   remove one, and confirm only the managed copy is deleted. Verify spoofed and
+   oversized images are rejected and copied read-only mode disables add/remove;
+9. activate **Hide for 5 seconds** and verify the exact same process and Rust
    state return.
-9. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
+10. set `TIEZ_WINUI_DB_PATH` to a nonexistent path and verify a visible startup
    error without a crash; clear it afterward.
-10. open details for a synthetic entry, delete it, and verify the list refreshes
+11. open details for a synthetic entry, delete it, and verify the list refreshes
    without crashing or corrupting the native details panel.
-11. verify the WebDAV password is never displayed, blank preserves it, explicit
+12. verify the WebDAV password is never displayed, blank preserves it, explicit
    clear requires confirmation, non-loopback HTTP is rejected, and the test
    action reports a Chinese result without blocking the UI or writing remotely.
-12. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
+13. install the signed MSIX, verify “开机启动 TieZ” matches Task Manager, then
     sign out/in and confirm TieZ remains tray-only until the configured global
     shortcut (Alt+C by default) or the tray icon is used. Disable it in Windows
     settings and verify the native UI explains
     that only Windows can re-enable a user-disabled startup task.
-13. with no TieZ process running, execute `test-single-instance.ps1` for 100
+14. with no TieZ process running, execute `test-single-instance.ps1` for 100
     lifecycle cycles; verify every real WM_CLOSE returns the same primary PID to
     the tray, the hidden duplicate exits without revealing the primary, the
     ordinary duplicate reveals the same primary PID, and both secondary exit
     codes are zero.
-14. enable Narrator, Tab from the type filters into a clipboard record, and
+15. enable Narrator, Tab from the type filters into a clipboard record, and
     verify it is announced as a Chinese list item with pinned/sensitive state,
     type, source, time, and only a non-sensitive preview. Enter or Space must
     open details without pasting, the next Tab must reach the card's action
     buttons, Shift+F10 must open the Chinese card menu, and a sensitive item must
     announce “预览已隐藏” without exposing its preview value.
-15. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
+16. execute `test-hotkey.ps1` with no TieZ process running; verify the isolated
     Ctrl+Alt+F24 registration blocks a second owner, a real key injection reveals
     the hidden native window, and WM_CLOSE returns the same process to the tray.
     Verify the script then starts a separate `MouseMiddle` instance, real mouse

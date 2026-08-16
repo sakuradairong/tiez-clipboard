@@ -36,6 +36,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Native Windows CI now runs an isolated OS-level global-hotkey smoke test before packaging, proving keyboard registration ownership, real keyboard and mouse-middle activation, and close-to-tray survival without touching the user's TieZ data or shortcut.
 - The Chinese native WinUI header can now clear clipboard history after an explicit confirmation while preserving pinned, tagged, and sensitive-protected entries; writable SQLite clears keep cloud-sync tombstones and managed-attachment cleanup semantics, and read-only adapters disable the action.
 - WinUI ABI v13 adds transient UTF-8 text paste for a Chinese native Emoji picker; its ten grouped categories are keyboard and Narrator reachable, paste through the shared Rust coordinator, and do not create a synthetic history row.
+- WinUI ABI v14 adds native image-Emoji favorites: the Chinese picker previews, imports, removes, and pastes PNG, JPEG, GIF, and WebP files through the shared Rust core while preserving the existing `app.emoji_favorites`, `emoji_favorites/`, backup, and WebDAV-sync contracts. Read-only adapters disable mutations, imported bytes are validated and size-limited, and external source files are never deleted.
 
 ### Changed
 

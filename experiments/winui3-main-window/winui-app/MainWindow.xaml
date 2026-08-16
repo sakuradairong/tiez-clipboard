@@ -56,8 +56,8 @@
                     Checked="PinWindowCheck_Changed"
                     Unchecked="PinWindowCheck_Changed" />
                 <Button
-                    AutomationProperties.Name="打开 Emoji 表情选择器"
-                    AutomationProperties.HelpText="选择表情后会粘贴到呼出 TieZ 前使用的窗口。"
+                    AutomationProperties.Name="打开 Emoji 与图片表情选择器"
+                    AutomationProperties.HelpText="选择 Unicode Emoji 或图片收藏后，会粘贴到呼出 TieZ 前使用的窗口。"
                     Click="EmojiButton_Click"
                     Content="表情" />
                 <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />

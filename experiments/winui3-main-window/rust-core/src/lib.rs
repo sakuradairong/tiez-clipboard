@@ -28,6 +28,7 @@ use tiez_core::cloud_sync_settings::{
 use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
+use tiez_core::emoji_favorites::{EmojiFavorites, EmojiFavoritesMutation, EmojiFavoritesSnapshot};
 use tiez_core::image_analysis::{
     analyze_image_entry_from_database, get_image_analysis_from_database, ImageAnalysisResult,
 };
@@ -42,7 +43,7 @@ mod win32_paste;
 
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 
-const ABI_VERSION: u32 = 13;
+const ABI_VERSION: u32 = 14;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -72,6 +73,7 @@ pub(crate) struct TiezCoreInner {
 #[repr(C)]
 pub struct TiezCoreHandle {
     inner: Arc<TiezCoreInner>,
+    emoji_favorites: Mutex<EmojiFavorites>,
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
     session: Mutex<Option<win32_capture::Session>>,
@@ -99,6 +101,7 @@ impl TiezCoreHandle {
                 capture: Mutex::new(CaptureFilter::new()),
                 changed: Mutex::new(None),
             }),
+            emoji_favorites: Mutex::new(EmojiFavorites::in_memory()),
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
             session: Mutex::new(None),
@@ -141,6 +144,10 @@ impl TiezCoreHandle {
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_default();
+            handle.emoji_favorites = Mutex::new(
+                EmojiFavorites::open_sqlite(&database_path, &data_dir, read_only)
+                    .map_err(|error| format!("{}: {error}", database_path.display()))?,
+            );
             let inner = Arc::clone(&handle.inner);
             handle.cloud_sync =
                 NativeCloudSyncService::new(&database_path, data_dir, read_only, move || {
@@ -250,6 +257,20 @@ struct SettingMutationResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct EmojiFavoritesResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a EmojiFavoritesSnapshot,
+}
+
+#[derive(Serialize)]
+struct EmojiFavoritesMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a EmojiFavoritesMutation,
+}
+
+#[derive(Serialize)]
 struct CloudSyncSettingsResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -340,6 +361,22 @@ fn setting_mutation_json(mutation: &NativeSettingMutation) -> Result<String, Str
         mutation,
     })
     .map_err(|error| format!("failed to serialize native setting mutation: {error}"))
+}
+
+fn emoji_favorites_json(snapshot: &EmojiFavoritesSnapshot) -> Result<String, String> {
+    serde_json::to_string(&EmojiFavoritesResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("failed to serialize Emoji favorites: {error}"))
+}
+
+fn emoji_favorites_mutation_json(mutation: &EmojiFavoritesMutation) -> Result<String, String> {
+    serde_json::to_string(&EmojiFavoritesMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("failed to serialize Emoji favorites mutation: {error}"))
 }
 
 fn cloud_sync_settings_json(snapshot: &CloudSyncSettingsSnapshot) -> Result<String, String> {
@@ -506,6 +543,74 @@ fn paste_transient_text(handle: &TiezCoreHandle, text: &str) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn paste_emoji_favorite(handle: &TiezCoreHandle, favorite_path: &str) -> Result<(), String> {
+    let favorite_path = handle
+        .emoji_favorites
+        .lock()
+        .map_err(|_| "EmojiFavorites lock is poisoned".to_owned())?
+        .favorite_path_for_paste(favorite_path)
+        .map_err(|error| error.to_string())?;
+    let content = HistoryContent {
+        id: 0,
+        content_type: "image".to_owned(),
+        content: favorite_path,
+        html_content: None,
+        available: true,
+        is_sensitive: false,
+        unavailable_reason: None,
+    };
+    let plan =
+        plan_paste(&content, PasteFormat::Plain, false).map_err(|error| error.to_string())?;
+    execute_os_paste(&plan)?;
+    if let Ok(mut filter) = handle.inner.capture.lock() {
+        if let Some(payload) = payload_written_to_clipboard(&plan) {
+            filter.note_payload(&payload);
+        }
+    }
+    Ok(())
+}
+
+fn emoji_favorites_snapshot(handle: &TiezCoreHandle) -> Result<EmojiFavoritesSnapshot, String> {
+    handle
+        .emoji_favorites
+        .lock()
+        .map_err(|_| "EmojiFavorites lock is poisoned".to_owned())?
+        .snapshot()
+        .map_err(|error| error.to_string())
+}
+
+fn import_emoji_favorite(
+    handle: &TiezCoreHandle,
+    source_path: &str,
+) -> Result<EmojiFavoritesMutation, String> {
+    let mutation = handle
+        .emoji_favorites
+        .lock()
+        .map_err(|_| "EmojiFavorites lock is poisoned".to_owned())?
+        .import_file(source_path)
+        .map_err(|error| error.to_string())?;
+    if mutation.changed {
+        let _ = handle.cloud_sync.request_now();
+    }
+    Ok(mutation)
+}
+
+fn remove_emoji_favorite(
+    handle: &TiezCoreHandle,
+    favorite_path: &str,
+) -> Result<EmojiFavoritesMutation, String> {
+    let mutation = handle
+        .emoji_favorites
+        .lock()
+        .map_err(|_| "EmojiFavorites lock is poisoned".to_owned())?
+        .remove(favorite_path)
+        .map_err(|error| error.to_string())?;
+    if mutation.changed {
+        let _ = handle.cloud_sync.request_now();
+    }
+    Ok(mutation)
 }
 
 fn update_history_tags(
@@ -1104,6 +1209,89 @@ pub unsafe extern "C" fn tiez_core_paste_text(
             unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
         let text = required_utf8(text_utf8, "text_utf8")?;
         paste_transient_text(handle, &text)?;
+        Ok(true)
+    })
+}
+
+#[no_mangle]
+/// Return image Emoji favorites using the existing SQLite setting and data
+/// directory contract.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_emoji_favorites_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = emoji_favorites_snapshot(handle)?;
+        into_owned_c_string(emoji_favorites_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Import a local image into the managed Emoji favorites directory.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `source_path_utf8` must remain a readable, NUL-terminated UTF-8 path for
+/// this call.
+pub unsafe extern "C" fn tiez_core_import_emoji_favorite_json(
+    handle: *mut TiezCoreHandle,
+    source_path_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let source_path = required_utf8(source_path_utf8, "source_path_utf8")?;
+        let mutation = import_emoji_favorite(handle, &source_path)?;
+        into_owned_c_string(emoji_favorites_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Remove one image from the ordered Emoji favorites list. Managed files are
+/// removed safely; external paths are never deleted.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `favorite_path_utf8` must remain a readable, NUL-terminated UTF-8 path for
+/// this call.
+pub unsafe extern "C" fn tiez_core_remove_emoji_favorite_json(
+    handle: *mut TiezCoreHandle,
+    favorite_path_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let favorite_path = required_utf8(favorite_path_utf8, "favorite_path_utf8")?;
+        let mutation = remove_emoji_favorite(handle, &favorite_path)?;
+        into_owned_c_string(emoji_favorites_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Paste a currently registered image Emoji favorite without creating a
+/// clipboard-history row.
+///
+/// # Safety
+///
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+/// `favorite_path_utf8` must remain a readable, NUL-terminated UTF-8 path for
+/// this call.
+pub unsafe extern "C" fn tiez_core_paste_emoji_favorite(
+    handle: *mut TiezCoreHandle,
+    favorite_path_utf8: *const c_char,
+) -> bool {
+    with_ffi_result(false, || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let favorite_path = required_utf8(favorite_path_utf8, "favorite_path_utf8")?;
+        paste_emoji_favorite(handle, &favorite_path)?;
         Ok(true)
     })
 }
@@ -1709,6 +1897,73 @@ mod tests {
             tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }
+    }
+
+    #[test]
+    fn emoji_favorite_exports_import_list_paste_and_remove_an_image() {
+        let root = temporary_database_root("emoji-favorite-abi");
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("中文收藏.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([80, 160, 240, 255]))
+            .save(&source)
+            .unwrap();
+        let source_utf8 = CString::new(source.to_string_lossy().as_bytes()).unwrap();
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+
+        unsafe {
+            let imported = tiez_core_import_emoji_favorite_json(handle, source_utf8.as_ptr());
+            assert!(!imported.is_null());
+            let imported_json = CStr::from_ptr(imported).to_str().unwrap();
+            assert!(imported_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(imported_json.contains("\"action\":\"add\""));
+            assert!(imported_json.contains("\"changed\":true"));
+            assert!(imported_json.contains("中文收藏.png"));
+            tiez_core_string_free(imported);
+
+            let snapshot = tiez_core_get_emoji_favorites_json(handle);
+            assert!(!snapshot.is_null());
+            let snapshot_json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(snapshot_json.contains("\"adapter\":\"memory\""));
+            assert!(snapshot_json.contains("\"read_only\":false"));
+            assert!(snapshot_json.contains("中文收藏.png"));
+            tiez_core_string_free(snapshot);
+
+            if !tiez_core_paste_emoji_favorite(handle, source_utf8.as_ptr()) {
+                let error = tiez_core_take_last_error();
+                let message = if error.is_null() {
+                    "missing last error".to_owned()
+                } else {
+                    let message = CStr::from_ptr(error).to_string_lossy().into_owned();
+                    tiez_core_string_free(error);
+                    message
+                };
+                panic!("favorite paste failed: {message}");
+            }
+
+            let removed = tiez_core_remove_emoji_favorite_json(handle, source_utf8.as_ptr());
+            assert!(!removed.is_null());
+            let removed_json = CStr::from_ptr(removed).to_str().unwrap();
+            assert!(removed_json.contains("\"action\":\"remove\""));
+            assert!(removed_json.contains("\"items\":[]"));
+            tiez_core_string_free(removed);
+            assert!(source.is_file());
+
+            assert!(!tiez_core_paste_emoji_favorite(
+                handle,
+                source_utf8.as_ptr()
+            ));
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("不在 Emoji 收藏列表"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
