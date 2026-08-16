@@ -247,6 +247,18 @@ pub(crate) fn read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
 }
 
 #[cfg(all(windows, not(test)))]
+pub(crate) fn read_plain_text_exact() -> Result<String, String> {
+    read_clipboard_snapshot()
+        .and_then(|snapshot| snapshot.text)
+        .ok_or_else(|| "剪贴板中没有可发送的文本".to_owned())
+}
+
+#[cfg(not(all(windows, not(test))))]
+pub(crate) fn read_plain_text_exact() -> Result<String, String> {
+    Err("当前测试平台没有可用的 Windows 文本剪贴板".to_owned())
+}
+
+#[cfg(all(windows, not(test)))]
 unsafe fn try_read_clipboard_snapshot() -> Option<ClipboardSnapshot> {
     if OpenClipboard(ptr::null_mut()) == 0 {
         return None;
@@ -320,7 +332,10 @@ unsafe fn read_named_text(name: &str) -> Option<String> {
             .collect();
         String::from_utf16_lossy(&units)
     } else {
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
         String::from_utf8_lossy(&bytes[..end]).into_owned()
     };
     let trimmed = text.trim();

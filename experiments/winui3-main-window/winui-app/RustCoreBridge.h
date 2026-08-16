@@ -64,6 +64,12 @@ namespace tiez::probe
         bool StartCloudSync() const;
         bool RequestCloudSync() const;
         void StopCloudSync() const noexcept;
+        [[nodiscard]] std::string RelayStatus() const;
+        [[nodiscard]] std::string SetRelaySharedKey(std::string_view sharedKey) const;
+        [[nodiscard]] std::string GenerateRelaySharedKey() const;
+        [[nodiscard]] std::string ClearRelaySharedKey() const;
+        [[nodiscard]] std::string SendRelayClipboard() const;
+        [[nodiscard]] std::string FetchRelayClipboard() const;
         [[nodiscard]] std::string FileTransfer() const;
         [[nodiscard]] std::string UpdateFileTransfer(std::string_view requestJson) const;
         bool StartFileTransfer() const;
@@ -147,6 +153,12 @@ namespace tiez::probe
         CloudSyncLifecycleFn m_startCloudSync{};
         CloudSyncLifecycleFn m_requestCloudSync{};
         StopCloudSyncFn m_stopCloudSync{};
+        SettingsJsonFn m_relayStatusJson{};
+        JsonRequestFn m_setRelaySharedKeyJson{};
+        SettingsJsonFn m_generateRelaySharedKeyJson{};
+        SettingsJsonFn m_clearRelaySharedKeyJson{};
+        SettingsJsonFn m_sendRelayClipboardJson{};
+        SettingsJsonFn m_fetchRelayClipboardJson{};
         SettingsJsonFn m_fileTransferJson{};
         JsonRequestFn m_updateFileTransferJson{};
         CloudSyncLifecycleFn m_startFileTransfer{};

@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 17,
+    TIEZ_CORE_ABI_VERSION = 18,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -232,6 +232,27 @@ TIEZ_CORE_API bool tiez_core_request_cloud_sync(TiezCoreHandle* handle);
 
 // Cancels and joins the runner before the native host or DLL is unloaded.
 TIEZ_CORE_API void tiez_core_stop_cloud_sync(TiezCoreHandle* handle);
+
+// Returns sanitized readiness for the relay/v1 WebDAV protocol. The stored
+// shared key and WebDAV password never cross this boundary.
+TIEZ_CORE_API char* tiez_core_get_relay_status_json(TiezCoreHandle* handle);
+
+// Shared keys are strict 64-character lowercase hexadecimal strings and are
+// persisted under the same OS-vault identity used by the Tauri frontend.
+TIEZ_CORE_API char* tiez_core_set_relay_shared_key_json(
+    TiezCoreHandle* handle,
+    const char* shared_key_utf8);
+TIEZ_CORE_API char* tiez_core_generate_relay_shared_key_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_clear_relay_shared_key_json(
+    TiezCoreHandle* handle);
+
+// Blocking relay calls. The native host must execute them away from the UI
+// thread. Fetch copies exact UTF-8 text and records an at-most-once receipt.
+TIEZ_CORE_API char* tiez_core_send_relay_clipboard_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_fetch_relay_clipboard_json(
+    TiezCoreHandle* handle);
 
 // Returns compatible preferences, pairing URL/QR, service state, online
 // devices, and capped chat history. Pairing secrets exist only while running.

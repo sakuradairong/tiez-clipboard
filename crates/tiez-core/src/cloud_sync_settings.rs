@@ -271,6 +271,53 @@ impl CloudSyncSettings {
         )))
     }
 
+    /// Build the secret-bearing WebDAV configuration used by clipboard relay.
+    ///
+    /// Relay is an explicit user action and remains available when automatic
+    /// cloud synchronization is disabled. Legacy WebDAV keys are read only as
+    /// a compatibility fallback; credentials never implement `Serialize` or
+    /// cross the native ABI.
+    pub fn relay_runner_config(
+        &self,
+        device_id: impl Into<String>,
+    ) -> Result<CloudSyncRunnerConfig, CloudSyncSettingsError> {
+        let (_, _, values) = self.load_values()?;
+        let mut resolved = resolve_values(&values);
+        if let CloudSyncSettingsAdapter::Sqlite { database_path, .. } = &self.adapter {
+            let connection = open_connection(database_path, true)?;
+            if resolved.webdav_url.trim().is_empty() {
+                resolved.webdav_url =
+                    read_legacy_setting(&connection, "cloud_sync_server")?.unwrap_or_default();
+            }
+            if resolved.webdav_password.trim().is_empty() {
+                resolved.webdav_password =
+                    read_legacy_setting(&connection, "cloud_sync_api_key")?.unwrap_or_default();
+            }
+        }
+        if resolved.webdav_url.trim().is_empty() {
+            return Err(CloudSyncSettingsError::new(
+                CloudSyncSettingsErrorKind::Validation,
+                "请先配置 WebDAV 地址",
+            ));
+        }
+        validate_webdav_url(&resolved.webdav_url, true)?;
+        Ok(CloudSyncRunnerConfig::new(
+            device_id,
+            resolved.webdav_url,
+            resolved.webdav_username,
+            resolved.webdav_password,
+            resolved.webdav_base_path,
+            resolved.interval_secs,
+            resolved.snapshot_interval_min.saturating_mul(60),
+            CloudSyncContentPrefs {
+                text: resolved.content_prefs.text,
+                image: resolved.content_prefs.image,
+                file_path: resolved.content_prefs.file_path,
+                emoji: resolved.content_prefs.emoji,
+            },
+        ))
+    }
+
     pub fn update(
         &mut self,
         update: CloudSyncSettingsUpdate,
@@ -727,6 +774,20 @@ fn open_connection(
         .map_err(|error| storage_error("failed to open cloud settings database", error))
 }
 
+fn read_legacy_setting(
+    connection: &Connection,
+    key: &str,
+) -> Result<Option<String>, CloudSyncSettingsError> {
+    connection
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()
+        .map_err(|error| {
+            storage_error(&format!("failed to read legacy cloud setting {key}"), error)
+        })
+}
+
 fn storage_error(context: &str, error: impl fmt::Display) -> CloudSyncSettingsError {
     CloudSyncSettingsError::new(
         CloudSyncSettingsErrorKind::Storage,
@@ -820,6 +881,71 @@ mod tests {
         let boundary_json = serde_json::to_string(&mutation.snapshot).unwrap();
         assert!(!boundary_json.contains("secret"));
         assert!(!boundary_json.contains("webdav_password"));
+    }
+
+    #[test]
+    fn relay_runtime_config_does_not_require_background_sync_to_be_enabled() {
+        let mut settings = CloudSyncSettings::in_memory();
+        settings
+            .update(CloudSyncSettingsUpdate {
+                enabled: false,
+                ..update_for("https://dav.example.test/relay".to_owned())
+            })
+            .unwrap();
+
+        assert!(settings.runner_config("device-a").unwrap().is_none());
+        let relay = settings.relay_runner_config("device-a").unwrap();
+        assert_eq!(relay.webdav_url, "https://dav.example.test/relay");
+        assert_eq!(relay.webdav_password, "secret");
+        assert_eq!(relay.device_id, "device-a");
+    }
+
+    #[test]
+    fn relay_runtime_config_reads_legacy_webdav_fallback_without_exporting_it() {
+        let path = temporary_database("legacy-relay");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('cloud_sync_server', 'https://legacy.example.test/dav'),
+                    ('cloud_sync_api_key', 'legacy-secret');",
+            )
+            .unwrap();
+        drop(connection);
+        let settings = CloudSyncSettings::open_sqlite(path.clone(), false).unwrap();
+
+        let snapshot_json = serde_json::to_string(&settings.snapshot().unwrap()).unwrap();
+        let relay = settings.relay_runner_config("legacy-device").unwrap();
+        assert_eq!(relay.webdav_url, "https://legacy.example.test/dav");
+        assert_eq!(relay.webdav_password, "legacy-secret");
+        assert!(!snapshot_json.contains("legacy-secret"));
+
+        drop(settings);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn relay_runtime_config_can_pair_current_url_with_legacy_password() {
+        let path = temporary_database("mixed-relay");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('cloud_sync_api_key', 'legacy-secret'),
+                    ('cloud_sync_webdav_url', 'https://current.example.test/dav');",
+            )
+            .unwrap();
+        drop(connection);
+        let settings = CloudSyncSettings::open_sqlite(path.clone(), false).unwrap();
+
+        let relay = settings.relay_runner_config("mixed-device").unwrap();
+        assert_eq!(relay.webdav_url, "https://current.example.test/dav");
+        assert_eq!(relay.webdav_password, "legacy-secret");
+
+        drop(settings);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

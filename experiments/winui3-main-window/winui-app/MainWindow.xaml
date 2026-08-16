@@ -71,6 +71,11 @@
                     Click="FileTransferButton_Click"
                     Content="传输" />
                 <Button
+                    AutomationProperties.Name="打开加密剪贴板接力"
+                    AutomationProperties.HelpText="通过已配置的 HTTPS WebDAV 加密发送或接收当前文本剪贴板。"
+                    Click="RelayButton_Click"
+                    Content="接力" />
+                <Button
                     AutomationProperties.Name="打开 AI 助手"
                     AutomationProperties.HelpText="使用已配置的模型处理当前选中的非敏感文本记录。"
                     Click="AiButton_Click"

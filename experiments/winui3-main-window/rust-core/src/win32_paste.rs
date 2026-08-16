@@ -41,9 +41,8 @@ fn encode_cf_html(html: &str) -> String {
     let end_html = start_html + html_content.len();
     let start_marker = "<!--StartFragment-->";
     let end_marker = "<!--EndFragment-->";
-    let start_fragment = start_html
-        + html_content.find(start_marker).unwrap_or(0)
-        + start_marker.len();
+    let start_fragment =
+        start_html + html_content.find(start_marker).unwrap_or(0) + start_marker.len();
     let end_fragment = start_html + html_content.find(end_marker).unwrap_or(html_content.len());
 
     format!(
@@ -215,9 +214,7 @@ impl PasteExecutor for Win32PasteExecutor {
             return set_image(image);
         }
         match payload.html.as_deref() {
-            Some(html) if !html.trim().is_empty() => {
-                set_unicode_text_and_html(&payload.text, html)
-            }
+            Some(html) if !html.trim().is_empty() => set_unicode_text_and_html(&payload.text, html),
             _ => set_unicode_text(&payload.text),
         }
     }
@@ -244,6 +241,11 @@ fn set_unicode_text(text: &str) -> Result<(), String> {
         empty_clipboard(clipboard)?;
         set_unicode_on_clipboard(text)
     })
+}
+
+#[cfg(not(test))]
+pub(crate) fn copy_text(text: &str) -> Result<(), String> {
+    set_unicode_text(text)
 }
 
 #[cfg(not(test))]
@@ -358,9 +360,10 @@ fn normalize_file_path(source: &str) -> String {
 fn read_image_source(source: &str) -> Result<Vec<u8>, String> {
     let source = source.trim();
     if let Some(rest) = source.strip_prefix("data:image/") {
-        let encoded = rest.split(',').nth(1).ok_or_else(|| {
-            "image data URL is missing base64 payload".to_owned()
-        })?;
+        let encoded = rest
+            .split(',')
+            .nth(1)
+            .ok_or_else(|| "image data URL is missing base64 payload".to_owned())?;
         base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
             .map_err(|error| format!("image data URL is not valid base64: {error}"))
     } else {
@@ -455,7 +458,8 @@ fn keyboard_input(virtual_key: VIRTUAL_KEY, key_up: bool) -> INPUT {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_cf_dib, decode_hdrop, encode_cf_dib, encode_cf_html, encode_hdrop, normalize_file_path,
+        decode_cf_dib, decode_hdrop, encode_cf_dib, encode_cf_html, encode_hdrop,
+        normalize_file_path,
     };
 
     #[test]
@@ -468,7 +472,8 @@ mod tests {
 
     #[test]
     fn encode_cf_html_keeps_an_already_wrapped_document() {
-        let document = "<html><body><!--StartFragment--><i>kept</i><!--EndFragment--></body></html>";
+        let document =
+            "<html><body><!--StartFragment--><i>kept</i><!--EndFragment--></body></html>";
         let encoded = encode_cf_html(document);
         assert!(encoded.contains(document));
         assert_eq!(encoded.matches("<!--StartFragment-->").count(), 1);
@@ -489,7 +494,10 @@ mod tests {
     fn encode_hdrop_includes_wide_paths() {
         let paths = vec![r"C:\a.txt".to_owned(), r"D:\b.png".to_owned()];
         let encoded = encode_hdrop(&paths);
-        let utf16: Vec<u8> = r"C:\a.txt".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let utf16: Vec<u8> = r"C:\a.txt"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         assert_eq!(&encoded[0..4], 20u32.to_le_bytes());
         assert_eq!(&encoded[16..20], 1i32.to_le_bytes());
         assert!(encoded.windows(utf16.len()).any(|window| window == utf16));

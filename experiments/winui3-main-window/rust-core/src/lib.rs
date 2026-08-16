@@ -26,6 +26,7 @@ use tiez_core::clipboard_history::{
     ClipboardHistory, HistoryContent, HistoryItem, HistoryMutationResult, HistorySnapshot,
     PinnedOrderResult,
 };
+use tiez_core::clipboard_relay::{RelayFetchResult, RelaySendResult};
 use tiez_core::cloud_sync_settings::{
     CloudSyncProbeResult, CloudSyncSettings, CloudSyncSettingsMutation, CloudSyncSettingsSnapshot,
     CloudSyncSettingsUpdate,
@@ -47,16 +48,18 @@ use tiez_core::tag_catalog::{
     TagDeletePlan, TagEntriesSnapshot, TagRenamePlan,
 };
 
+mod clipboard_relay_service;
 mod cloud_sync_service;
 mod file_transfer_service;
 mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
+use clipboard_relay_service::{NativeClipboardRelay, NativeRelayKeyMutation, NativeRelaySnapshot};
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
 
-const ABI_VERSION: u32 = 17;
+const ABI_VERSION: u32 = 18;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -91,6 +94,7 @@ pub struct TiezCoreHandle {
     ai_settings: Mutex<AiSettings>,
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
+    clipboard_relay: NativeClipboardRelay,
     file_transfer: NativeFileTransferService,
     session: Mutex<Option<win32_capture::Session>>,
 }
@@ -133,6 +137,7 @@ impl TiezCoreHandle {
             ai_settings: Mutex::new(ai_settings),
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
+            clipboard_relay: NativeClipboardRelay::unavailable(),
             file_transfer,
             session: Mutex::new(None),
         }
@@ -171,8 +176,7 @@ impl TiezCoreHandle {
             ),
         };
 
-        let mut handle =
-            Self::wrap_with_adapters(history, settings, ai_settings, cloud_settings);
+        let mut handle = Self::wrap_with_adapters(history, settings, ai_settings, cloud_settings);
         if let Some(database_path) = configured_database {
             let data_dir = database_path
                 .parent()
@@ -187,8 +191,11 @@ impl TiezCoreHandle {
                     .map_err(|error| format!("{}: {error}", database_path.display()))?,
             );
             let inner = Arc::clone(&handle.inner);
-            handle.cloud_sync =
-                NativeCloudSyncService::new(&database_path, data_dir, read_only, move || {
+            handle.cloud_sync = NativeCloudSyncService::new(
+                &database_path,
+                data_dir.clone(),
+                read_only,
+                move || {
                     let generation = inner
                         .history
                         .lock()
@@ -198,7 +205,10 @@ impl TiezCoreHandle {
                     if let Some(generation) = generation {
                         notify_changed(&inner, generation);
                     }
-                });
+                },
+            );
+            handle.clipboard_relay =
+                NativeClipboardRelay::new(&database_path, data_dir.clone(), read_only);
             handle.file_transfer = NativeFileTransferService::new(
                 FileTransferPreferences::open_sqlite(
                     &database_path,
@@ -416,6 +426,34 @@ struct CloudSyncStatusResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct RelaySnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativeRelaySnapshot,
+}
+
+#[derive(Serialize)]
+struct RelayKeyMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativeRelayKeyMutation,
+}
+
+#[derive(Serialize)]
+struct RelaySendResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a RelaySendResult,
+}
+
+#[derive(Serialize)]
+struct RelayFetchResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a RelayFetchResult,
+}
+
+#[derive(Serialize)]
 struct FileTransferResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -589,6 +627,38 @@ fn cloud_sync_status_json(status: &NativeCloudSyncStatus) -> Result<String, Stri
     .map_err(|error| format!("failed to serialize cloud-sync status: {error}"))
 }
 
+fn relay_snapshot_json(snapshot: &NativeRelaySnapshot) -> Result<String, String> {
+    serde_json::to_string(&RelaySnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力状态：{error}"))
+}
+
+fn relay_key_mutation_json(mutation: &NativeRelayKeyMutation) -> Result<String, String> {
+    serde_json::to_string(&RelayKeyMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力密钥结果：{error}"))
+}
+
+fn relay_send_json(result: &RelaySendResult) -> Result<String, String> {
+    serde_json::to_string(&RelaySendResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力发送结果：{error}"))
+}
+
+fn relay_fetch_json(result: &RelayFetchResult) -> Result<String, String> {
+    serde_json::to_string(&RelayFetchResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力接收结果：{error}"))
+}
+
 fn file_transfer_json(snapshot: &FileTransferSnapshot) -> Result<String, String> {
     serde_json::to_string(&FileTransferResponse {
         abi_version: ABI_VERSION,
@@ -602,7 +672,7 @@ fn ai_settings_json(snapshot: &AiSettingsSnapshot) -> Result<String, String> {
         abi_version: ABI_VERSION,
         snapshot,
     })
-        .map_err(|error| format!("failed to serialize AI settings: {error}"))
+    .map_err(|error| format!("failed to serialize AI settings: {error}"))
 }
 
 fn ai_settings_mutation_json(mutation: &AiSettingsMutation) -> Result<String, String> {
@@ -610,7 +680,7 @@ fn ai_settings_mutation_json(mutation: &AiSettingsMutation) -> Result<String, St
         abi_version: ABI_VERSION,
         mutation,
     })
-        .map_err(|error| format!("failed to serialize AI settings mutation: {error}"))
+    .map_err(|error| format!("failed to serialize AI settings mutation: {error}"))
 }
 
 fn ai_probe_json(result: &AiProbeResult) -> Result<String, String> {
@@ -618,7 +688,7 @@ fn ai_probe_json(result: &AiProbeResult) -> Result<String, String> {
         abi_version: ABI_VERSION,
         result,
     })
-        .map_err(|error| format!("failed to serialize AI probe result: {error}"))
+    .map_err(|error| format!("failed to serialize AI probe result: {error}"))
 }
 
 fn ai_action_json(result: &AiActionResult) -> Result<String, String> {
@@ -626,7 +696,7 @@ fn ai_action_json(result: &AiActionResult) -> Result<String, String> {
         abi_version: ABI_VERSION,
         result,
     })
-        .map_err(|error| format!("failed to serialize AI action result: {error}"))
+    .map_err(|error| format!("failed to serialize AI action result: {error}"))
 }
 
 fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
@@ -850,10 +920,7 @@ fn tag_catalog_snapshot(handle: &TiezCoreHandle) -> Result<TagCatalogSnapshot, S
         .map_err(|error| error.to_string())
 }
 
-fn tag_entries_snapshot(
-    handle: &TiezCoreHandle,
-    tag: &str,
-) -> Result<TagEntriesSnapshot, String> {
+fn tag_entries_snapshot(handle: &TiezCoreHandle, tag: &str) -> Result<TagEntriesSnapshot, String> {
     let history_items = current_history_items(handle)?;
     handle
         .tag_catalog
@@ -885,10 +952,7 @@ fn set_tag_color(
         .map_err(|error| error.to_string())
 }
 
-fn apply_tag_rename_plan(
-    handle: &TiezCoreHandle,
-    plan: &TagRenamePlan,
-) -> Result<usize, String> {
+fn apply_tag_rename_plan(handle: &TiezCoreHandle, plan: &TagRenamePlan) -> Result<usize, String> {
     let mut applied = 0usize;
     let mut last_generation = None;
     let mut failure = None;
@@ -947,10 +1011,7 @@ fn rename_tag(
         .map_err(|error| error.to_string())
 }
 
-fn apply_tag_delete_plan(
-    handle: &TiezCoreHandle,
-    plan: &TagDeletePlan,
-) -> Result<usize, String> {
+fn apply_tag_delete_plan(handle: &TiezCoreHandle, plan: &TagDeletePlan) -> Result<usize, String> {
     let mut applied = 0usize;
     let mut last_generation = None;
     let mut failure = None;
@@ -1345,6 +1406,25 @@ fn execute_os_paste(plan: &tiez_core::paste_coordinator::PastePlan) -> Result<()
         use tiez_core::paste_coordinator::{execute_paste, RecordingPasteExecutor};
         let mut executor = RecordingPasteExecutor::default();
         execute_paste(plan, &mut executor)
+    }
+}
+
+fn read_relay_clipboard_text() -> Result<String, String> {
+    win32_capture::read_plain_text_exact()
+}
+
+fn copy_relay_text(handle: &TiezCoreHandle, text: &str) -> Result<(), String> {
+    #[cfg(all(windows, not(test)))]
+    {
+        if let Ok(mut filter) = handle.inner.capture.lock() {
+            filter.note_self_write(text);
+        }
+        crate::win32_paste::copy_text(text)
+    }
+    #[cfg(not(all(windows, not(test))))]
+    {
+        let _ = (handle, text);
+        Err("当前测试平台没有可用的 Windows 文本剪贴板".to_owned())
     }
 }
 
@@ -2229,6 +2309,115 @@ pub unsafe extern "C" fn tiez_core_stop_cloud_sync(handle: *mut TiezCoreHandle) 
 }
 
 #[no_mangle]
+/// Return sanitized clipboard-relay readiness without exposing credentials.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_relay_status_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle.clipboard_relay.snapshot()?;
+        into_owned_c_string(relay_snapshot_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Validate and store a write-only relay key in the operating-system vault.
+///
+/// # Safety
+/// `handle` must be live and `shared_key_utf8` must be readable UTF-8.
+pub unsafe extern "C" fn tiez_core_set_relay_shared_key_json(
+    handle: *mut TiezCoreHandle,
+    shared_key_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let shared_key = required_utf8(shared_key_utf8, "shared_key_utf8")?;
+        let mutation = handle.clipboard_relay.set_key(&shared_key)?;
+        into_owned_c_string(relay_key_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Generate and store a relay key, returning it exactly once for pairing.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_generate_relay_shared_key_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let mutation = handle.clipboard_relay.generate_key()?;
+        if let Some(generated_key) = mutation.generated_key.as_deref() {
+            if let Ok(mut filter) = handle.inner.capture.lock() {
+                filter.note_self_write(generated_key);
+            }
+        }
+        into_owned_c_string(relay_key_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Clear the relay key from the operating-system vault.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_clear_relay_shared_key_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let mutation = handle.clipboard_relay.clear_key()?;
+        into_owned_c_string(relay_key_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Encrypt and publish the exact current Windows clipboard text.
+/// This blocking call must be invoked off the native UI thread.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_send_relay_clipboard_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let text = read_relay_clipboard_text()?;
+        let result = handle.clipboard_relay.send(&text)?;
+        into_owned_c_string(relay_send_json(&result)?)
+    })
+}
+
+#[no_mangle]
+/// Fetch the newest eligible relay message, copy it to Windows clipboard, and
+/// durably record the authenticated receipt before publishing its ACK.
+/// This blocking call must be invoked off the native UI thread.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_fetch_relay_clipboard_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let result = handle
+            .clipboard_relay
+            .fetch(|text| copy_relay_text(handle, text))?;
+        into_owned_c_string(relay_fetch_json(&result)?)
+    })
+}
+
+#[no_mangle]
 /// Returns pairing status, compatible preferences, devices, and capped chat history.
 ///
 /// # Safety
@@ -2800,9 +2989,9 @@ mod tests {
 
     #[test]
     fn tag_catalog_exports_create_color_add_rename_and_delete_workflow() {
-        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(
-            ClipboardHistory::synthetic(),
-        )));
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
         let created_name = CString::new("待办").unwrap();
         let renamed_name = CString::new("项目").unwrap();
         let color = CString::new("#12abEF").unwrap();
@@ -2836,11 +3025,8 @@ mod tests {
                 .contains("\"color\":\"#12ABEF\""));
             tiez_core_string_free(colored);
 
-            let added = tiez_core_create_tagged_text_json(
-                handle,
-                created_name.as_ptr(),
-                content.as_ptr(),
-            );
+            let added =
+                tiez_core_create_tagged_text_json(handle, created_name.as_ptr(), content.as_ptr());
             assert!(!added.is_null());
             assert!(CStr::from_ptr(added)
                 .to_str()
@@ -2856,11 +3042,8 @@ mod tests {
             assert!(entries_json.contains("\"total\":1"));
             tiez_core_string_free(entries);
 
-            let renamed = tiez_core_rename_tag_json(
-                handle,
-                created_name.as_ptr(),
-                renamed_name.as_ptr(),
-            );
+            let renamed =
+                tiez_core_rename_tag_json(handle, created_name.as_ptr(), renamed_name.as_ptr());
             assert!(!renamed.is_null());
             let renamed_json = CStr::from_ptr(renamed).to_str().unwrap();
             assert!(renamed_json.contains("\"action\":\"rename\""));
@@ -2979,11 +3162,8 @@ mod tests {
             assert!(mutation_json.contains("\"generation\":2"));
             tiez_core_string_free(mutation);
 
-            let hotkey_mutation = tiez_core_update_setting_json(
-                handle,
-                hotkey_key.as_ptr(),
-                hotkey_value.as_ptr(),
-            );
+            let hotkey_mutation =
+                tiez_core_update_setting_json(handle, hotkey_key.as_ptr(), hotkey_value.as_ptr());
             assert!(!hotkey_mutation.is_null());
             let hotkey_json = CStr::from_ptr(hotkey_mutation).to_str().unwrap();
             assert!(hotkey_json.contains("\"key\":\"app.hotkey\""));
@@ -3171,6 +3351,36 @@ mod tests {
             tiez_core_string_free(value);
 
             assert!(!tiez_core_start_cloud_sync(handle));
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("生产数据模式"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn relay_status_is_sanitized_and_unavailable_without_production_data() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let key = CString::new("01".repeat(32)).unwrap();
+
+        unsafe {
+            let value = tiez_core_get_relay_status_json(handle);
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(json.contains("\"available\":false"));
+            assert!(json.contains("\"key_configured\":false"));
+            assert!(!json.contains("shared_key"));
+            assert!(!json.contains("password"));
+            tiez_core_string_free(value);
+
+            assert!(tiez_core_set_relay_shared_key_json(handle, key.as_ptr()).is_null());
             let error = tiez_core_take_last_error();
             assert!(!error.is_null());
             assert!(CStr::from_ptr(error)

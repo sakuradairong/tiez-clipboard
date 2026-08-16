@@ -102,6 +102,18 @@ namespace tiez::probe
                 "tiez_core_request_cloud_sync");
             m_stopCloudSync = Resolve<StopCloudSyncFn>(
                 "tiez_core_stop_cloud_sync");
+            m_relayStatusJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_relay_status_json");
+            m_setRelaySharedKeyJson = Resolve<JsonRequestFn>(
+                "tiez_core_set_relay_shared_key_json");
+            m_generateRelaySharedKeyJson = Resolve<SettingsJsonFn>(
+                "tiez_core_generate_relay_shared_key_json");
+            m_clearRelaySharedKeyJson = Resolve<SettingsJsonFn>(
+                "tiez_core_clear_relay_shared_key_json");
+            m_sendRelayClipboardJson = Resolve<SettingsJsonFn>(
+                "tiez_core_send_relay_clipboard_json");
+            m_fetchRelayClipboardJson = Resolve<SettingsJsonFn>(
+                "tiez_core_fetch_relay_clipboard_json");
             m_fileTransferJson = Resolve<SettingsJsonFn>(
                 "tiez_core_get_file_transfer_json");
             m_updateFileTransferJson = Resolve<JsonRequestFn>(
@@ -585,6 +597,67 @@ namespace tiez::probe
         {
             m_stopCloudSync(m_handle);
         }
+    }
+
+    std::string RustCoreBridge::RelayStatus() const
+    {
+        auto* result = m_relayStatusJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay status failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::SetRelaySharedKey(std::string_view sharedKey) const
+    {
+        std::string value{ sharedKey };
+        auto* result = m_setRelaySharedKeyJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay key update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::GenerateRelaySharedKey() const
+    {
+        auto* result = m_generateRelaySharedKeyJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay key generation failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ClearRelaySharedKey() const
+    {
+        auto* result = m_clearRelaySharedKeyJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay key clear failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::SendRelayClipboard() const
+    {
+        auto* result = m_sendRelayClipboardJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay send failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::FetchRelayClipboard() const
+    {
+        auto* result = m_fetchRelayClipboardJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay fetch failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
     }
 
     std::string RustCoreBridge::FileTransfer() const

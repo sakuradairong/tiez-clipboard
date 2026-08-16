@@ -6262,7 +6262,11 @@ name = "tiez-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chacha20poly1305",
+ "futures",
+ "hex",
  "image",
+ "keyring",
  "regex",
  "reqwest 0.12.28",
  "rqrr",
@@ -6272,6 +6276,7 @@ dependencies = [
  "sha2",
  "tokio",
  "urlencoding",
+ "uuid",
  "windows 0.61.3",
  "windows-sys 0.59.0",
  "zip 2.4.2",

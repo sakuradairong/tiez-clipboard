@@ -35,6 +35,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void FileTransferButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void RelayButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void AiButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -137,6 +140,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::fire_and_forget SaveFileTransferSettings(bool enabled);
         winrt::fire_and_forget SendFileTransferText();
         winrt::fire_and_forget ShareFileTransferFiles();
+        void EnsureRelayDialog();
+        winrt::fire_and_forget ShowRelayAsync();
+        winrt::fire_and_forget RefreshRelayStatusAsync();
+        winrt::fire_and_forget SaveRelayKeyAsync();
+        winrt::fire_and_forget GenerateRelayKeyAsync();
+        winrt::fire_and_forget ClearRelayKeyAsync();
+        winrt::fire_and_forget SendRelayClipboardAsync();
+        winrt::fire_and_forget FetchRelayClipboardAsync();
+        void ApplyRelaySnapshot(Windows::Data::Json::JsonObject const& response);
+        void SetRelayBusy(bool busy, winrt::hstring const& message);
         void EnsureAiDialog();
         winrt::fire_and_forget ShowAiAssistantAsync();
         bool LoadAiSettings();
@@ -213,6 +226,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::Button m_fileTransferShareButton{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_fileTransferDevicesText{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel m_fileTransferMessagesPanel{ nullptr };
+        Microsoft::UI::Xaml::Controls::ContentDialog m_relayDialog{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_relayStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::PasswordBox m_relayKeyBox{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_relayGeneratedKeyText{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relaySaveKeyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relayGenerateKeyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relayClearKeyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relaySendButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relayFetchButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::ProgressRing m_relayProgress{ nullptr };
         struct AiProfileState
         {
             winrt::hstring id;
@@ -327,6 +350,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_startHidden{};
         bool m_initialHidePending{};
         bool m_cloudSyncBusy{};
+        bool m_relayBusy{};
+        bool m_relayAvailable{};
+        bool m_relayReadOnly{};
+        bool m_relayKeyConfigured{};
+        bool m_relayWebDavConfigured{};
         bool m_fileTransferRunning{};
         bool m_fileTransferReadOnly{};
         bool m_fileTransferLoading{};

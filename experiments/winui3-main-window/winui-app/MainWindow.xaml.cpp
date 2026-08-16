@@ -1205,6 +1205,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         ShowFileTransferAsync();
     }
 
+    void MainWindow::RelayButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ShowRelayAsync();
+    }
+
     void MainWindow::AiButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         ShowAiAssistantAsync();
@@ -1702,6 +1707,405 @@ namespace winrt::Tiez::WinUIProbe::implementation
         {
             m_fileTransferStatus.Text(StatusMessage(
                 L"共享文件失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::EnsureRelayDialog()
+    {
+        if (m_relayDialog)
+        {
+            return;
+        }
+
+        m_relayDialog = ContentDialog{};
+        m_relayDialog.Title(winrt::box_value(L"加密剪贴板接力"));
+        m_relayDialog.CloseButtonText(L"关闭");
+        m_relayDialog.DefaultButton(ContentDialogButton::Close);
+        m_relayDialog.MinWidth(680);
+
+        StackPanel content;
+        content.Spacing(12);
+
+        TextBlock description;
+        description.Text(
+            L"通过云同步设置中的 HTTPS WebDAV 发送或取回当前纯文本剪贴板。内容使用 XChaCha20-Poly1305 端到端加密；共享密钥保存在 Windows 安全密钥库中，不会从 Rust 状态接口回读。");
+        description.TextWrapping(TextWrapping::Wrap);
+        description.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        content.Children().Append(description);
+
+        m_relayStatus = TextBlock{};
+        m_relayStatus.Text(L"正在读取接力状态……");
+        m_relayStatus.TextWrapping(TextWrapping::Wrap);
+        m_relayStatus.IsTextSelectionEnabled(true);
+        AutomationProperties::SetName(m_relayStatus, L"剪贴板接力状态");
+        AutomationProperties::SetLiveSetting(
+            m_relayStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        content.Children().Append(m_relayStatus);
+
+        m_relayKeyBox = PasswordBox{};
+        m_relayKeyBox.Header(winrt::box_value(L"共享密钥（64 位小写十六进制）"));
+        m_relayKeyBox.PlaceholderText(L"留空不会读取或替换已保存密钥");
+        m_relayKeyBox.PasswordRevealMode(PasswordRevealMode::Peek);
+        AutomationProperties::SetName(m_relayKeyBox, L"剪贴板接力共享密钥");
+        content.Children().Append(m_relayKeyBox);
+
+        StackPanel keyActions;
+        keyActions.Orientation(Orientation::Horizontal);
+        keyActions.Spacing(8);
+        m_relaySaveKeyButton = Button{};
+        m_relaySaveKeyButton.Content(winrt::box_value(L"保存密钥"));
+        m_relaySaveKeyButton.Click([this](auto const&, auto const&)
+        {
+            SaveRelayKeyAsync();
+        });
+        m_relayGenerateKeyButton = Button{};
+        m_relayGenerateKeyButton.Content(winrt::box_value(L"生成新密钥"));
+        m_relayGenerateKeyButton.Click([this](auto const&, auto const&)
+        {
+            GenerateRelayKeyAsync();
+        });
+        m_relayClearKeyButton = Button{};
+        m_relayClearKeyButton.Content(winrt::box_value(L"清除密钥"));
+        m_relayClearKeyButton.Click([this](auto const&, auto const&)
+        {
+            ClearRelayKeyAsync();
+        });
+        keyActions.Children().Append(m_relaySaveKeyButton);
+        keyActions.Children().Append(m_relayGenerateKeyButton);
+        keyActions.Children().Append(m_relayClearKeyButton);
+        content.Children().Append(keyActions);
+
+        m_relayGeneratedKeyText = TextBox{};
+        m_relayGeneratedKeyText.Header(winrt::box_value(L"刚生成的密钥（仅本次显示）"));
+        m_relayGeneratedKeyText.IsReadOnly(true);
+        m_relayGeneratedKeyText.Visibility(Visibility::Collapsed);
+        m_relayGeneratedKeyText.TextWrapping(TextWrapping::Wrap);
+        AutomationProperties::SetName(m_relayGeneratedKeyText, L"刚生成的剪贴板接力密钥");
+        content.Children().Append(m_relayGeneratedKeyText);
+
+        Button copyGeneratedKey;
+        copyGeneratedKey.Content(winrt::box_value(L"复制刚生成的密钥"));
+        copyGeneratedKey.Click([this](auto const&, auto const&)
+        {
+            if (m_relayGeneratedKeyText.Text().empty()) return;
+            DataPackage package;
+            package.SetText(m_relayGeneratedKeyText.Text());
+            Clipboard::SetContent(package);
+            Clipboard::Flush();
+            m_relayStatus.Text(L"刚生成的共享密钥已复制，不会加入 TieZ 历史；请通过可信渠道配置到其他设备。");
+        });
+        content.Children().Append(copyGeneratedKey);
+
+        TextBlock actionTitle;
+        actionTitle.Text(L"当前文本剪贴板");
+        actionTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(actionTitle);
+
+        StackPanel relayActions;
+        relayActions.Orientation(Orientation::Horizontal);
+        relayActions.Spacing(8);
+        m_relaySendButton = Button{};
+        m_relaySendButton.Content(winrt::box_value(L"加密发送"));
+        m_relaySendButton.Click([this](auto const&, auto const&)
+        {
+            SendRelayClipboardAsync();
+        });
+        m_relayFetchButton = Button{};
+        m_relayFetchButton.Content(winrt::box_value(L"取回到剪贴板"));
+        m_relayFetchButton.Click([this](auto const&, auto const&)
+        {
+            FetchRelayClipboardAsync();
+        });
+        m_relayProgress = ProgressRing{};
+        m_relayProgress.Width(24);
+        m_relayProgress.Height(24);
+        m_relayProgress.IsActive(false);
+        m_relayProgress.Visibility(Visibility::Collapsed);
+        relayActions.Children().Append(m_relaySendButton);
+        relayActions.Children().Append(m_relayFetchButton);
+        relayActions.Children().Append(m_relayProgress);
+        content.Children().Append(relayActions);
+
+        TextBlock safety;
+        safety.Text(
+            L"接收采用 SQLite 持久回执实现至多一次复制。ACK 上传失败时，下次取回只重试 ACK，不会再次覆盖剪贴板。便携数据目录和只读模式会禁用接力。");
+        safety.TextWrapping(TextWrapping::Wrap);
+        safety.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        content.Children().Append(safety);
+
+        m_relayDialog.Content(content);
+    }
+
+    winrt::fire_and_forget MainWindow::ShowRelayAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法打开剪贴板接力。");
+            co_return;
+        }
+        try
+        {
+            m_suspendLifecycle = true;
+            EnsureRelayDialog();
+            m_relayDialog.XamlRoot(RootGrid().XamlRoot());
+            RefreshRelayStatusAsync();
+            co_await m_relayDialog.ShowAsync();
+            m_suspendLifecycle = false;
+            SearchBox().Focus(FocusState::Programmatic);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"无法打开剪贴板接力：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"无法打开剪贴板接力：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::RefreshRelayStatusAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        SetRelayBusy(true, L"正在读取 Windows 安全密钥库与 WebDAV 配置……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this]
+            {
+                return m_core->RelayStatus();
+            });
+            auto const response = JsonObject::Parse(responseText);
+            ApplyRelaySnapshot(response);
+            std::wstring message;
+            if (!m_relayAvailable)
+            {
+                auto const reasonValue = response.GetNamedValue(L"unavailable_reason");
+                message = reasonValue.ValueType() == JsonValueType::String
+                    ? reasonValue.GetString().c_str()
+                    : L"当前运行模式不支持剪贴板接力。";
+            }
+            else
+            {
+                message = m_relayKeyConfigured
+                    ? L"共享密钥已安全配置；"
+                    : L"尚未配置共享密钥；";
+                message.append(m_relayWebDavConfigured
+                    ? L"WebDAV 已配置。"
+                    : L"请先在“设置 → 云同步”保存 WebDAV 地址。" );
+                if (m_relayReadOnly)
+                {
+                    message.append(L" 当前数据库为只读，只能查看状态。");
+                }
+            }
+            SetRelayBusy(false, winrt::hstring{ message });
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"读取接力状态失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::ApplyRelaySnapshot(JsonObject const& response)
+    {
+        m_relayAvailable = response.GetNamedBoolean(L"available", false);
+        m_relayReadOnly = response.GetNamedBoolean(L"read_only", true);
+        m_relayKeyConfigured = response.GetNamedBoolean(L"key_configured", false);
+        m_relayWebDavConfigured = response.GetNamedBoolean(L"webdav_configured", false)
+            && response.GetNamedBoolean(L"secure_transport", false);
+    }
+
+    void MainWindow::SetRelayBusy(bool busy, winrt::hstring const& message)
+    {
+        m_relayBusy = busy;
+        auto const editable = m_relayAvailable && !m_relayReadOnly && !busy;
+        if (m_relayKeyBox) m_relayKeyBox.IsEnabled(editable);
+        if (m_relaySaveKeyButton) m_relaySaveKeyButton.IsEnabled(editable);
+        if (m_relayGenerateKeyButton) m_relayGenerateKeyButton.IsEnabled(editable);
+        if (m_relayClearKeyButton)
+        {
+            m_relayClearKeyButton.IsEnabled(editable && m_relayKeyConfigured);
+        }
+        auto const ready = editable && m_relayKeyConfigured && m_relayWebDavConfigured;
+        if (m_relaySendButton) m_relaySendButton.IsEnabled(ready);
+        if (m_relayFetchButton) m_relayFetchButton.IsEnabled(ready);
+        if (m_relayProgress)
+        {
+            m_relayProgress.IsActive(busy);
+            m_relayProgress.Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
+        }
+        if (m_relayStatus && !message.empty()) m_relayStatus.Text(message);
+    }
+
+    winrt::fire_and_forget MainWindow::SaveRelayKeyAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        auto const key = winrt::to_string(m_relayKeyBox.Password());
+        if (key.empty())
+        {
+            m_relayStatus.Text(L"请输入 64 位小写十六进制共享密钥。");
+            co_return;
+        }
+        SetRelayBusy(true, L"正在写入 Windows 安全密钥库……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this, key]
+            {
+                return m_core->SetRelaySharedKey(key);
+            });
+            auto const response = JsonObject::Parse(responseText);
+            ApplyRelaySnapshot(response);
+            m_relayKeyBox.Password(L"");
+            m_relayGeneratedKeyText.Text(L"");
+            m_relayGeneratedKeyText.Visibility(Visibility::Collapsed);
+            SetRelayBusy(false, response.GetNamedString(L"message", L"共享密钥已保存。"));
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"保存共享密钥失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::GenerateRelayKeyAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        SetRelayBusy(true, L"正在生成并安全保存新密钥……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this]
+            {
+                return m_core->GenerateRelaySharedKey();
+            });
+            auto const response = JsonObject::Parse(responseText);
+            ApplyRelaySnapshot(response);
+            m_relayGeneratedKeyText.Text(response.GetNamedString(L"generated_key", L""));
+            m_relayGeneratedKeyText.Visibility(Visibility::Visible);
+            SetRelayBusy(false, response.GetNamedString(L"message", L"新密钥已生成。"));
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"生成共享密钥失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ClearRelayKeyAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        if (MessageBoxW(
+            GetWindowHandle(),
+            L"清除后，本机将无法解密其他设备发送的接力消息，直到重新配置相同密钥。是否继续？",
+            L"确认清除接力密钥",
+            MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) != IDYES)
+        {
+            co_return;
+        }
+        SetRelayBusy(true, L"正在从 Windows 安全密钥库清除密钥……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this]
+            {
+                return m_core->ClearRelaySharedKey();
+            });
+            auto const response = JsonObject::Parse(responseText);
+            ApplyRelaySnapshot(response);
+            m_relayGeneratedKeyText.Text(L"");
+            m_relayGeneratedKeyText.Visibility(Visibility::Collapsed);
+            SetRelayBusy(false, response.GetNamedString(L"message", L"共享密钥已清除。"));
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"清除共享密钥失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::SendRelayClipboardAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        SetRelayBusy(true, L"正在加密并发送当前文本剪贴板……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this]
+            {
+                return m_core->SendRelayClipboard();
+            });
+            auto const response = JsonObject::Parse(responseText);
+            std::wstringstream message;
+            message << L"已加密发送 "
+                    << static_cast<std::uint64_t>(response.GetNamedNumber(L"byte_len", 0))
+                    << L" 字节；消息约 10 分钟后过期。";
+            SetRelayBusy(false, winrt::hstring{ message.str() });
+            SetStatus(L"当前文本剪贴板已通过 WebDAV 加密接力发送。");
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"发送剪贴板接力失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::FetchRelayClipboardAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_relayBusy) co_return;
+        SetRelayBusy(true, L"正在查找并解密最新接力消息……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this]
+            {
+                return m_core->FetchRelayClipboard();
+            });
+            auto const response = JsonObject::Parse(responseText);
+            auto const outcome = response.GetNamedString(L"outcome", L"empty");
+            winrt::hstring message;
+            if (outcome == L"copied")
+            {
+                auto const sender = response.GetNamedString(L"sender_device_id", L"其他设备");
+                std::wstring text{ L"已取回来自 " };
+                text.append(sender.c_str(), sender.size());
+                text.append(L" 的文本，并写入当前剪贴板；ACK 已确认。");
+                message = winrt::hstring{ text };
+            }
+            else if (outcome == L"copied_but_ack_failed")
+            {
+                message = L"文本已写入剪贴板，但 ACK 上传失败；下次取回只会重试 ACK，不会重复复制。";
+            }
+            else if (outcome == L"pending_ack_retry_failed")
+            {
+                message = L"上次接收的 ACK 仍未上传成功；剪贴板未被再次覆盖，请稍后重试。";
+            }
+            else
+            {
+                message = L"没有可接收的新接力文本。";
+            }
+            SetRelayBusy(false, message);
+            SetStatus(message);
+        }
+        catch (std::exception const& error)
+        {
+            SetRelayBusy(false, StatusMessage(
+                L"取回剪贴板接力失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
     }

@@ -1,0 +1,217 @@
+//! Native clipboard-relay adapter for the WinUI host.
+//!
+//! The wire protocol, authenticated encryption, replay ledger, and credential
+//! names live in `tiez-core`. This adapter only binds the production SQLite
+//! path and executes the async WebDAV work away from C++ ownership concerns.
+
+use serde::Serialize;
+use std::future;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use tiez_core::clipboard_relay::{
+    fetch_latest_to_clipboard, send_text, RelayConfig, RelayError, RelayErrorKind,
+    RelayFetchResult, RelaySendResult, SqliteRelayReceiptStore,
+};
+use tiez_core::cloud_sync_settings::CloudSyncSettings;
+use tiez_core::cloud_sync_sqlite::ensure_cloud_sync_device_id;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeRelaySnapshot {
+    pub available: bool,
+    pub read_only: bool,
+    pub key_configured: bool,
+    pub webdav_configured: bool,
+    pub secure_transport: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeRelayKeyMutation {
+    #[serde(flatten)]
+    pub snapshot: NativeRelaySnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_key: Option<String>,
+    pub message: String,
+}
+
+pub struct NativeClipboardRelay {
+    database_path: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
+    read_only: bool,
+}
+
+impl NativeClipboardRelay {
+    pub fn unavailable() -> Self {
+        Self {
+            database_path: None,
+            data_dir: None,
+            read_only: false,
+        }
+    }
+
+    pub fn new(
+        database_path: impl Into<PathBuf>,
+        data_dir: impl Into<PathBuf>,
+        read_only: bool,
+    ) -> Self {
+        Self {
+            database_path: Some(database_path.into()),
+            data_dir: Some(data_dir.into()),
+            read_only,
+        }
+    }
+
+    pub fn snapshot(&self) -> Result<NativeRelaySnapshot, String> {
+        let Some(database_path) = self.database_path.as_ref() else {
+            return Ok(NativeRelaySnapshot {
+                available: false,
+                read_only: false,
+                key_configured: false,
+                webdav_configured: false,
+                secure_transport: false,
+                unavailable_reason: Some("剪贴板接力仅在 WinUI 生产数据模式下可用".to_owned()),
+            });
+        };
+        let data_dir = self
+            .data_dir
+            .as_deref()
+            .ok_or_else(|| "剪贴板接力数据目录不可用".to_owned())?;
+        if let Err(error) = tiez_core::relay_key::ensure_runtime_allowed(Some(data_dir), false) {
+            return Ok(NativeRelaySnapshot {
+                available: false,
+                read_only: self.read_only,
+                key_configured: false,
+                webdav_configured: false,
+                secure_transport: false,
+                unavailable_reason: Some(error.to_string()),
+            });
+        }
+        let settings = CloudSyncSettings::open_sqlite(database_path, self.read_only)
+            .map_err(|error| format!("无法读取 WebDAV 设置：{error}"))?;
+        let cloud = settings
+            .snapshot()
+            .map_err(|error| format!("无法读取 WebDAV 设置：{error}"))?;
+        let legacy_relay_ready = settings.relay_runner_config("relay-status").is_ok();
+        Ok(NativeRelaySnapshot {
+            available: true,
+            read_only: self.read_only,
+            key_configured: tiez_core::relay_key::is_configured()
+                .map_err(|error| error.to_string())?,
+            webdav_configured: !cloud.webdav_url.trim().is_empty() || legacy_relay_ready,
+            secure_transport: cloud.secure_transport || legacy_relay_ready,
+            unavailable_reason: self
+                .read_only
+                .then(|| "当前数据库为只读，不能发送、接收或修改接力密钥".to_owned()),
+        })
+    }
+
+    pub fn set_key(&self, raw: &str) -> Result<NativeRelayKeyMutation, String> {
+        self.ensure_writable()?;
+        tiez_core::relay_key::validate_format(raw).map_err(|error| error.to_string())?;
+        tiez_core::relay_key::store(raw).map_err(|error| error.to_string())?;
+        Ok(NativeRelayKeyMutation {
+            snapshot: self.snapshot()?,
+            generated_key: None,
+            message: "接力共享密钥已安全保存".to_owned(),
+        })
+    }
+
+    pub fn generate_key(&self) -> Result<NativeRelayKeyMutation, String> {
+        self.ensure_writable()?;
+        let generated_key = tiez_core::relay_key::generate().map_err(|error| error.to_string())?;
+        Ok(NativeRelayKeyMutation {
+            snapshot: self.snapshot()?,
+            generated_key: Some(generated_key),
+            message: "已生成并安全保存新密钥；请立即复制到其他设备".to_owned(),
+        })
+    }
+
+    pub fn clear_key(&self) -> Result<NativeRelayKeyMutation, String> {
+        self.ensure_writable()?;
+        tiez_core::relay_key::clear().map_err(|error| error.to_string())?;
+        Ok(NativeRelayKeyMutation {
+            snapshot: self.snapshot()?,
+            generated_key: None,
+            message: "接力共享密钥已清除".to_owned(),
+        })
+    }
+
+    pub fn send(&self, text: &str) -> Result<RelaySendResult, String> {
+        let config = self.config()?;
+        relay_runtime()?
+            .block_on(send_text(&config, text))
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn fetch(
+        &self,
+        set_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    ) -> Result<RelayFetchResult, String> {
+        let config = self.config()?;
+        let database_path = self
+            .database_path
+            .as_ref()
+            .ok_or_else(|| "剪贴板接力仅在 WinUI 生产数据模式下可用".to_owned())?;
+        let store = SqliteRelayReceiptStore::new(database_path);
+        relay_runtime()?
+            .block_on(fetch_latest_to_clipboard(&config, &store, move |content| {
+                future::ready(
+                    set_clipboard(&content)
+                        .map_err(|error| RelayError::new(RelayErrorKind::Internal, error)),
+                )
+            }))
+            .map_err(|error| error.to_string())
+    }
+
+    fn ensure_writable(&self) -> Result<(), String> {
+        if self.database_path.is_none() {
+            return Err("剪贴板接力仅在 WinUI 生产数据模式下可用".to_owned());
+        }
+        if self.read_only {
+            return Err("当前数据库为只读，不能修改剪贴板接力".to_owned());
+        }
+        let data_dir = self
+            .data_dir
+            .as_deref()
+            .ok_or_else(|| "剪贴板接力数据目录不可用".to_owned())?;
+        tiez_core::relay_key::ensure_runtime_allowed(Some(data_dir), false)
+            .map_err(|error| error.to_string())
+    }
+
+    fn config(&self) -> Result<RelayConfig, String> {
+        self.ensure_writable()?;
+        let database_path = self.database_path.as_ref().expect("checked above");
+        let device_id = ensure_cloud_sync_device_id(database_path)
+            .map_err(|error| format!("无法创建接力设备标识：{error}"))?;
+        let runner = CloudSyncSettings::open_sqlite(database_path, false)
+            .and_then(|settings| settings.relay_runner_config(device_id))
+            .map_err(|error| format!("WebDAV 设置无效：{error}"))?;
+        let shared_key = tiez_core::relay_key::load()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "请先配置剪贴板接力共享密钥".to_owned())?;
+        RelayConfig::new(
+            runner.webdav_url,
+            runner.webdav_username,
+            runner.webdav_password,
+            runner.webdav_base_path,
+            runner.device_id,
+            shared_key,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn relay_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("tiez-winui-relay")
+                .build()
+                .map_err(|error| format!("无法启动剪贴板接力运行时：{error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}

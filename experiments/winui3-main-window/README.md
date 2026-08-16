@@ -32,14 +32,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v17
+        │ dynamic loading + C ABI v18
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  ai · backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
+  ai · backup · clipboard_history/relay · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · relay_key · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -70,6 +70,9 @@ The C ABI interface is deliberately small:
 - read and transactionally update existing AI profiles without returning API
   keys, probe one OpenAI-compatible endpoint, and run a bounded task, reply, or
   translation action for one approved history entry;
+- inspect relay readiness without returning credentials, manage the strict
+  shared key in the Windows credential vault, and explicitly send/fetch one
+  encrypted text clipboard item through the compatible `relay/v1` protocol;
 - create, fully validate, and schedule restoration of the same `.tiez-backup`
   archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
@@ -109,6 +112,10 @@ versioned request/response structs or another explicitly versioned wire format.
 - a Chinese native AI assistant with write-only API keys, multiple model profiles,
   per-action assignments, endpoint probing, explicit task/reply/translation runs,
   and non-destructive copy or transient paste of generated results;
+- a Chinese native encrypted-clipboard relay panel with write-only shared-key
+  setup, one-time generated-key display, explicit send/fetch actions, pending-ACK
+  retry status, and self-write suppression so copying a generated key does not
+  add it to TieZ history;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -385,7 +392,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v17 owns the native scheduler and writable
+single-pass runner are shared. The current ABI owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -397,7 +404,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 17`.
+- [ ] Status shows `Rust ABI 18`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -549,6 +556,7 @@ capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns
 | Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
 | LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
 | AI profiles / task, reply, translation actions | AI profile/settings and action commands | shared `tiez-core::ai` + ABI v17 + Chinese native profile/action dialog; keys stay write-only, history eligibility is checked before bounded redirect-free network requests, and results never overwrite source entries | 5 (connected) |
+| Encrypted clipboard relay / shared key | relay send/fetch and OS credential-store commands | shared `tiez-core::clipboard_relay` / `relay_key` + ABI v18 + Chinese native panel; the `relay/v1` wire format, SQLite receipts, HTTPS-only transport, legacy WebDAV fallback, and write-only key boundary remain compatible | 5 (connected) |
 | Advanced theme store | theme-store commands | Hosted service is disabled by default and is not a production capability until this fork controls its endpoint, signing, privacy, and release policy; it does not block native Windows publishing | service-disabled |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
@@ -640,6 +648,16 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
     bounded input, response size, and timeouts. Sensitive, unavailable, and
     non-text entries fail before networking, and generated text is copied or
     transiently pasted without changing the source record.
+13. `ClipboardRelay` — **shared core and WinUI surface connected**: Tauri and
+    WinUI use the same `relay/v1` authenticated message/ack format, bounded
+    WebDAV queue, TTL, stable device identity, and SQLite receipt states. The
+    shared key remains in the OS credential vault, never enters serialized
+    settings, and crosses C++ only in the one-time generate response needed for
+    device pairing. Fetch writes
+    through the native clipboard adapter and marks the self-write before capture
+    so the delivered item is not duplicated in history; pending acknowledgement
+    retries retain at-most-once local delivery. Generated-key copies are likewise
+    pre-registered as self-write echoes so the secret is not captured into TieZ.
 
 The Windows publishing contract now makes this executable the default release
 entry and requires a signed MSIX/App Installer package. Release acceptance still
