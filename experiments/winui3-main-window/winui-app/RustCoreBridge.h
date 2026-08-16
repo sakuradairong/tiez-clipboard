@@ -50,6 +50,12 @@ namespace tiez::probe
         [[nodiscard]] std::string UpdateSetting(
             std::string_view key,
             std::string_view value) const;
+        [[nodiscard]] std::string AiSettings() const;
+        [[nodiscard]] std::string UpdateAiSettings(std::string_view requestJson) const;
+        [[nodiscard]] std::string ProbeAiProfile(std::string_view profileId) const;
+        [[nodiscard]] std::string RunAiAction(
+            std::int64_t entryId,
+            std::string_view action) const;
         [[nodiscard]] std::string CloudSyncSettings() const;
         [[nodiscard]] std::string UpdateCloudSyncSettings(
             std::string_view requestJson) const;
@@ -130,6 +136,10 @@ namespace tiez::probe
         UpdatePinnedOrderJsonFn m_updatePinnedOrderJson{};
         SettingsJsonFn m_settingsJson{};
         UpdateSettingJsonFn m_updateSettingJson{};
+        SettingsJsonFn m_aiSettingsJson{};
+        JsonRequestFn m_updateAiSettingsJson{};
+        JsonRequestFn m_probeAiProfileJson{};
+        ApplyActionJsonFn m_runAiActionJson{};
         SettingsJsonFn m_cloudSyncSettingsJson{};
         JsonRequestFn m_updateCloudSyncSettingsJson{};
         SettingsJsonFn m_probeCloudSyncJson{};

@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 16,
+    TIEZ_CORE_ABI_VERSION = 17,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -182,6 +182,28 @@ TIEZ_CORE_API char* tiez_core_update_setting_json(
     TiezCoreHandle* handle,
     const char* key_utf8,
     const char* value_utf8);
+
+// Returns AI settings and profile summaries without API keys.
+TIEZ_CORE_API char* tiez_core_get_ai_settings_json(TiezCoreHandle* handle);
+
+// Transactionally updates AI profiles, assignments, and preferences. API keys
+// are write-only and an omitted key preserves the existing encrypted value.
+TIEZ_CORE_API char* tiez_core_update_ai_settings_json(
+    TiezCoreHandle* handle,
+    const char* request_json_utf8);
+
+// Tests one saved profile without returning its key. This call performs
+// blocking network I/O and must run off the native UI thread.
+TIEZ_CORE_API char* tiez_core_probe_ai_profile_json(
+    TiezCoreHandle* handle,
+    const char* profile_id_utf8);
+
+// Runs task, mouthpiece, or translate against one non-sensitive text-like
+// history entry without modifying it. This call performs blocking network I/O.
+TIEZ_CORE_API char* tiez_core_run_ai_action_json(
+    TiezCoreHandle* handle,
+    int64_t entry_id,
+    const char* action_utf8);
 
 // Returns WebDAV cloud-sync settings without returning stored passwords.
 TIEZ_CORE_API char* tiez_core_get_cloud_sync_settings_json(

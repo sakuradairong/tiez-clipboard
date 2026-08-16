@@ -898,6 +898,41 @@ namespace
         return item;
     }
 
+    winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem TaggedComboItem(
+        winrt::hstring const& label,
+        winrt::hstring const& value)
+    {
+        winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem item;
+        item.Content(winrt::box_value(label));
+        item.Tag(winrt::box_value(value));
+        return item;
+    }
+
+    winrt::hstring SelectedComboTag(
+        winrt::Microsoft::UI::Xaml::Controls::ComboBox const& combo)
+    {
+        auto const item = combo.SelectedItem()
+            .try_as<winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+        return item ? winrt::unbox_value_or<winrt::hstring>(item.Tag(), {}) : winrt::hstring{};
+    }
+
+    void SelectComboTag(
+        winrt::Microsoft::UI::Xaml::Controls::ComboBox const& combo,
+        winrt::hstring const& value)
+    {
+        for (std::uint32_t index = 0; index < combo.Items().Size(); ++index)
+        {
+            auto const item = combo.Items().GetAt(index)
+                .try_as<winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+            if (item && winrt::unbox_value_or<winrt::hstring>(item.Tag(), {}) == value)
+            {
+                combo.SelectedIndex(static_cast<std::int32_t>(index));
+                return;
+            }
+        }
+        combo.SelectedIndex(combo.Items().Size() == 0 ? -1 : 0);
+    }
+
     winrt::Microsoft::UI::Xaml::Controls::ToggleSwitch SettingToggle(
         winrt::hstring const& label,
         winrt::hstring const& description)
@@ -1152,6 +1187,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
     void MainWindow::FileTransferButton_Click(IInspectable const&, RoutedEventArgs const&)
     {
         ShowFileTransferAsync();
+    }
+
+    void MainWindow::AiButton_Click(IInspectable const&, RoutedEventArgs const&)
+    {
+        ShowAiAssistantAsync();
     }
 
     void MainWindow::EnsureFileTransferDialog()
@@ -1648,6 +1688,666 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 L"共享文件失败：",
                 tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
         }
+    }
+
+    void MainWindow::EnsureAiDialog()
+    {
+        if (m_aiDialog)
+        {
+            return;
+        }
+
+        m_aiDialog = ContentDialog{};
+        m_aiDialog.Title(winrt::box_value(L"AI 助手"));
+        m_aiDialog.CloseButtonText(L"关闭");
+        m_aiDialog.DefaultButton(ContentDialogButton::Close);
+        m_aiDialog.MinWidth(760);
+
+        StackPanel content;
+        content.Spacing(12);
+
+        TextBlock privacy;
+        privacy.Text(L"仅在你点击运行后，当前非敏感文本才会发送到所选模型服务。敏感记录会在网络请求前被 Rust 核心拒绝；生成结果不会覆盖原记录。");
+        privacy.TextWrapping(TextWrapping::Wrap);
+        privacy.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(privacy, L"AI 隐私说明");
+        content.Children().Append(privacy);
+
+        m_aiSelectionText = TextBlock{};
+        m_aiSelectionText.TextWrapping(TextWrapping::Wrap);
+        content.Children().Append(m_aiSelectionText);
+
+        StackPanel actionRow;
+        actionRow.Orientation(Orientation::Horizontal);
+        actionRow.Spacing(8);
+        m_aiActionCombo = ComboBox{};
+        m_aiActionCombo.Header(winrt::box_value(L"处理方式"));
+        m_aiActionCombo.MinWidth(220);
+        m_aiActionCombo.Items().Append(TaggedComboItem(L"回答 / 完成任务", L"task"));
+        m_aiActionCombo.Items().Append(TaggedComboItem(L"社交嘴替", L"mouthpiece"));
+        m_aiActionCombo.Items().Append(TaggedComboItem(L"翻译", L"translate"));
+        m_aiActionCombo.SelectedIndex(0);
+        actionRow.Children().Append(m_aiActionCombo);
+        m_aiRunButton = Button{};
+        m_aiRunButton.Content(winrt::box_value(L"运行 AI"));
+        m_aiRunButton.VerticalAlignment(VerticalAlignment::Bottom);
+        m_aiRunButton.Click([this](auto const&, auto const&)
+        {
+            RunAiActionAsync();
+        });
+        actionRow.Children().Append(m_aiRunButton);
+        m_aiProgress = ProgressRing{};
+        m_aiProgress.Width(28);
+        m_aiProgress.Height(28);
+        m_aiProgress.VerticalAlignment(VerticalAlignment::Bottom);
+        m_aiProgress.Visibility(Visibility::Collapsed);
+        actionRow.Children().Append(m_aiProgress);
+        content.Children().Append(actionRow);
+
+        m_aiStatus = TextBlock{};
+        m_aiStatus.TextWrapping(TextWrapping::Wrap);
+        AutomationProperties::SetName(m_aiStatus, L"AI 助手状态");
+        AutomationProperties::SetLiveSetting(
+            m_aiStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        content.Children().Append(m_aiStatus);
+
+        m_aiResultText = TextBox{};
+        m_aiResultText.Header(winrt::box_value(L"生成结果"));
+        m_aiResultText.AcceptsReturn(true);
+        m_aiResultText.IsReadOnly(true);
+        m_aiResultText.MinHeight(120);
+        m_aiResultText.TextWrapping(TextWrapping::Wrap);
+        m_aiResultText.PlaceholderText(L"运行后在此显示结果；原记录保持不变。");
+        content.Children().Append(m_aiResultText);
+
+        StackPanel resultButtons;
+        resultButtons.Orientation(Orientation::Horizontal);
+        resultButtons.Spacing(8);
+        m_aiCopyButton = Button{};
+        m_aiCopyButton.Content(winrt::box_value(L"复制结果"));
+        m_aiCopyButton.IsEnabled(false);
+        m_aiCopyButton.Click([this](auto const&, auto const&)
+        {
+            if (m_aiResultText.Text().empty()) return;
+            try
+            {
+                DataPackage package;
+                package.SetText(m_aiResultText.Text());
+                Clipboard::SetContent(package);
+                Clipboard::Flush();
+                SetStatus(L"已复制 AI 生成结果，原记录未修改。");
+            }
+            catch (winrt::hresult_error const& error)
+            {
+                SetStatus(StatusMessage(L"复制 AI 结果失败：", error.message()));
+            }
+        });
+        resultButtons.Children().Append(m_aiCopyButton);
+        m_aiPasteButton = Button{};
+        m_aiPasteButton.Content(winrt::box_value(L"粘贴结果到原窗口"));
+        m_aiPasteButton.IsEnabled(false);
+        m_aiPasteButton.Click([this](auto const&, auto const&)
+        {
+            auto const text = m_aiResultText.Text();
+            if (text.empty()) return;
+            m_aiDialog.Hide();
+            PreparePasteTarget();
+            try
+            {
+                m_core->PasteText(winrt::to_string(text));
+                SetStatus(L"已把 AI 生成结果粘贴到原窗口，原记录未修改。");
+            }
+            catch (std::exception const& error)
+            {
+                SetStatus(StatusMessage(
+                    L"粘贴 AI 结果失败：",
+                    tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+            }
+            m_suspendLifecycle = false;
+        });
+        resultButtons.Children().Append(m_aiPasteButton);
+        content.Children().Append(resultButtons);
+
+        Border separator;
+        separator.Height(1);
+        separator.Background(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"DividerStrokeColorDefaultBrush")).as<Brush>());
+        content.Children().Append(separator);
+        TextBlock settingsTitle;
+        settingsTitle.Text(L"模型与策略设置");
+        settingsTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(settingsTitle);
+
+        m_aiEnabledToggle = SettingToggle(
+            L"启用 AI 助手",
+            L"只有显式运行时才会发送当前非敏感文本。");
+        content.Children().Append(m_aiEnabledToggle);
+
+        StackPanel profileRow;
+        profileRow.Orientation(Orientation::Horizontal);
+        profileRow.Spacing(8);
+        m_aiProfileCombo = ComboBox{};
+        m_aiProfileCombo.Header(winrt::box_value(L"模型库"));
+        m_aiProfileCombo.MinWidth(360);
+        m_aiProfileCombo.SelectionChanged([this](auto const&, auto const&)
+        {
+            if (m_aiLoading) return;
+            m_aiCurrentProfileId = SelectedComboTag(m_aiProfileCombo);
+            m_aiAddingProfile = false;
+            LoadAiProfileEditor();
+        });
+        profileRow.Children().Append(m_aiProfileCombo);
+        m_aiNewProfileButton = Button{};
+        m_aiNewProfileButton.Content(winrt::box_value(L"添加模型"));
+        m_aiNewProfileButton.VerticalAlignment(VerticalAlignment::Bottom);
+        m_aiNewProfileButton.Click([this](auto const&, auto const&)
+        {
+            m_aiProfileCombo.SelectedIndex(-1);
+            m_aiAddingProfile = true;
+            m_aiCurrentProfileId = {};
+            m_aiBaseUrlText.Text(L"https://api.longcat.chat/openai/v1");
+            m_aiModelText.Text(L"");
+            m_aiApiKeyBox.Password(L"");
+            m_aiThinkingToggle.IsOn(false);
+            m_aiKeyStatus.Text(L"新模型必须输入 API Key；保存后密钥不会再次显示。");
+            m_aiDeleteButton.IsEnabled(false);
+            m_aiProbeButton.IsEnabled(false);
+        });
+        profileRow.Children().Append(m_aiNewProfileButton);
+        content.Children().Append(profileRow);
+
+        m_aiBaseUrlText = TextBox{};
+        m_aiBaseUrlText.Header(winrt::box_value(L"OpenAI 兼容 API 基础地址"));
+        m_aiBaseUrlText.PlaceholderText(L"https://example.com/v1；仅本机回环可使用 HTTP");
+        content.Children().Append(m_aiBaseUrlText);
+        m_aiModelText = TextBox{};
+        m_aiModelText.Header(winrt::box_value(L"模型名称"));
+        content.Children().Append(m_aiModelText);
+        m_aiApiKeyBox = PasswordBox{};
+        m_aiApiKeyBox.Header(winrt::box_value(L"API Key（留空保留现有值）"));
+        m_aiApiKeyBox.PlaceholderText(L"只写；不会从 Rust 核心回读");
+        content.Children().Append(m_aiApiKeyBox);
+        m_aiKeyStatus = TextBlock{};
+        m_aiKeyStatus.TextWrapping(TextWrapping::Wrap);
+        content.Children().Append(m_aiKeyStatus);
+        m_aiThinkingToggle = SettingToggle(
+            L"此模型启用深度思考",
+            L"会把下方思考预算发送给支持该字段的服务。");
+        content.Children().Append(m_aiThinkingToggle);
+
+        m_aiTaskProfileCombo = ComboBox{};
+        m_aiTaskProfileCombo.Header(winrt::box_value(L"回答 / 任务使用模型"));
+        content.Children().Append(m_aiTaskProfileCombo);
+        m_aiMouthpieceProfileCombo = ComboBox{};
+        m_aiMouthpieceProfileCombo.Header(winrt::box_value(L"嘴替使用模型"));
+        content.Children().Append(m_aiMouthpieceProfileCombo);
+        m_aiTranslateProfileCombo = ComboBox{};
+        m_aiTranslateProfileCombo.Header(winrt::box_value(L"翻译使用模型"));
+        content.Children().Append(m_aiTranslateProfileCombo);
+
+        m_aiTargetLanguageCombo = ComboBox{};
+        m_aiTargetLanguageCombo.Header(winrt::box_value(L"翻译目标语言"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"中英文自动互译", L"auto_zh_en"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"中文", L"zh"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"English", L"en"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"日本語", L"ja"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"Deutsch", L"de"));
+        m_aiTargetLanguageCombo.Items().Append(TaggedComboItem(L"Français", L"fr"));
+        content.Children().Append(m_aiTargetLanguageCombo);
+
+        m_aiThinkingBudgetNumber = NumberBox{};
+        m_aiThinkingBudgetNumber.Header(winrt::box_value(L"思考预算（1024–10000 Token）"));
+        m_aiThinkingBudgetNumber.Minimum(1024);
+        m_aiThinkingBudgetNumber.Maximum(10000);
+        m_aiThinkingBudgetNumber.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+        content.Children().Append(m_aiThinkingBudgetNumber);
+
+        StackPanel settingsButtons;
+        settingsButtons.Orientation(Orientation::Horizontal);
+        settingsButtons.Spacing(8);
+        m_aiSaveButton = Button{};
+        m_aiSaveButton.Content(winrt::box_value(L"保存 AI 设置"));
+        m_aiSaveButton.Click([this](auto const&, auto const&)
+        {
+            SaveAiSettings(false);
+        });
+        settingsButtons.Children().Append(m_aiSaveButton);
+        m_aiDeleteButton = Button{};
+        m_aiDeleteButton.Content(winrt::box_value(L"删除当前模型"));
+        m_aiDeleteButton.Click([this](auto const&, auto const&)
+        {
+            SaveAiSettings(true);
+        });
+        settingsButtons.Children().Append(m_aiDeleteButton);
+        m_aiProbeButton = Button{};
+        m_aiProbeButton.Content(winrt::box_value(L"测试当前模型"));
+        m_aiProbeButton.Click([this](auto const&, auto const&)
+        {
+            ProbeAiProfileAsync();
+        });
+        settingsButtons.Children().Append(m_aiProbeButton);
+        content.Children().Append(settingsButtons);
+
+        ScrollViewer scroller;
+        scroller.MaxHeight(680);
+        scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroller.Content(content);
+        m_aiDialog.Content(scroller);
+    }
+
+    winrt::fire_and_forget MainWindow::ShowAiAssistantAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core)
+        {
+            SetStatus(L"Rust 核心尚未就绪，暂时无法打开 AI 助手。");
+            co_return;
+        }
+        try
+        {
+            m_suspendLifecycle = true;
+            EnsureAiDialog();
+            m_aiDialog.XamlRoot(RootGrid().XamlRoot());
+            auto const settingsLoaded = LoadAiSettings();
+            if (m_detailsEntryId)
+            {
+                std::wstringstream selection;
+                selection << L"当前记录：" << *m_detailsEntryId;
+                m_aiSelectionText.Text(winrt::hstring{ selection.str() });
+            }
+            else
+            {
+                m_aiSelectionText.Text(L"尚未选中记录；请关闭对话框并先选择一条文本记录。");
+            }
+            if (settingsLoaded)
+            {
+                SetAiBusy(false, m_aiEnabled
+                    ? L"选择处理方式后点击“运行 AI”。"
+                    : L"AI 当前未启用；请先添加模型并保存设置。");
+            }
+            co_await m_aiDialog.ShowAsync();
+            m_suspendLifecycle = false;
+            SearchBox().Focus(FocusState::Programmatic);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(L"无法打开 AI 助手：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            m_suspendLifecycle = false;
+            SetStatus(StatusMessage(
+                L"无法打开 AI 助手：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    bool MainWindow::LoadAiSettings()
+    {
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->AiSettings()));
+            ApplyAiSettingsSnapshot(response);
+            return true;
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            m_aiProfiles.clear();
+            m_aiCurrentProfileId = {};
+            m_aiReadOnly = true;
+            m_aiEnabled = false;
+            SetAiBusy(false, StatusMessage(L"读取 AI 设置失败：", error.message()));
+            return false;
+        }
+        catch (std::exception const& error)
+        {
+            m_aiProfiles.clear();
+            m_aiCurrentProfileId = {};
+            m_aiReadOnly = true;
+            m_aiEnabled = false;
+            SetAiBusy(false, StatusMessage(
+                L"读取 AI 设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+            return false;
+        }
+    }
+
+    void MainWindow::ApplyAiSettingsSnapshot(JsonObject const& response)
+    {
+        m_aiLoading = true;
+        auto const previousId = m_aiCurrentProfileId;
+        m_aiReadOnly = response.GetNamedBoolean(L"read_only", true);
+        m_aiEnabled = response.GetNamedBoolean(L"enabled", false);
+        m_aiEnabledToggle.IsOn(m_aiEnabled);
+        m_aiProfiles.clear();
+        auto const profiles = response.GetNamedArray(L"profiles");
+        for (std::uint32_t index = 0; index < profiles.Size(); ++index)
+        {
+            auto const profile = profiles.GetObjectAt(index);
+            m_aiProfiles.push_back(AiProfileState{
+                profile.GetNamedString(L"id"),
+                profile.GetNamedString(L"base_url"),
+                profile.GetNamedString(L"model"),
+                profile.GetNamedBoolean(L"enable_thinking", false),
+                profile.GetNamedBoolean(L"api_key_configured", false),
+            });
+        }
+
+        auto fillProfiles = [this](ComboBox const& combo)
+        {
+            combo.Items().Clear();
+            for (auto const& profile : m_aiProfiles)
+            {
+                combo.Items().Append(TaggedComboItem(profile.model, profile.id));
+            }
+        };
+        fillProfiles(m_aiProfileCombo);
+        fillProfiles(m_aiTaskProfileCombo);
+        fillProfiles(m_aiMouthpieceProfileCombo);
+        fillProfiles(m_aiTranslateProfileCombo);
+
+        auto const stillPresent = std::find_if(
+            m_aiProfiles.begin(),
+            m_aiProfiles.end(),
+            [&previousId](AiProfileState const& profile) { return profile.id == previousId; });
+        m_aiCurrentProfileId = stillPresent == m_aiProfiles.end()
+            ? (m_aiProfiles.empty() ? winrt::hstring{} : m_aiProfiles.front().id)
+            : previousId;
+        m_aiAddingProfile = false;
+        SelectComboTag(m_aiProfileCombo, m_aiCurrentProfileId);
+        SelectComboTag(
+            m_aiTaskProfileCombo,
+            response.GetNamedString(L"assigned_profile_task", L"none"));
+        SelectComboTag(
+            m_aiMouthpieceProfileCombo,
+            response.GetNamedString(L"assigned_profile_mouthpiece", L"none"));
+        SelectComboTag(
+            m_aiTranslateProfileCombo,
+            response.GetNamedString(L"assigned_profile_translate", L"none"));
+        SelectComboTag(
+            m_aiTargetLanguageCombo,
+            response.GetNamedString(L"target_lang", L"zh"));
+        m_aiThinkingBudgetNumber.Value(response.GetNamedNumber(L"thinking_budget", 1024));
+        LoadAiProfileEditor();
+        m_aiApiKeyBox.Password(L"");
+        m_aiLoading = false;
+
+        auto const canEdit = !m_aiReadOnly && !m_aiBusy;
+        m_aiEnabledToggle.IsEnabled(canEdit);
+        m_aiNewProfileButton.IsEnabled(canEdit);
+        m_aiSaveButton.IsEnabled(canEdit);
+        m_aiDeleteButton.IsEnabled(canEdit && !m_aiCurrentProfileId.empty());
+        m_aiProbeButton.IsEnabled(!m_aiCurrentProfileId.empty() && !m_aiBusy);
+        m_aiBaseUrlText.IsEnabled(canEdit);
+        m_aiModelText.IsEnabled(canEdit);
+        m_aiApiKeyBox.IsEnabled(canEdit);
+        m_aiThinkingToggle.IsEnabled(canEdit);
+        m_aiTaskProfileCombo.IsEnabled(canEdit);
+        m_aiMouthpieceProfileCombo.IsEnabled(canEdit);
+        m_aiTranslateProfileCombo.IsEnabled(canEdit);
+        m_aiTargetLanguageCombo.IsEnabled(canEdit);
+        m_aiThinkingBudgetNumber.IsEnabled(canEdit);
+        if (m_aiReadOnly)
+        {
+            m_aiStatus.Text(L"当前数据库为只读：可运行已有模型，但不能修改 AI 设置。");
+        }
+    }
+
+    void MainWindow::LoadAiProfileEditor()
+    {
+        auto const current = std::find_if(
+            m_aiProfiles.begin(),
+            m_aiProfiles.end(),
+            [this](AiProfileState const& profile) { return profile.id == m_aiCurrentProfileId; });
+        if (current == m_aiProfiles.end())
+        {
+            m_aiBaseUrlText.Text(L"");
+            m_aiModelText.Text(L"");
+            m_aiApiKeyBox.Password(L"");
+            m_aiThinkingToggle.IsOn(false);
+            m_aiKeyStatus.Text(L"尚未添加模型。");
+            m_aiDeleteButton.IsEnabled(false);
+            m_aiProbeButton.IsEnabled(false);
+            return;
+        }
+        m_aiBaseUrlText.Text(current->baseUrl);
+        m_aiModelText.Text(current->model);
+        m_aiApiKeyBox.Password(L"");
+        m_aiThinkingToggle.IsOn(current->enableThinking);
+        m_aiKeyStatus.Text(current->apiKeyConfigured
+            ? L"API Key 已由 Windows DPAPI 保护；留空会保留现有值。"
+            : L"尚未配置 API Key。");
+        m_aiDeleteButton.IsEnabled(!m_aiReadOnly && !m_aiBusy);
+        m_aiProbeButton.IsEnabled(current->apiKeyConfigured && !m_aiBusy);
+    }
+
+    winrt::fire_and_forget MainWindow::SaveAiSettings(bool deleteCurrent)
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_aiBusy || m_aiReadOnly) co_return;
+        auto const addingProfile = m_aiAddingProfile;
+        auto const budget = m_aiThinkingBudgetNumber.Value();
+        if (!std::isfinite(budget) || budget < 1024 || budget > 10000)
+        {
+            m_aiStatus.Text(L"思考预算必须在 1024 到 10000 之间。");
+            co_return;
+        }
+        if (!deleteCurrent && (m_aiAddingProfile || !m_aiCurrentProfileId.empty())
+            && (m_aiBaseUrlText.Text().empty() || m_aiModelText.Text().empty()))
+        {
+            m_aiStatus.Text(L"API 基础地址和模型名称不能为空。");
+            co_return;
+        }
+        if (m_aiAddingProfile && m_aiApiKeyBox.Password().empty())
+        {
+            m_aiStatus.Text(L"新模型必须输入 API Key。");
+            co_return;
+        }
+
+        JsonArray profiles;
+        for (auto const& existing : m_aiProfiles)
+        {
+            auto const isCurrent = existing.id == m_aiCurrentProfileId;
+            if (deleteCurrent && isCurrent) continue;
+            JsonObject profile;
+            profile.Insert(L"id", JsonValue::CreateStringValue(existing.id));
+            profile.Insert(L"base_url", JsonValue::CreateStringValue(
+                isCurrent ? m_aiBaseUrlText.Text() : existing.baseUrl));
+            profile.Insert(L"model", JsonValue::CreateStringValue(
+                isCurrent ? m_aiModelText.Text() : existing.model));
+            profile.Insert(L"enable_thinking", JsonValue::CreateBooleanValue(
+                isCurrent ? m_aiThinkingToggle.IsOn() : existing.enableThinking));
+            if (isCurrent && !m_aiApiKeyBox.Password().empty())
+            {
+                profile.Insert(L"api_key", JsonValue::CreateStringValue(m_aiApiKeyBox.Password()));
+            }
+            profiles.Append(profile);
+        }
+        if (!deleteCurrent && m_aiAddingProfile)
+        {
+            JsonObject profile;
+            profile.Insert(L"id", JsonValue::CreateStringValue(L""));
+            profile.Insert(L"base_url", JsonValue::CreateStringValue(m_aiBaseUrlText.Text()));
+            profile.Insert(L"model", JsonValue::CreateStringValue(m_aiModelText.Text()));
+            profile.Insert(L"enable_thinking", JsonValue::CreateBooleanValue(m_aiThinkingToggle.IsOn()));
+            profile.Insert(L"api_key", JsonValue::CreateStringValue(m_aiApiKeyBox.Password()));
+            profiles.Append(profile);
+        }
+
+        auto enabled = m_aiEnabledToggle.IsOn();
+        if (deleteCurrent && profiles.Size() == 0)
+        {
+            enabled = false;
+            m_aiEnabledToggle.IsOn(false);
+        }
+        JsonObject update;
+        update.Insert(L"enabled", JsonValue::CreateBooleanValue(enabled));
+        update.Insert(L"profiles", profiles);
+        update.Insert(L"assigned_profile_task", JsonValue::CreateStringValue(
+            SelectedComboTag(m_aiTaskProfileCombo)));
+        update.Insert(L"assigned_profile_mouthpiece", JsonValue::CreateStringValue(
+            SelectedComboTag(m_aiMouthpieceProfileCombo)));
+        update.Insert(L"assigned_profile_translate", JsonValue::CreateStringValue(
+            SelectedComboTag(m_aiTranslateProfileCombo)));
+        update.Insert(L"target_lang", JsonValue::CreateStringValue(
+            SelectedComboTag(m_aiTargetLanguageCombo)));
+        update.Insert(L"thinking_budget", JsonValue::CreateNumberValue(
+            static_cast<double>(std::llround(budget))));
+
+        SetAiBusy(true, deleteCurrent ? L"正在安全删除模型……" : L"正在安全保存 AI 设置……");
+        try
+        {
+            auto const request = winrt::to_string(update.Stringify());
+            auto const responseText = co_await RunRustOperationAsync([this, request]
+            {
+                return m_core->UpdateAiSettings(request);
+            });
+            auto const response = JsonObject::Parse(responseText);
+            if (addingProfile)
+            {
+                auto const savedProfiles = response.GetNamedArray(L"profiles");
+                if (savedProfiles.Size() > 0)
+                {
+                    m_aiCurrentProfileId = savedProfiles
+                        .GetObjectAt(savedProfiles.Size() - 1)
+                        .GetNamedString(L"id");
+                }
+            }
+            ApplyAiSettingsSnapshot(response);
+            SetAiBusy(false, response.GetNamedString(
+                L"message",
+                deleteCurrent ? L"模型已删除。" : L"AI 设置已保存。"));
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetAiBusy(false, StatusMessage(L"保存 AI 设置失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            SetAiBusy(false, StatusMessage(
+                L"保存 AI 设置失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::ProbeAiProfileAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_aiBusy || m_aiCurrentProfileId.empty()) co_return;
+        if (m_aiAddingProfile || !m_aiApiKeyBox.Password().empty())
+        {
+            m_aiStatus.Text(L"请先保存当前模型，再测试连接。");
+            co_return;
+        }
+        auto const profileId = winrt::to_string(m_aiCurrentProfileId);
+        SetAiBusy(true, L"正在以最小请求测试模型连接……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this, profileId]
+            {
+                return m_core->ProbeAiProfile(profileId);
+            });
+            auto const response = JsonObject::Parse(responseText);
+            SetAiBusy(false, response.GetNamedString(L"message", L"AI 服务连接成功。"));
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetAiBusy(false, StatusMessage(L"测试 AI 连接失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            SetAiBusy(false, StatusMessage(
+                L"测试 AI 连接失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    winrt::fire_and_forget MainWindow::RunAiActionAsync()
+    {
+        auto lifetime = get_strong();
+        if (!m_core || m_aiBusy) co_return;
+        if (!m_detailsEntryId)
+        {
+            m_aiStatus.Text(L"请先选择一条文本记录。");
+            co_return;
+        }
+        auto const actionTag = SelectedComboTag(m_aiActionCombo);
+        if (actionTag.empty()) co_return;
+        auto const action = winrt::to_string(actionTag);
+        auto const entryId = *m_detailsEntryId;
+        SetAiBusy(true, L"AI 正在处理；可继续保留原记录不变……");
+        try
+        {
+            auto const responseText = co_await RunRustOperationAsync([this, entryId, action]
+            {
+                return m_core->RunAiAction(entryId, action);
+            });
+            auto const response = JsonObject::Parse(responseText);
+            m_aiResultText.Text(response.GetNamedString(L"content"));
+            std::wstring message{ response.GetNamedString(L"message", L"AI 已生成结果。").c_str() };
+            auto const model = response.GetNamedString(L"model", L"");
+            if (!model.empty())
+            {
+                message.append(L" · 模型：");
+                message.append(model.c_str(), model.size());
+            }
+            if (response.GetNamedBoolean(L"input_truncated", false))
+            {
+                message.append(L" · 输入已按 10000 字符上限截断");
+            }
+            SetAiBusy(false, winrt::hstring{ message });
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            SetAiBusy(false, StatusMessage(L"运行 AI 失败：", error.message()));
+        }
+        catch (std::exception const& error)
+        {
+            SetAiBusy(false, StatusMessage(
+                L"运行 AI 失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+    }
+
+    void MainWindow::SetAiBusy(bool busy, winrt::hstring const& message)
+    {
+        m_aiBusy = busy;
+        m_aiProgress.IsActive(busy);
+        m_aiProgress.Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
+        if (!message.empty()) m_aiStatus.Text(message);
+        auto const hasResult = !m_aiResultText.Text().empty();
+        m_aiRunButton.IsEnabled(!busy && m_aiEnabled && m_detailsEntryId.has_value());
+        m_aiCopyButton.IsEnabled(!busy && hasResult);
+        m_aiPasteButton.IsEnabled(!busy && hasResult);
+        auto const canEdit = !busy && !m_aiReadOnly;
+        m_aiEnabledToggle.IsEnabled(canEdit);
+        m_aiNewProfileButton.IsEnabled(canEdit);
+        m_aiSaveButton.IsEnabled(canEdit);
+        m_aiDeleteButton.IsEnabled(canEdit && !m_aiCurrentProfileId.empty());
+        auto const current = std::find_if(
+            m_aiProfiles.begin(),
+            m_aiProfiles.end(),
+            [this](AiProfileState const& profile) { return profile.id == m_aiCurrentProfileId; });
+        auto const canProbe = current != m_aiProfiles.end()
+            && current->apiKeyConfigured
+            && !m_aiAddingProfile
+            && m_aiApiKeyBox.Password().empty();
+        m_aiProbeButton.IsEnabled(!busy && canProbe);
+        m_aiBaseUrlText.IsEnabled(canEdit);
+        m_aiModelText.IsEnabled(canEdit);
+        m_aiApiKeyBox.IsEnabled(canEdit);
+        m_aiThinkingToggle.IsEnabled(canEdit);
+        m_aiTaskProfileCombo.IsEnabled(canEdit);
+        m_aiMouthpieceProfileCombo.IsEnabled(canEdit);
+        m_aiTranslateProfileCombo.IsEnabled(canEdit);
+        m_aiTargetLanguageCombo.IsEnabled(canEdit);
+        m_aiThinkingBudgetNumber.IsEnabled(canEdit);
     }
 
     winrt::fire_and_forget MainWindow::ShowEmojiPickerAsync()

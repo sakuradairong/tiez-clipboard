@@ -12,6 +12,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use tiez_core::ai::{
+    AiActionResult, AiProbeResult, AiSettings, AiSettingsMutation, AiSettingsSnapshot,
+    AiSettingsUpdate,
+};
 use tiez_core::backup::{
     apply_pending_restore, create_backup, inspect_backup, schedule_backup_restore, BackupInfo,
 };
@@ -26,6 +30,7 @@ use tiez_core::cloud_sync_settings::{
     CloudSyncProbeResult, CloudSyncSettings, CloudSyncSettingsMutation, CloudSyncSettingsSnapshot,
     CloudSyncSettingsUpdate,
 };
+use tiez_core::content_identity::is_text_type;
 use tiez_core::content_opening::{prepare_open_content, OpenContentPlan};
 use tiez_core::data_directory::resolve_data_directory;
 use tiez_core::database_bootstrap::open_database_with_decrypt;
@@ -51,7 +56,7 @@ mod win32_paste;
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
 
-const ABI_VERSION: u32 = 16;
+const ABI_VERSION: u32 = 17;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -83,6 +88,7 @@ pub struct TiezCoreHandle {
     inner: Arc<TiezCoreInner>,
     emoji_favorites: Mutex<EmojiFavorites>,
     tag_catalog: Mutex<TagCatalog>,
+    ai_settings: Mutex<AiSettings>,
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
     file_transfer: NativeFileTransferService,
@@ -96,12 +102,18 @@ impl TiezCoreHandle {
     }
 
     fn wrap_with_settings(history: ClipboardHistory, settings: NativeSettings) -> Self {
-        Self::wrap_with_adapters(history, settings, CloudSyncSettings::in_memory())
+        Self::wrap_with_adapters(
+            history,
+            settings,
+            AiSettings::in_memory(),
+            CloudSyncSettings::in_memory(),
+        )
     }
 
     fn wrap_with_adapters(
         history: ClipboardHistory,
         settings: NativeSettings,
+        ai_settings: AiSettings,
         cloud_settings: CloudSyncSettings,
     ) -> Self {
         let inner = Arc::new(TiezCoreInner {
@@ -118,6 +130,7 @@ impl TiezCoreHandle {
             inner,
             emoji_favorites: Mutex::new(EmojiFavorites::in_memory()),
             tag_catalog: Mutex::new(TagCatalog::in_memory()),
+            ai_settings: Mutex::new(ai_settings),
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
             file_transfer,
@@ -134,7 +147,7 @@ impl TiezCoreHandle {
             _ => None,
         };
         let read_only = configured_database.is_some() && env_flag(DATABASE_READ_ONLY_ENV);
-        let (history, settings, cloud_settings) = match configured_database.as_ref() {
+        let (history, settings, ai_settings, cloud_settings) = match configured_database.as_ref() {
             Some(value) => {
                 ensure_database_instance_guard(&value)?;
                 if !read_only {
@@ -144,18 +157,22 @@ impl TiezCoreHandle {
                     .map_err(|error| format!("{}: {error}", value.display()))?;
                 let settings = NativeSettings::open_sqlite(&value, read_only)
                     .map_err(|error| format!("{}: {error}", value.display()))?;
+                let ai_settings = AiSettings::open_sqlite(&value, read_only)
+                    .map_err(|error| format!("{}: {error}", value.display()))?;
                 let cloud_settings = CloudSyncSettings::open_sqlite(&value, read_only)
                     .map_err(|error| format!("{}: {error}", value.display()))?;
-                (history, settings, cloud_settings)
+                (history, settings, ai_settings, cloud_settings)
             }
             _ => (
                 ClipboardHistory::synthetic(),
                 NativeSettings::in_memory(),
+                AiSettings::in_memory(),
                 CloudSyncSettings::in_memory(),
             ),
         };
 
-        let mut handle = Self::wrap_with_adapters(history, settings, cloud_settings);
+        let mut handle =
+            Self::wrap_with_adapters(history, settings, ai_settings, cloud_settings);
         if let Some(database_path) = configured_database {
             let data_dir = database_path
                 .parent()
@@ -406,6 +423,34 @@ struct FileTransferResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct AiSettingsResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a AiSettingsSnapshot,
+}
+
+#[derive(Serialize)]
+struct AiSettingsMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a AiSettingsMutation,
+}
+
+#[derive(Serialize)]
+struct AiProbeResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a AiProbeResult,
+}
+
+#[derive(Serialize)]
+struct AiActionResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    result: &'a AiActionResult,
+}
+
+#[derive(Serialize)]
 struct OpenContentResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -550,6 +595,38 @@ fn file_transfer_json(snapshot: &FileTransferSnapshot) -> Result<String, String>
         snapshot,
     })
     .map_err(|error| format!("failed to serialize file-transfer snapshot: {error}"))
+}
+
+fn ai_settings_json(snapshot: &AiSettingsSnapshot) -> Result<String, String> {
+    serde_json::to_string(&AiSettingsResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+        .map_err(|error| format!("failed to serialize AI settings: {error}"))
+}
+
+fn ai_settings_mutation_json(mutation: &AiSettingsMutation) -> Result<String, String> {
+    serde_json::to_string(&AiSettingsMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+        .map_err(|error| format!("failed to serialize AI settings mutation: {error}"))
+}
+
+fn ai_probe_json(result: &AiProbeResult) -> Result<String, String> {
+    serde_json::to_string(&AiProbeResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+        .map_err(|error| format!("failed to serialize AI probe result: {error}"))
+}
+
+fn ai_action_json(result: &AiActionResult) -> Result<String, String> {
+    serde_json::to_string(&AiActionResponse {
+        abi_version: ABI_VERSION,
+        result,
+    })
+        .map_err(|error| format!("failed to serialize AI action result: {error}"))
 }
 
 fn open_content_json(plan: &OpenContentPlan) -> Result<String, String> {
@@ -1031,6 +1108,68 @@ fn update_native_setting(
         .lock()
         .map_err(|_| "NativeSettings lock is poisoned".to_owned())?
         .update(key, value)
+        .map_err(|error| error.to_string())
+}
+
+fn ai_settings_snapshot(handle: &TiezCoreHandle) -> Result<AiSettingsSnapshot, String> {
+    handle
+        .ai_settings
+        .lock()
+        .map_err(|_| "AiSettings lock is poisoned".to_owned())?
+        .snapshot()
+        .map_err(|error| error.to_string())
+}
+
+fn update_ai_settings(
+    handle: &TiezCoreHandle,
+    update: AiSettingsUpdate,
+) -> Result<AiSettingsMutation, String> {
+    handle
+        .ai_settings
+        .lock()
+        .map_err(|_| "AiSettings lock is poisoned".to_owned())?
+        .update(update)
+        .map_err(|error| error.to_string())
+}
+
+fn probe_ai_profile(handle: &TiezCoreHandle, profile_id: &str) -> Result<AiProbeResult, String> {
+    handle
+        .ai_settings
+        .lock()
+        .map_err(|_| "AiSettings lock is poisoned".to_owned())?
+        .probe_profile(profile_id)
+        .map_err(|error| error.to_string())
+}
+
+fn run_history_ai_action(
+    handle: &TiezCoreHandle,
+    entry_id: i64,
+    action: &str,
+) -> Result<AiActionResult, String> {
+    let content = {
+        let history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .content(entry_id)
+            .map_err(|error| error.to_string())?
+    };
+    if content.is_sensitive {
+        return Err("敏感剪贴板内容禁止发送到 AI 服务".to_owned());
+    }
+    if !content.available {
+        return Err("此剪贴板内容当前不可用于 AI".to_owned());
+    }
+    if !is_text_type(&content.content_type) {
+        return Err("AI 助手当前只处理文本、富文本、链接和代码记录".to_owned());
+    }
+    handle
+        .ai_settings
+        .lock()
+        .map_err(|_| "AiSettings lock is poisoned".to_owned())?
+        .run_action(action, &content.content)
         .map_err(|error| error.to_string())
 }
 
@@ -1892,6 +2031,81 @@ pub unsafe extern "C" fn tiez_core_update_setting_json(
         let value = required_utf8(value_utf8, "value_utf8")?;
         let mutation = update_native_setting(handle, &key, &value)?;
         into_owned_c_string(setting_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Return AI settings and profile summaries without API keys.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_ai_settings_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = ai_settings_snapshot(handle)?;
+        into_owned_c_string(ai_settings_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Transactionally update AI settings. API keys are write-only across the ABI.
+///
+/// # Safety
+/// `handle` must be live and `request_json_utf8` must be readable UTF-8 JSON.
+pub unsafe extern "C" fn tiez_core_update_ai_settings_json(
+    handle: *mut TiezCoreHandle,
+    request_json_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let request_json = required_utf8(request_json_utf8, "request_json_utf8")?;
+        let update = serde_json::from_str::<AiSettingsUpdate>(&request_json)
+            .map_err(|error| format!("AI 设置 JSON 无效：{error}"))?;
+        let mutation = update_ai_settings(handle, update)?;
+        into_owned_c_string(ai_settings_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Run a minimal request against one saved profile without exposing its key.
+/// This blocking call must be invoked from a non-UI thread by native hosts.
+///
+/// # Safety
+/// `handle` must be live and `profile_id_utf8` must be readable UTF-8.
+pub unsafe extern "C" fn tiez_core_probe_ai_profile_json(
+    handle: *mut TiezCoreHandle,
+    profile_id_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let profile_id = required_utf8(profile_id_utf8, "profile_id_utf8")?;
+        let result = probe_ai_profile(handle, &profile_id)?;
+        into_owned_c_string(ai_probe_json(&result)?)
+    })
+}
+
+#[no_mangle]
+/// Send one non-sensitive text-like history entry to the assigned AI profile.
+/// The original entry is never modified. This blocking call must run off the UI thread.
+///
+/// # Safety
+/// `handle` must be live and `action_utf8` must be readable UTF-8.
+pub unsafe extern "C" fn tiez_core_run_ai_action_json(
+    handle: *mut TiezCoreHandle,
+    entry_id: i64,
+    action_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let action = required_utf8(action_utf8, "action_utf8")?;
+        let result = run_history_ai_action(handle, entry_id, &action)?;
+        into_owned_c_string(ai_action_json(&result)?)
     })
 }
 
@@ -2797,6 +3011,70 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("not exposed to native frontends"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn ai_exports_keep_keys_write_only_and_reject_unsafe_history() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let update = CString::new(
+            r#"{
+                "enabled":true,
+                "profiles":[{
+                    "id":"primary",
+                    "base_url":"https://ai.example.test/v1",
+                    "model":"中文模型",
+                    "enable_thinking":false,
+                    "api_key":"must-not-cross-boundary"
+                }],
+                "assigned_profile_task":"primary",
+                "assigned_profile_mouthpiece":"primary",
+                "assigned_profile_translate":"primary",
+                "target_lang":"auto_zh_en",
+                "thinking_budget":2048
+            }"#,
+        )
+        .unwrap();
+
+        unsafe {
+            let mutation = tiez_core_update_ai_settings_json(handle, update.as_ptr());
+            assert!(!mutation.is_null());
+            let mutation_json = CStr::from_ptr(mutation).to_str().unwrap();
+            assert!(mutation_json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(mutation_json.contains("\"model\":\"中文模型\""));
+            assert!(mutation_json.contains("\"api_key_configured\":true"));
+            assert!(!mutation_json.contains("must-not-cross-boundary"));
+            assert!(!mutation_json.contains("\"api_key\""));
+            tiez_core_string_free(mutation);
+
+            let snapshot = tiez_core_get_ai_settings_json(handle);
+            assert!(!snapshot.is_null());
+            let snapshot_json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(snapshot_json.contains("\"assigned_profile_task\":\"primary\""));
+            assert!(!snapshot_json.contains("must-not-cross-boundary"));
+            tiez_core_string_free(snapshot);
+
+            let action = CString::new("task").unwrap();
+            assert!(tiez_core_run_ai_action_json(handle, 105, action.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("只处理文本"));
+            tiez_core_string_free(error);
+
+            assert!(tiez_core_run_ai_action_json(handle, 107, action.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("敏感剪贴板内容禁止"));
             tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }

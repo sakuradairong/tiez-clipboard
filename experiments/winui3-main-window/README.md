@@ -28,14 +28,14 @@ command names and serialized `ClipboardEntry` contract remain unchanged.
 ```text
 TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v16
+        │ dynamic loading + C ABI v17
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
 tiez-core
-  backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
+  ai · backup · clipboard_history · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
     - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
     - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
@@ -63,6 +63,9 @@ The C ABI interface is deliberately small:
 - configure, start, stop, and poll an authenticated Rust-owned LAN transfer
   server; send text, expose local files as streaming downloads, and retain the
   existing snake_case message and settings contracts;
+- read and transactionally update existing AI profiles without returning API
+  keys, probe one OpenAI-compatible endpoint, and run a bounded task, reply, or
+  translation action for one approved history entry;
 - create, fully validate, and schedule restoration of the same `.tiez-backup`
   archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
@@ -99,6 +102,9 @@ versioned request/response structs or another explicitly versioned wire format.
   directory and automation settings, active-device/message status, text sending,
   multi-file sharing, and a responsive Chinese phone page for text and bounded
   direct/chunked uploads;
+- a Chinese native AI assistant with write-only API keys, multiple model profiles,
+  per-action assignments, endpoint probing, explicit task/reply/translation runs,
+  and non-destructive copy or transient paste of generated results;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
 - real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
@@ -361,7 +367,7 @@ Do not point
 running. OCR/QR analysis and native search are connected through the shared
 core. WebDAV configuration, safe connectivity testing, redirect-free transport
 (retry, atomic publication, blobs, and remote listings), conflict rules, and the
-single-pass runner are shared. ABI v16 owns the native scheduler and writable
+single-pass runner are shared. ABI v17 owns the native scheduler and writable
 SQLite host; C++ only starts/stops it and polls credential-free status.
 Sensitive or encrypted entries never retain
 plaintext analysis, including when a privacy tag is added during background
@@ -373,7 +379,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 16`.
+- [ ] Status shows `Rust ABI 17`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -446,6 +452,9 @@ recognition. Record the active adapter with every result.
 - [ ] Enabling automatic WebDAV sync starts the Rust-owned scheduler; “立即同步” works with automatic sync disabled and shows Chinese running/result/error state.
 - [ ] A second device receives text, image, file metadata, tags, settings, and emoji favorites; newer revisions win deterministically and deletions do not echo back.
 - [ ] Remote setting changes apply to the native window without restart, while MQTT/AI/WebDAV credentials, relay keys, and local runner state never appear in settings snapshots.
+- [ ] “AI 助手” reads the existing profiles without displaying saved API keys; leaving the key field blank preserves the secret, and copied read-only mode disables profile mutation.
+- [ ] A profile probe and task/reply/translation action run without blocking the UI; remote addresses require HTTPS, local HTTP is loopback-only, and redirects or credential-bearing URLs fail closed.
+- [ ] Sensitive, unavailable, image, and file records are rejected before network access. An ordinary text result can be copied or transiently pasted, while the source history record remains unchanged.
 - [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
 - [ ] An ordinary image can run OCR/QR recognition without blocking the UI, shows Chinese progress/error state, and copies the combined result.
 - [ ] Reopening an analyzed image uses the cache, “重新识别” forces a refresh, and searching recognized OCR text or a QR payload finds the image card without exposing that payload in its preview.
@@ -522,7 +531,8 @@ window should call, and which extraction phase owns it.
 | Emoji image favorites | `get_emoji_favorites` / `add_emoji_favorite` / `remove_emoji_favorite` / `paste_emoji_image` | shared `tiez-core::emoji_favorites` + ABI v14 + Chinese native preview/import/remove/paste dialog, retaining the existing setting, managed directory, backup, and cloud-sync contracts | 5 (connected) |
 | Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
 | LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
-| Advanced theme store, AI | various commands | phase 5 independent WinUI surfaces | 5 |
+| AI profiles / task, reply, translation actions | AI profile/settings and action commands | shared `tiez-core::ai` + ABI v17 + Chinese native profile/action dialog; keys stay write-only, history eligibility is checked before bounded redirect-free network requests, and results never overwrite source entries | 5 (connected) |
+| Advanced theme store | theme-store commands | phase 5 independent WinUI surface after service ownership and release policy are defined | 5 |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -604,11 +614,20 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
     immutable and reject non-atomic manual creation, copied read-only databases
     cannot mutate, and one exact-entry
     response is bounded to 1,000 records while retaining the uncapped total.
+12. `AI` — **shared core and WinUI surface connected**: the native assistant
+    preserves the existing camelCase stored profile schema and strategy-setting
+    keys, while exposing only key-presence metadata across ABI v17. API keys stay
+    inside DPAPI-compatible Rust storage; endpoints require HTTPS except loopback
+    HTTP and cannot contain credentials, queries, fragments, or redirects.
+    Explicit task, reply, and translation actions run off the UI thread with
+    bounded input, response size, and timeouts. Sensitive, unavailable, and
+    non-text entries fail before networking, and generated text is copied or
+    transiently pasted without changing the source record.
 
 Before the WinUI executable becomes the default daily-driver entry, it still
-needs file transfer and remaining secondary-surface parity, signed installer
-upgrade, real-account multi-device sync endurance, and manual Windows 10/11,
-DPI, IME, accessibility, and long-run lifecycle acceptance.
+needs advanced theme-store parity, signed installer upgrade, real-account
+multi-device sync endurance, and manual Windows 10/11, DPI, IME, accessibility,
+and long-run lifecycle acceptance.
 
 ## Primary references
 

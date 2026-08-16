@@ -81,6 +81,13 @@ namespace tiez::probe
             m_settingsJson = Resolve<SettingsJsonFn>("tiez_core_get_settings_json");
             m_updateSettingJson = Resolve<UpdateSettingJsonFn>(
                 "tiez_core_update_setting_json");
+            m_aiSettingsJson = Resolve<SettingsJsonFn>("tiez_core_get_ai_settings_json");
+            m_updateAiSettingsJson = Resolve<JsonRequestFn>(
+                "tiez_core_update_ai_settings_json");
+            m_probeAiProfileJson = Resolve<JsonRequestFn>(
+                "tiez_core_probe_ai_profile_json");
+            m_runAiActionJson = Resolve<ApplyActionJsonFn>(
+                "tiez_core_run_ai_action_json");
             m_cloudSyncSettingsJson = Resolve<SettingsJsonFn>(
                 "tiez_core_get_cloud_sync_settings_json");
             m_updateCloudSyncSettingsJson = Resolve<JsonRequestFn>(
@@ -460,6 +467,51 @@ namespace tiez::probe
             throw std::runtime_error("Rust setting update failed: " + TakeLastError());
         }
 
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::AiSettings() const
+    {
+        auto* result = m_aiSettingsJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust AI settings lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateAiSettings(std::string_view requestJson) const
+    {
+        std::string request{ requestJson };
+        auto* result = m_updateAiSettingsJson(m_handle, request.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust AI settings update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::ProbeAiProfile(std::string_view profileId) const
+    {
+        std::string value{ profileId };
+        auto* result = m_probeAiProfileJson(m_handle, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust AI profile probe failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::RunAiAction(
+        std::int64_t entryId,
+        std::string_view action) const
+    {
+        std::string value{ action };
+        auto* result = m_runAiActionJson(m_handle, entryId, value.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust AI action failed: " + TakeLastError());
+        }
         return ConsumeString(result);
     }
 

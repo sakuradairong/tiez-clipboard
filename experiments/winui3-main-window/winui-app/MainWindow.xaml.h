@@ -35,6 +35,9 @@ namespace winrt::Tiez::WinUIProbe::implementation
         void FileTransferButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
+        void AiButton_Click(
+            winrt::Windows::Foundation::IInspectable const&,
+            Microsoft::UI::Xaml::RoutedEventArgs const&);
         void HideButton_Click(
             winrt::Windows::Foundation::IInspectable const&,
             Microsoft::UI::Xaml::RoutedEventArgs const&);
@@ -134,6 +137,15 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::fire_and_forget SaveFileTransferSettings(bool enabled);
         winrt::fire_and_forget SendFileTransferText();
         winrt::fire_and_forget ShareFileTransferFiles();
+        void EnsureAiDialog();
+        winrt::fire_and_forget ShowAiAssistantAsync();
+        bool LoadAiSettings();
+        void ApplyAiSettingsSnapshot(Windows::Data::Json::JsonObject const& response);
+        void LoadAiProfileEditor();
+        winrt::fire_and_forget SaveAiSettings(bool deleteCurrent = false);
+        winrt::fire_and_forget ProbeAiProfileAsync();
+        winrt::fire_and_forget RunAiActionAsync();
+        void SetAiBusy(bool busy, winrt::hstring const& message);
         winrt::Windows::Foundation::IAsyncOperation<winrt::hstring> RunRustOperationAsync(
             std::function<std::string()> operation);
         void EnsureSettingsDialog();
@@ -201,6 +213,46 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::Button m_fileTransferShareButton{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock m_fileTransferDevicesText{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel m_fileTransferMessagesPanel{ nullptr };
+        struct AiProfileState
+        {
+            winrt::hstring id;
+            winrt::hstring baseUrl;
+            winrt::hstring model;
+            bool enableThinking{};
+            bool apiKeyConfigured{};
+        };
+        Microsoft::UI::Xaml::Controls::ContentDialog m_aiDialog{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_aiStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_aiSelectionText{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiActionCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiRunButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::ProgressRing m_aiProgress{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_aiResultText{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiCopyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiPasteButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_aiEnabledToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiProfileCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiNewProfileButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_aiBaseUrlText{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_aiModelText{ nullptr };
+        Microsoft::UI::Xaml::Controls::PasswordBox m_aiApiKeyBox{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_aiKeyStatus{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch m_aiThinkingToggle{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiTaskProfileCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiMouthpieceProfileCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiTranslateProfileCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox m_aiTargetLanguageCombo{ nullptr };
+        Microsoft::UI::Xaml::Controls::NumberBox m_aiThinkingBudgetNumber{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiSaveButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiDeleteButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_aiProbeButton{ nullptr };
+        std::vector<AiProfileState> m_aiProfiles;
+        winrt::hstring m_aiCurrentProfileId;
+        bool m_aiReadOnly{};
+        bool m_aiLoading{};
+        bool m_aiBusy{};
+        bool m_aiAddingProfile{};
+        bool m_aiEnabled{};
         Microsoft::UI::Xaml::Controls::ContentDialog m_settingsDialog{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel m_settingsPanel{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox m_colorModeCombo{ nullptr };

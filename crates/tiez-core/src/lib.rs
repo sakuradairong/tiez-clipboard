@@ -1,5 +1,6 @@
 //! Tauri-independent application modules shared by native TieZ frontends.
 
+pub mod ai;
 pub mod backup;
 pub mod clipboard_capture;
 pub mod clipboard_history;

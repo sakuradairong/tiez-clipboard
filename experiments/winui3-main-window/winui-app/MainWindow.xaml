@@ -70,6 +70,11 @@
                     AutomationProperties.HelpText="在同一局域网内与手机或其他设备安全传输文字和文件。"
                     Click="FileTransferButton_Click"
                     Content="传输" />
+                <Button
+                    AutomationProperties.Name="打开 AI 助手"
+                    AutomationProperties.HelpText="使用已配置的模型处理当前选中的非敏感文本记录。"
+                    Click="AiButton_Click"
+                    Content="AI 助手" />
                 <Button Click="SettingsButton_Click" Content="设置" AutomationProperties.Name="打开 TieZ 设置" />
                 <Button
                     x:Name="ClearHistoryButton"
