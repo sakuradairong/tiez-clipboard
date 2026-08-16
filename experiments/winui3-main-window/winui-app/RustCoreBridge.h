@@ -68,6 +68,10 @@ namespace tiez::probe
         [[nodiscard]] std::string SetRelaySharedKey(std::string_view sharedKey) const;
         [[nodiscard]] std::string GenerateRelaySharedKey() const;
         [[nodiscard]] std::string ClearRelaySharedKey() const;
+        [[nodiscard]] std::string RelayHotkeys() const;
+        [[nodiscard]] std::string UpdateRelayHotkey(
+            std::string_view key,
+            std::string_view value) const;
         [[nodiscard]] std::string SendRelayClipboard() const;
         [[nodiscard]] std::string FetchRelayClipboard() const;
         [[nodiscard]] std::string FileTransfer() const;
@@ -157,6 +161,8 @@ namespace tiez::probe
         JsonRequestFn m_setRelaySharedKeyJson{};
         SettingsJsonFn m_generateRelaySharedKeyJson{};
         SettingsJsonFn m_clearRelaySharedKeyJson{};
+        SettingsJsonFn m_relayHotkeysJson{};
+        UpdateSettingJsonFn m_updateRelayHotkeyJson{};
         SettingsJsonFn m_sendRelayClipboardJson{};
         SettingsJsonFn m_fetchRelayClipboardJson{};
         SettingsJsonFn m_fileTransferJson{};

@@ -110,6 +110,10 @@ namespace tiez::probe
                 "tiez_core_generate_relay_shared_key_json");
             m_clearRelaySharedKeyJson = Resolve<SettingsJsonFn>(
                 "tiez_core_clear_relay_shared_key_json");
+            m_relayHotkeysJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_relay_hotkeys_json");
+            m_updateRelayHotkeyJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_update_relay_hotkey_json");
             m_sendRelayClipboardJson = Resolve<SettingsJsonFn>(
                 "tiez_core_send_relay_clipboard_json");
             m_fetchRelayClipboardJson = Resolve<SettingsJsonFn>(
@@ -636,6 +640,33 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust relay key clear failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::RelayHotkeys() const
+    {
+        auto* result = m_relayHotkeysJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay hotkey lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdateRelayHotkey(
+        std::string_view key,
+        std::string_view value) const
+    {
+        std::string keyValue{ key };
+        std::string hotkeyValue{ value };
+        auto* result = m_updateRelayHotkeyJson(
+            m_handle,
+            keyValue.c_str(),
+            hotkeyValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust relay hotkey update failed: " + TakeLastError());
         }
         return ConsumeString(result);
     }

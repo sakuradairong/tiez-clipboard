@@ -71,8 +71,9 @@ The C ABI interface is deliberately small:
   keys, probe one OpenAI-compatible endpoint, and run a bounded task, reply, or
   translation action for one approved history entry;
 - inspect relay readiness without returning credentials, manage the strict
-  shared key in the Windows credential vault, and explicitly send/fetch one
-  encrypted text clipboard item through the compatible `relay/v1` protocol;
+  shared key in the Windows credential vault, read and update the existing
+  relay shortcut keys, and explicitly send/fetch one encrypted text clipboard
+  item through the compatible `relay/v1` protocol;
 - create, fully validate, and schedule restoration of the same `.tiez-backup`
   archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
@@ -113,8 +114,9 @@ versioned request/response structs or another explicitly versioned wire format.
   per-action assignments, endpoint probing, explicit task/reply/translation runs,
   and non-destructive copy or transient paste of generated results;
 - a Chinese native encrypted-clipboard relay panel with write-only shared-key
-  setup, one-time generated-key display, explicit send/fetch actions, pending-ACK
-  retry status, and self-write suppression so copying a generated key does not
+  setup, one-time generated-key display, explicit send/fetch actions, editable
+  global send/fetch shortcuts, pending-ACK retry status, background tray
+  notifications, and self-write suppression so copying a generated key does not
   add it to TieZ history;
 - searchable tag chips and Chinese comma-separated tag editing in the details pane;
 - pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
@@ -404,7 +406,7 @@ recognition. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 18`.
+- [ ] Status shows `Rust ABI 19`.
 - [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
 - [ ] `TieZ.exe` file/product version matches all eight release-version sources.
 - [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
@@ -439,6 +441,8 @@ recognition. Record the active adapter with every result.
 - [ ] Switching keyboard → mouse middle → keyboard removes the previous registration or hook each time; mouse middle is consumed only while configured and teardown leaves no hook behind.
 - [ ] An invalid or already-registered shortcut leaves both the previous working registration and saved value unchanged; an empty setting disables and persists the shortcut without affecting tray access.
 - [ ] A simulated database-write failure restores the previous system registration and reports a Chinese error; read-only adapters and `TIEZ_WINUI_HOTKEY` diagnostic overrides disable the editor.
+- [ ] The relay panel reads `app.relay_send_hotkey` and `app.relay_fetch_hotkey`, registers both independently, persists only after Windows accepts a candidate, and leaves the previous saved/working shortcut intact after a conflict or database-write failure.
+- [ ] Relay shortcuts run while the main window is hidden, report Chinese success/error through the tray, never reveal the window, and release both registrations during shutdown.
 - [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
 - [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
 - [ ] An ordinary second launch exits with code 0 and reveals the existing native window without constructing another Rust/SQLite owner.
@@ -556,7 +560,7 @@ capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns
 | Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
 | LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
 | AI profiles / task, reply, translation actions | AI profile/settings and action commands | shared `tiez-core::ai` + ABI v17 + Chinese native profile/action dialog; keys stay write-only, history eligibility is checked before bounded redirect-free network requests, and results never overwrite source entries | 5 (connected) |
-| Encrypted clipboard relay / shared key | relay send/fetch and OS credential-store commands | shared `tiez-core::clipboard_relay` / `relay_key` + ABI v18 + Chinese native panel; the `relay/v1` wire format, SQLite receipts, HTTPS-only transport, legacy WebDAV fallback, and write-only key boundary remain compatible | 5 (connected) |
+| Encrypted clipboard relay / shared key / shortcuts | relay send/fetch, relay shortcut settings, and OS credential-store commands | shared `tiez-core::clipboard_relay` / `relay_key` + ABI v19 + Chinese native panel; the `relay/v1` wire format, SQLite receipts, HTTPS-only transport, legacy WebDAV fallback, write-only key boundary, and `app.relay_*_hotkey` keys remain compatible | 5 (connected) |
 | Advanced theme store | theme-store commands | Hosted service is disabled by default and is not a production capability until this fork controls its endpoint, signing, privacy, and release policy; it does not block native Windows publishing | service-disabled |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
@@ -658,6 +662,11 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
     so the delivered item is not duplicated in history; pending acknowledgement
     retries retain at-most-once local delivery. Generated-key copies are likewise
     pre-registered as self-write echoes so the secret is not captured into TieZ.
+    ABI v19 also reads and updates the existing `app.relay_send_hotkey` and
+    `app.relay_fetch_hotkey` values without exposing credentials. WinUI registers
+    each candidate before persistence, rolls back on conflicts or write failures,
+    executes the actions without revealing a hidden window, and reports results
+    through Chinese tray notifications.
 
 The Windows publishing contract now makes this executable the default release
 entry and requires a signed MSIX/App Installer package. Release acceptance still

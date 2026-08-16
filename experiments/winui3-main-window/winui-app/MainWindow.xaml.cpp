@@ -17,6 +17,8 @@
 namespace
 {
     constexpr UINT kToggleHotkeyId = 1;
+    constexpr UINT kRelaySendHotkeyId = 2;
+    constexpr UINT kRelayFetchHotkeyId = 3;
     constexpr UINT_PTR kMessageWindowSubclassId = 1;
     constexpr UINT_PTR kMainWindowSubclassId = 2;
     constexpr UINT_PTR kHoverPreviewSubclassId = 3;
@@ -1053,6 +1055,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_core = std::make_unique<tiez::probe::RustCoreBridge>();
             m_core->SetChangedCallback(&MainWindow::OnHistoryChanged, m_refreshSink.get());
             LoadSettings();
+            LoadRelayHotkeys();
             RefreshAutostartStateAsync(true);
             if (m_productionData && !m_settingsReadOnly)
             {
@@ -1799,6 +1802,59 @@ namespace winrt::Tiez::WinUIProbe::implementation
         });
         content.Children().Append(copyGeneratedKey);
 
+        TextBlock hotkeyTitle;
+        hotkeyTitle.Text(L"后台快捷键");
+        hotkeyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        content.Children().Append(hotkeyTitle);
+
+        TextBlock hotkeyDescription;
+        hotkeyDescription.Text(
+            L"可为加密发送和取回分别设置全局键盘快捷键。新组合会先向 Windows 注册，确认可用后才写入原有 TieZ 设置；留空可停用。");
+        hotkeyDescription.TextWrapping(TextWrapping::Wrap);
+        hotkeyDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        content.Children().Append(hotkeyDescription);
+
+        m_relaySendHotkeyEditor = TextBox{};
+        m_relaySendHotkeyEditor.Header(winrt::box_value(L"加密发送快捷键"));
+        m_relaySendHotkeyEditor.PlaceholderText(L"例如 Ctrl+Alt+S；留空停用");
+        m_relaySendHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_relaySendHotkeyEditor, L"剪贴板接力加密发送快捷键");
+        content.Children().Append(m_relaySendHotkeyEditor);
+
+        m_relaySendHotkeyApplyButton = Button{};
+        m_relaySendHotkeyApplyButton.Content(winrt::box_value(L"应用发送快捷键"));
+        m_relaySendHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            SaveRelayHotkey(true);
+        });
+        content.Children().Append(m_relaySendHotkeyApplyButton);
+
+        m_relayFetchHotkeyEditor = TextBox{};
+        m_relayFetchHotkeyEditor.Header(winrt::box_value(L"取回到剪贴板快捷键"));
+        m_relayFetchHotkeyEditor.PlaceholderText(L"例如 Ctrl+Alt+F；留空停用");
+        m_relayFetchHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_relayFetchHotkeyEditor, L"剪贴板接力取回快捷键");
+        content.Children().Append(m_relayFetchHotkeyEditor);
+
+        m_relayFetchHotkeyApplyButton = Button{};
+        m_relayFetchHotkeyApplyButton.Content(winrt::box_value(L"应用取回快捷键"));
+        m_relayFetchHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            SaveRelayHotkey(false);
+        });
+        content.Children().Append(m_relayFetchHotkeyApplyButton);
+
+        m_relayHotkeyStatus = TextBlock{};
+        m_relayHotkeyStatus.Text(L"正在读取接力快捷键……");
+        m_relayHotkeyStatus.TextWrapping(TextWrapping::Wrap);
+        AutomationProperties::SetName(m_relayHotkeyStatus, L"剪贴板接力快捷键状态");
+        AutomationProperties::SetLiveSetting(
+            m_relayHotkeyStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        content.Children().Append(m_relayHotkeyStatus);
+
         TextBlock actionTitle;
         actionTitle.Text(L"当前文本剪贴板");
         actionTitle.Style(Application::Current().Resources()
@@ -1838,7 +1894,12 @@ namespace winrt::Tiez::WinUIProbe::implementation
             .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
         content.Children().Append(safety);
 
-        m_relayDialog.Content(content);
+        ScrollViewer scroller;
+        scroller.MaxHeight(640);
+        scroller.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroller.Content(content);
+        m_relayDialog.Content(scroller);
     }
 
     winrt::fire_and_forget MainWindow::ShowRelayAsync()
@@ -1854,6 +1915,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             m_suspendLifecycle = true;
             EnsureRelayDialog();
             m_relayDialog.XamlRoot(RootGrid().XamlRoot());
+            LoadRelayHotkeys();
             RefreshRelayStatusAsync();
             co_await m_relayDialog.ShowAsync();
             m_suspendLifecycle = false;
@@ -1940,12 +2002,289 @@ namespace winrt::Tiez::WinUIProbe::implementation
         auto const ready = editable && m_relayKeyConfigured && m_relayWebDavConfigured;
         if (m_relaySendButton) m_relaySendButton.IsEnabled(ready);
         if (m_relayFetchButton) m_relayFetchButton.IsEnabled(ready);
+        auto const hotkeysEditable =
+            m_relayHotkeysAvailable && !m_relayHotkeysReadOnly && !busy;
+        if (m_relaySendHotkeyEditor) m_relaySendHotkeyEditor.IsEnabled(hotkeysEditable);
+        if (m_relayFetchHotkeyEditor) m_relayFetchHotkeyEditor.IsEnabled(hotkeysEditable);
+        if (m_relaySendHotkeyApplyButton)
+        {
+            m_relaySendHotkeyApplyButton.IsEnabled(hotkeysEditable);
+        }
+        if (m_relayFetchHotkeyApplyButton)
+        {
+            m_relayFetchHotkeyApplyButton.IsEnabled(hotkeysEditable);
+        }
         if (m_relayProgress)
         {
             m_relayProgress.IsActive(busy);
             m_relayProgress.Visibility(busy ? Visibility::Visible : Visibility::Collapsed);
         }
         if (m_relayStatus && !message.empty()) m_relayStatus.Text(message);
+    }
+
+    void MainWindow::LoadRelayHotkeys()
+    {
+        if (!m_core || m_hotkeyHwnd == nullptr)
+        {
+            return;
+        }
+        try
+        {
+            auto const value = m_core->RelayHotkeys();
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(value));
+            m_relayHotkeysAvailable = response.GetNamedBoolean(L"available", false);
+            m_relayHotkeysReadOnly = response.GetNamedBoolean(L"read_only", true);
+            auto const sendHotkey = response.GetNamedString(L"send_hotkey", L"");
+            auto const fetchHotkey = response.GetNamedString(L"fetch_hotkey", L"");
+            m_configuredRelaySendHotkey = sendHotkey;
+            m_configuredRelayFetchHotkey = fetchHotkey;
+            auto const sendApplied = ApplyRelayHotkey(
+                kRelaySendHotkeyId,
+                sendHotkey,
+                m_relaySendHotkeyRegistered,
+                m_relaySendHotkeyModifiers,
+                m_relaySendHotkeyVirtualKey,
+                m_registeredRelaySendHotkey,
+                L"加密发送");
+            auto const fetchApplied = ApplyRelayHotkey(
+                kRelayFetchHotkeyId,
+                fetchHotkey,
+                m_relayFetchHotkeyRegistered,
+                m_relayFetchHotkeyModifiers,
+                m_relayFetchHotkeyVirtualKey,
+                m_registeredRelayFetchHotkey,
+                L"取回");
+
+            if (m_relaySendHotkeyEditor)
+            {
+                m_relaySendHotkeyEditor.Text(sendHotkey);
+            }
+            if (m_relayFetchHotkeyEditor)
+            {
+                m_relayFetchHotkeyEditor.Text(fetchHotkey);
+            }
+            if (m_relayHotkeyStatus)
+            {
+                std::wstring message;
+                if (!m_relayHotkeysAvailable)
+                {
+                    auto const reason = response.GetNamedValue(L"unavailable_reason");
+                    message = reason.ValueType() == JsonValueType::String
+                        ? reason.GetString().c_str()
+                        : L"当前运行模式不支持接力快捷键。";
+                }
+                else
+                {
+                    message = sendHotkey.empty()
+                        ? L"发送：未设置"
+                        : sendApplied ? L"发送：已启用 " : L"发送：当前不可用 ";
+                    if (!sendHotkey.empty())
+                    {
+                        message.append(sendHotkey.c_str(), sendHotkey.size());
+                    }
+                    message.append(fetchHotkey.empty()
+                        ? L"；取回：未设置"
+                        : fetchApplied ? L"；取回：已启用 " : L"；取回：当前不可用 ");
+                    if (!fetchHotkey.empty())
+                    {
+                        message.append(fetchHotkey.c_str(), fetchHotkey.size());
+                    }
+                    if (m_relayHotkeysReadOnly)
+                    {
+                        message.append(L"。当前数据库为只读。");
+                    }
+                }
+                m_relayHotkeyStatus.Text(winrt::hstring{ message });
+            }
+            SetRelayBusy(m_relayBusy, winrt::hstring{});
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"读取接力快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            if (m_relayHotkeyStatus) m_relayHotkeyStatus.Text(message);
+            SetStatus(message);
+        }
+    }
+
+    bool MainWindow::ApplyRelayHotkey(
+        UINT id,
+        winrt::hstring const& configuredHotkey,
+        bool& registered,
+        UINT& modifiers,
+        UINT& virtualKey,
+        winrt::hstring& registeredHotkey,
+        wchar_t const* actionLabel)
+    {
+        if (m_hotkeyHwnd == nullptr)
+        {
+            return false;
+        }
+        auto const parsed = ParseHotkey(configuredHotkey.c_str());
+        if (!parsed)
+        {
+            std::wstring message{ actionLabel };
+            message.append(L"快捷键格式无效；原设置保持不变。");
+            SetStatus(winrt::hstring{ message });
+            return false;
+        }
+        if (parsed->virtualKey == 0)
+        {
+            if (registered && !UnregisterHotKey(m_hotkeyHwnd, id))
+            {
+                std::wstring message{ L"无法停用" };
+                message.append(actionLabel);
+                message.append(L"快捷键；原设置保持不变。");
+                SetStatus(winrt::hstring{ message });
+                return false;
+            }
+            registered = false;
+            modifiers = 0;
+            virtualKey = 0;
+            registeredHotkey = L"";
+            return true;
+        }
+        if (registered
+            && modifiers == parsed->modifiers
+            && virtualKey == parsed->virtualKey)
+        {
+            registeredHotkey = winrt::hstring{ parsed->display };
+            return true;
+        }
+
+        auto const previousRegistered = registered;
+        auto const previousModifiers = modifiers;
+        auto const previousVirtualKey = virtualKey;
+        auto const previousDisplay = registeredHotkey;
+        if (previousRegistered && !UnregisterHotKey(m_hotkeyHwnd, id))
+        {
+            std::wstring message{ L"无法更新" };
+            message.append(actionLabel);
+            message.append(L"快捷键；原设置保持不变。");
+            SetStatus(winrt::hstring{ message });
+            return false;
+        }
+        registered = false;
+        if (RegisterHotKey(m_hotkeyHwnd, id, parsed->modifiers, parsed->virtualKey))
+        {
+            registered = true;
+            modifiers = parsed->modifiers;
+            virtualKey = parsed->virtualKey;
+            registeredHotkey = winrt::hstring{ parsed->display };
+            return true;
+        }
+
+        auto const restored = previousRegistered && RegisterHotKey(
+            m_hotkeyHwnd,
+            id,
+            previousModifiers,
+            previousVirtualKey);
+        registered = restored;
+        modifiers = restored ? previousModifiers : 0;
+        virtualKey = restored ? previousVirtualKey : 0;
+        registeredHotkey = restored ? previousDisplay : winrt::hstring{};
+        std::wstring message{ actionLabel };
+        message.append(L"快捷键无法注册或已被占用");
+        message.append(restored ? L"；已恢复原快捷键。" : L"；原快捷键也未能恢复。");
+        SetStatus(winrt::hstring{ message });
+        return false;
+    }
+
+    void MainWindow::SaveRelayHotkey(bool send)
+    {
+        if (!m_core || !m_relayHotkeysAvailable || m_relayHotkeysReadOnly)
+        {
+            auto const message = winrt::hstring{ L"当前模式不能修改接力快捷键。" };
+            if (m_relayHotkeyStatus) m_relayHotkeyStatus.Text(message);
+            SetStatus(message);
+            return;
+        }
+        auto const editor = send ? m_relaySendHotkeyEditor : m_relayFetchHotkeyEditor;
+        if (!editor)
+        {
+            return;
+        }
+        auto const candidate = winrt::hstring{ TrimHotkeyText(editor.Text().c_str()) };
+        auto& configured = send
+            ? m_configuredRelaySendHotkey
+            : m_configuredRelayFetchHotkey;
+        auto& registered = send
+            ? m_relaySendHotkeyRegistered
+            : m_relayFetchHotkeyRegistered;
+        auto& modifiers = send
+            ? m_relaySendHotkeyModifiers
+            : m_relayFetchHotkeyModifiers;
+        auto& virtualKey = send
+            ? m_relaySendHotkeyVirtualKey
+            : m_relayFetchHotkeyVirtualKey;
+        auto& registeredHotkey = send
+            ? m_registeredRelaySendHotkey
+            : m_registeredRelayFetchHotkey;
+        auto const id = send ? kRelaySendHotkeyId : kRelayFetchHotkeyId;
+        auto const actionLabel = send ? L"加密发送" : L"取回";
+        auto const key = send ? "app.relay_send_hotkey" : "app.relay_fetch_hotkey";
+        auto const previousConfigured = configured;
+        auto const previousRegistered = registered;
+        auto const previousRegisteredHotkey = registeredHotkey;
+        if (!ApplyRelayHotkey(
+            id,
+            candidate,
+            registered,
+            modifiers,
+            virtualKey,
+            registeredHotkey,
+            actionLabel))
+        {
+            if (m_relayHotkeyStatus)
+            {
+                m_relayHotkeyStatus.Text(
+                    L"快捷键格式无效、无法启用或已被占用；原设置保持不变。");
+            }
+            editor.Text(previousConfigured);
+            return;
+        }
+
+        try
+        {
+            (void)m_core->UpdateRelayHotkey(key, winrt::to_string(candidate));
+            configured = candidate;
+            editor.Text(candidate);
+            std::wstring message{ actionLabel };
+            message.append(candidate.empty() ? L"快捷键已停用。" : L"快捷键已保存并启用：");
+            if (!candidate.empty())
+            {
+                message.append(candidate.c_str(), candidate.size());
+            }
+            auto const status = winrt::hstring{ message };
+            if (m_relayHotkeyStatus) m_relayHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = ApplyRelayHotkey(
+                id,
+                rollback,
+                registered,
+                modifiers,
+                virtualKey,
+                registeredHotkey,
+                actionLabel);
+            configured = previousConfigured;
+            editor.Text(previousConfigured);
+            auto const base = StatusMessage(
+                L"保存接力快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring message{ base.c_str(), base.size() };
+            message.append(restored ? L"；已恢复原快捷键。" : L"；无法恢复原快捷键。");
+            auto const status = winrt::hstring{ message };
+            if (m_relayHotkeyStatus) m_relayHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
     }
 
     winrt::fire_and_forget MainWindow::SaveRelayKeyAsync()
@@ -2054,14 +2393,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
             message << L"已加密发送 "
                     << static_cast<std::uint64_t>(response.GetNamedNumber(L"byte_len", 0))
                     << L" 字节；消息约 10 分钟后过期。";
-            SetRelayBusy(false, winrt::hstring{ message.str() });
-            SetStatus(L"当前文本剪贴板已通过 WebDAV 加密接力发送。");
+            auto const status = winrt::hstring{ message.str() };
+            SetRelayBusy(false, status);
+            SetStatus(status);
+            if (!IsWindowVisible(GetWindowHandle()))
+            {
+                ShowTrayNotification(L"TieZ 剪贴板接力", status);
+            }
         }
         catch (std::exception const& error)
         {
-            SetRelayBusy(false, StatusMessage(
+            auto const message = StatusMessage(
                 L"发送剪贴板接力失败：",
-                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetRelayBusy(false, message);
+            SetStatus(message);
+            if (!IsWindowVisible(GetWindowHandle()))
+            {
+                ShowTrayNotification(L"TieZ 接力发送失败", message, true);
+            }
         }
     }
 
@@ -2101,12 +2451,22 @@ namespace winrt::Tiez::WinUIProbe::implementation
             }
             SetRelayBusy(false, message);
             SetStatus(message);
+            if (!IsWindowVisible(GetWindowHandle()))
+            {
+                ShowTrayNotification(L"TieZ 剪贴板接力", message);
+            }
         }
         catch (std::exception const& error)
         {
-            SetRelayBusy(false, StatusMessage(
+            auto const message = StatusMessage(
                 L"取回剪贴板接力失败：",
-                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            SetRelayBusy(false, message);
+            SetStatus(message);
+            if (!IsWindowVisible(GetWindowHandle()))
+            {
+                ShowTrayNotification(L"TieZ 接力取回失败", message, true);
+            }
         }
     }
 
@@ -5187,6 +5547,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
             {
                 UnregisterHotKey(m_hotkeyHwnd, kToggleHotkeyId);
             }
+            if (m_relaySendHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kRelaySendHotkeyId);
+                m_relaySendHotkeyRegistered = false;
+            }
+            if (m_relayFetchHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kRelayFetchHotkeyId);
+                m_relayFetchHotkeyRegistered = false;
+            }
             m_hotkeyRegistered = false;
             RemoveWindowSubclass(
                 m_hotkeyHwnd,
@@ -5290,6 +5660,26 @@ namespace winrt::Tiez::WinUIProbe::implementation
         }
     }
 
+    void MainWindow::ShowTrayNotification(
+        winrt::hstring const& title,
+        winrt::hstring const& message,
+        bool isError)
+    {
+        if (!m_trayAdded || m_hotkeyHwnd == nullptr)
+        {
+            return;
+        }
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        data.hWnd = m_hotkeyHwnd;
+        data.uID = kTrayIconId;
+        data.uFlags = NIF_INFO;
+        data.dwInfoFlags = isError ? NIIF_ERROR : NIIF_INFO;
+        wcsncpy_s(data.szInfoTitle, title.c_str(), _TRUNCATE);
+        wcsncpy_s(data.szInfo, message.c_str(), _TRUNCATE);
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+    }
+
     void MainWindow::SetTrayVisible(bool visible)
     {
         m_trayVisible = visible;
@@ -5373,6 +5763,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kToggleHotkeyId)
         {
             OnToggleHotkey();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kRelaySendHotkeyId)
+        {
+            SendRelayClipboardAsync();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kRelayFetchHotkeyId)
+        {
+            FetchRelayClipboardAsync();
             return true;
         }
         if (hwnd == m_hotkeyHwnd

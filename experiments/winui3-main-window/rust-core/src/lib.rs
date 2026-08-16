@@ -55,11 +55,14 @@ mod win32_capture;
 #[cfg(windows)]
 mod win32_paste;
 
-use clipboard_relay_service::{NativeClipboardRelay, NativeRelayKeyMutation, NativeRelaySnapshot};
+use clipboard_relay_service::{
+    NativeClipboardRelay, NativeRelayHotkeyMutation, NativeRelayHotkeySnapshot,
+    NativeRelayKeyMutation, NativeRelaySnapshot,
+};
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
 
-const ABI_VERSION: u32 = 18;
+const ABI_VERSION: u32 = 19;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -440,6 +443,20 @@ struct RelayKeyMutationResponse<'a> {
 }
 
 #[derive(Serialize)]
+struct RelayHotkeySnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativeRelayHotkeySnapshot,
+}
+
+#[derive(Serialize)]
+struct RelayHotkeyMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativeRelayHotkeyMutation,
+}
+
+#[derive(Serialize)]
 struct RelaySendResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
@@ -641,6 +658,22 @@ fn relay_key_mutation_json(mutation: &NativeRelayKeyMutation) -> Result<String, 
         mutation,
     })
     .map_err(|error| format!("无法序列化剪贴板接力密钥结果：{error}"))
+}
+
+fn relay_hotkey_snapshot_json(snapshot: &NativeRelayHotkeySnapshot) -> Result<String, String> {
+    serde_json::to_string(&RelayHotkeySnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力快捷键状态：{error}"))
+}
+
+fn relay_hotkey_mutation_json(mutation: &NativeRelayHotkeyMutation) -> Result<String, String> {
+    serde_json::to_string(&RelayHotkeyMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("无法序列化剪贴板接力快捷键结果：{error}"))
 }
 
 fn relay_send_json(result: &RelaySendResult) -> Result<String, String> {
@@ -2380,6 +2413,42 @@ pub unsafe extern "C" fn tiez_core_clear_relay_shared_key_json(
 }
 
 #[no_mangle]
+/// Return the Tauri-compatible relay send/fetch hotkeys without credentials.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_relay_hotkeys_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle.clipboard_relay.hotkey_snapshot()?;
+        into_owned_c_string(relay_hotkey_snapshot_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Persist one relay hotkey after the native host has registered it.
+///
+/// # Safety
+/// `handle`, `key_utf8`, and `value_utf8` must be valid readable pointers.
+pub unsafe extern "C" fn tiez_core_update_relay_hotkey_json(
+    handle: *mut TiezCoreHandle,
+    key_utf8: *const c_char,
+    value_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let key = required_utf8(key_utf8, "key_utf8")?;
+        let value = required_utf8(value_utf8, "value_utf8")?;
+        let mutation = handle.clipboard_relay.update_hotkey(&key, &value)?;
+        into_owned_c_string(relay_hotkey_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Encrypt and publish the exact current Windows clipboard text.
 /// This blocking call must be invoked off the native UI thread.
 ///
@@ -3368,6 +3437,8 @@ mod tests {
             TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
         ));
         let key = CString::new("01".repeat(32)).unwrap();
+        let send_key = CString::new("app.relay_send_hotkey").unwrap();
+        let send_value = CString::new("Ctrl+Alt+S").unwrap();
 
         unsafe {
             let value = tiez_core_get_relay_status_json(handle);
@@ -3379,6 +3450,30 @@ mod tests {
             assert!(!json.contains("shared_key"));
             assert!(!json.contains("password"));
             tiez_core_string_free(value);
+
+            let value = tiez_core_get_relay_hotkeys_json(handle);
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(json.contains("\"available\":false"));
+            assert!(json.contains("\"send_hotkey\":\"\""));
+            assert!(json.contains("\"fetch_hotkey\":\"\""));
+            assert!(!json.contains("password"));
+            tiez_core_string_free(value);
+
+            assert!(tiez_core_update_relay_hotkey_json(
+                handle,
+                send_key.as_ptr(),
+                send_value.as_ptr()
+            )
+            .is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("生产数据模式"));
+            tiez_core_string_free(error);
 
             assert!(tiez_core_set_relay_shared_key_json(handle, key.as_ptr()).is_null());
             let error = tiez_core_take_last_error();

@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 18,
+    TIEZ_CORE_ABI_VERSION = 19,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -246,6 +246,15 @@ TIEZ_CORE_API char* tiez_core_generate_relay_shared_key_json(
     TiezCoreHandle* handle);
 TIEZ_CORE_API char* tiez_core_clear_relay_shared_key_json(
     TiezCoreHandle* handle);
+
+// Returns and updates only the non-secret Tauri-compatible relay shortcut
+// keys. The native host registers a candidate before persisting it.
+TIEZ_CORE_API char* tiez_core_get_relay_hotkeys_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_update_relay_hotkey_json(
+    TiezCoreHandle* handle,
+    const char* key_utf8,
+    const char* value_utf8);
 
 // Blocking relay calls. The native host must execute them away from the UI
 // thread. Fetch copies exact UTF-8 text and records an at-most-once receipt.

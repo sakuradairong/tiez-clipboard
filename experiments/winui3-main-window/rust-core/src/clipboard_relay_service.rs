@@ -4,9 +4,10 @@
 //! names live in `tiez-core`. This adapter only binds the production SQLite
 //! path and executes the async WebDAV work away from C++ ownership concerns.
 
+use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use std::future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tiez_core::clipboard_relay::{
     fetch_latest_to_clipboard, send_text, RelayConfig, RelayError, RelayErrorKind,
@@ -14,6 +15,10 @@ use tiez_core::clipboard_relay::{
 };
 use tiez_core::cloud_sync_settings::CloudSyncSettings;
 use tiez_core::cloud_sync_sqlite::ensure_cloud_sync_device_id;
+
+const RELAY_SEND_HOTKEY_KEY: &str = "app.relay_send_hotkey";
+const RELAY_FETCH_HOTKEY_KEY: &str = "app.relay_fetch_hotkey";
+const RELAY_HOTKEY_MAX_CHARS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeRelaySnapshot {
@@ -31,6 +36,24 @@ pub struct NativeRelayKeyMutation {
     pub snapshot: NativeRelaySnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generated_key: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeRelayHotkeySnapshot {
+    pub available: bool,
+    pub read_only: bool,
+    pub send_hotkey: String,
+    pub fetch_hotkey: String,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeRelayHotkeyMutation {
+    #[serde(flatten)]
+    pub snapshot: NativeRelayHotkeySnapshot,
+    pub key: String,
+    pub value: String,
     pub message: String,
 }
 
@@ -136,6 +159,60 @@ impl NativeClipboardRelay {
         })
     }
 
+    pub fn hotkey_snapshot(&self) -> Result<NativeRelayHotkeySnapshot, String> {
+        let Some(database_path) = self.database_path.as_ref() else {
+            return Ok(NativeRelayHotkeySnapshot {
+                available: false,
+                read_only: false,
+                send_hotkey: String::new(),
+                fetch_hotkey: String::new(),
+                unavailable_reason: Some("接力快捷键仅在 WinUI 生产数据模式下可用".to_owned()),
+            });
+        };
+        let connection = open_settings_connection(database_path, self.read_only)?;
+        Ok(NativeRelayHotkeySnapshot {
+            available: true,
+            read_only: self.read_only,
+            send_hotkey: read_hotkey(&connection, RELAY_SEND_HOTKEY_KEY)?,
+            fetch_hotkey: read_hotkey(&connection, RELAY_FETCH_HOTKEY_KEY)?,
+            unavailable_reason: self
+                .read_only
+                .then(|| "当前数据库为只读，不能修改接力快捷键".to_owned()),
+        })
+    }
+
+    pub fn update_hotkey(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<NativeRelayHotkeyMutation, String> {
+        let database_path = self
+            .database_path
+            .as_ref()
+            .ok_or_else(|| "接力快捷键仅在 WinUI 生产数据模式下可用".to_owned())?;
+        if self.read_only {
+            return Err("当前数据库为只读，不能修改接力快捷键".to_owned());
+        }
+        if !matches!(key, RELAY_SEND_HOTKEY_KEY | RELAY_FETCH_HOTKEY_KEY) {
+            return Err("不支持的接力快捷键设置".to_owned());
+        }
+        let value = normalize_hotkey(value)?;
+        let connection = open_settings_connection(database_path, false)?;
+        connection
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value.as_str()),
+            )
+            .map_err(|error| format!("无法保存接力快捷键：{error}"))?;
+        Ok(NativeRelayHotkeyMutation {
+            snapshot: self.hotkey_snapshot()?,
+            key: key.to_owned(),
+            value,
+            message: "接力快捷键已保存".to_owned(),
+        })
+    }
+
     pub fn send(&self, text: &str) -> Result<RelaySendResult, String> {
         let config = self.config()?;
         relay_runtime()?
@@ -201,6 +278,41 @@ impl NativeClipboardRelay {
     }
 }
 
+fn open_settings_connection(database_path: &Path, read_only: bool) -> Result<Connection, String> {
+    let flags = if read_only {
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    };
+    Connection::open_with_flags(database_path, flags)
+        .map_err(|error| format!("无法打开接力快捷键设置：{error}"))
+}
+
+fn read_hotkey(connection: &Connection, key: &str) -> Result<String, String> {
+    connection
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get::<_, String>(0)
+        })
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(String::new()),
+            other => Err(other),
+        })
+        .map_err(|error| format!("无法读取接力快捷键：{error}"))
+}
+
+fn normalize_hotkey(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.chars().count() > RELAY_HOTKEY_MAX_CHARS {
+        return Err(format!(
+            "接力快捷键不能超过 {RELAY_HOTKEY_MAX_CHARS} 个字符"
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err("接力快捷键不能包含控制字符".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
 fn relay_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RUNTIME
@@ -214,4 +326,81 @@ fn relay_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
         })
         .as_ref()
         .map_err(Clone::clone)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_database(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "tiez-winui-relay-hotkey-{label}-{}-{nonce}.db",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn relay_hotkeys_round_trip_existing_tauri_keys_without_credentials() {
+        let path = temporary_database("round-trip");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('app.relay_send_hotkey', 'Ctrl+Alt+S'),
+                    ('app.relay_fetch_hotkey', 'Ctrl+Alt+F'),
+                    ('mqtt_password', 'must-not-leak');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let relay = NativeClipboardRelay::new(&path, path.parent().unwrap(), false);
+        let snapshot = relay.hotkey_snapshot().unwrap();
+        assert_eq!(snapshot.send_hotkey, "Ctrl+Alt+S");
+        assert_eq!(snapshot.fetch_hotkey, "Ctrl+Alt+F");
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        assert!(!serialized.contains("must-not-leak"));
+
+        let mutation = relay
+            .update_hotkey(RELAY_SEND_HOTKEY_KEY, "  Alt+Shift+S  ")
+            .unwrap();
+        assert_eq!(mutation.value, "Alt+Shift+S");
+        assert_eq!(mutation.snapshot.send_hotkey, "Alt+Shift+S");
+        assert_eq!(mutation.snapshot.fetch_hotkey, "Ctrl+Alt+F");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn relay_hotkeys_reject_unknown_keys_controls_and_read_only_updates() {
+        let path = temporary_database("validation");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        drop(connection);
+
+        let relay = NativeClipboardRelay::new(&path, path.parent().unwrap(), false);
+        assert!(relay.update_hotkey("mqtt_password", "secret").is_err());
+        assert!(relay
+            .update_hotkey(RELAY_SEND_HOTKEY_KEY, "Ctrl+S\n")
+            .is_ok());
+        assert!(relay
+            .update_hotkey(RELAY_FETCH_HOTKEY_KEY, "Ctrl+\u{0007}F")
+            .is_err());
+
+        let read_only = NativeClipboardRelay::new(&path, path.parent().unwrap(), true);
+        assert!(read_only.hotkey_snapshot().unwrap().read_only);
+        assert!(read_only
+            .update_hotkey(RELAY_SEND_HOTKEY_KEY, "Ctrl+S")
+            .is_err());
+
+        fs::remove_file(path).unwrap();
+    }
 }

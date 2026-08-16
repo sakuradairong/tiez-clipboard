@@ -150,6 +150,20 @@ namespace winrt::Tiez::WinUIProbe::implementation
         winrt::fire_and_forget FetchRelayClipboardAsync();
         void ApplyRelaySnapshot(Windows::Data::Json::JsonObject const& response);
         void SetRelayBusy(bool busy, winrt::hstring const& message);
+        void LoadRelayHotkeys();
+        bool ApplyRelayHotkey(
+            UINT id,
+            winrt::hstring const& configuredHotkey,
+            bool& registered,
+            UINT& modifiers,
+            UINT& virtualKey,
+            winrt::hstring& registeredHotkey,
+            wchar_t const* actionLabel);
+        void SaveRelayHotkey(bool send);
+        void ShowTrayNotification(
+            winrt::hstring const& title,
+            winrt::hstring const& message,
+            bool isError = false);
         void EnsureAiDialog();
         winrt::fire_and_forget ShowAiAssistantAsync();
         bool LoadAiSettings();
@@ -235,6 +249,11 @@ namespace winrt::Tiez::WinUIProbe::implementation
         Microsoft::UI::Xaml::Controls::Button m_relayClearKeyButton{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_relaySendButton{ nullptr };
         Microsoft::UI::Xaml::Controls::Button m_relayFetchButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_relaySendHotkeyEditor{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox m_relayFetchHotkeyEditor{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relaySendHotkeyApplyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button m_relayFetchHotkeyApplyButton{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock m_relayHotkeyStatus{ nullptr };
         Microsoft::UI::Xaml::Controls::ProgressRing m_relayProgress{ nullptr };
         struct AiProfileState
         {
@@ -333,12 +352,18 @@ namespace winrt::Tiez::WinUIProbe::implementation
         HICON m_trayIcon{};
         UINT m_hotkeyModifiers{};
         UINT m_hotkeyVirtualKey{};
+        UINT m_relaySendHotkeyModifiers{};
+        UINT m_relaySendHotkeyVirtualKey{};
+        UINT m_relayFetchHotkeyModifiers{};
+        UINT m_relayFetchHotkeyVirtualKey{};
         UINT m_taskbarCreatedMessage{};
         bool m_readyMarkerWritten{};
         bool m_pinned{};
         bool m_suspendLifecycle{};
         bool m_trayAdded{};
         bool m_hotkeyRegistered{};
+        bool m_relaySendHotkeyRegistered{};
+        bool m_relayFetchHotkeyRegistered{};
         bool m_exitRequested{};
         bool m_imeComposing{};
         bool m_ignoreNextEnter{};
@@ -355,6 +380,8 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_relayReadOnly{};
         bool m_relayKeyConfigured{};
         bool m_relayWebDavConfigured{};
+        bool m_relayHotkeysAvailable{};
+        bool m_relayHotkeysReadOnly{};
         bool m_fileTransferRunning{};
         bool m_fileTransferReadOnly{};
         bool m_fileTransferLoading{};
@@ -372,6 +399,10 @@ namespace winrt::Tiez::WinUIProbe::implementation
         std::string m_typeFilter;
         winrt::hstring m_configuredHotkey{ L"Alt+C" };
         winrt::hstring m_registeredHotkey;
+        winrt::hstring m_configuredRelaySendHotkey;
+        winrt::hstring m_registeredRelaySendHotkey;
+        winrt::hstring m_configuredRelayFetchHotkey;
+        winrt::hstring m_registeredRelayFetchHotkey;
         winrt::hstring m_fileTransferQrBase64;
         std::vector<std::int64_t> m_entryIds;
         std::vector<std::int64_t> m_pinnedIds;

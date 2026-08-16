@@ -2324,6 +2324,7 @@ dependencies = [
  "local-ip-address",
  "mime_guess",
  "qrcode",
+ "rusqlite",
  "serde",
  "serde_json",
  "tiez-core",
