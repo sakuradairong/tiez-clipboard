@@ -26,6 +26,9 @@ jobs:
       - name: Verify release versions
         run: npm run verify:versions
 
+      - name: Verify Windows native release contract
+        run: npm run verify:windows-release
+
   publish-tauri:
     needs: preflight
     permissions:
@@ -34,10 +37,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x64
-            platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc --bundles nsis,msi'
           - name: Linux x64
             platform: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
@@ -51,7 +50,7 @@ jobs:
             rust_target: x86_64-apple-darwin
             args: '--target x86_64-apple-darwin --bundles app,dmg'
 
-    name: ${{ matrix.name }}
+    name: Tauri fallback · ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -112,12 +111,11 @@ jobs:
           releaseBody: |
             Multi-platform release from the maintained TieZ community fork.
 
-            Available for Windows x64, Linux x64, macOS Apple Silicon and macOS Intel.
+            Windows x64 uses the native WinUI 3 application distributed as a signed MSIX with an App Installer update feed. Linux x64, macOS Apple Silicon, and macOS Intel retain the Tauri application.
 
             Linux automatic paste uses xdotool on X11 or wtype on Wayland. macOS builds are not notarized yet and may require explicit Pasteboard and Accessibility permission.
           releaseDraft: true
           prerelease: false
-          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
   publish-winui-windows:

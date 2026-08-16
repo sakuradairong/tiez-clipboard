@@ -1,4 +1,4 @@
-name: "Build Platforms"
+name: "Build Tauri fallback platforms"
 
 on:
   workflow_dispatch:
@@ -17,14 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x64
-            platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            bundles: nsis,msi
-            artifact_name: tiez-windows-x64
-            artifact_path: |
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - name: Linux x64
             platform: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
@@ -113,33 +105,6 @@ jobs:
       - name: Build platform bundles
         run: npx tauri build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }} --config .github/tauri-build-test.conf.json --no-sign --ci
 
-      - name: Build native WinUI candidate
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./experiments/winui3-main-window/build.ps1 -Configuration Release
-
-      - name: Test native WinUI single-instance activation
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./experiments/winui3-main-window/test-single-instance.ps1 -Configuration Release -LifecycleCycles 10
-
-      - name: Test configured native WinUI global hotkey
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./experiments/winui3-main-window/test-hotkey.ps1 -Configuration Release
-
-      - name: Validate unsigned native WinUI MSIX
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./experiments/winui3-main-window/package-msix.ps1 -SkipBuild
-
-      - name: Verify Windows bundles
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Get-ChildItem "src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis/*.exe" | ForEach-Object { if ($_.Length -eq 0) { throw "Empty NSIS bundle" } }
-          Get-ChildItem "src-tauri/target/${{ matrix.rust_target }}/release/bundle/msi/*.msi" | ForEach-Object { if ($_.Length -eq 0) { throw "Empty MSI bundle" } }
-
       - name: Verify Linux bundles
         if: runner.os == 'Linux'
         run: |
@@ -156,14 +121,5 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload native WinUI build artifact
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: tiez-winui-windows-x64
-          path: experiments/winui3-main-window/artifacts/packages/*
           if-no-files-found: error
           retention-days: 7

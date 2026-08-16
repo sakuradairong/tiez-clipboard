@@ -1,16 +1,18 @@
-# TieZ WinUI 3 main-window migration slice
+# TieZ WinUI 3 Windows main window
 
-> **First production-intended native Windows slice — Tauri/WebView2 remains the
-> fallback entry point.**
+> **Production Windows entry point — native WinUI 3 with no WebView2 main
+> window. Tauri remains the Linux/macOS implementation and a source-level,
+> mutually exclusive Windows rollback path.**
 
-This experiment tests one question:
+This implementation answers the migration question:
 
 > Can a C++/WinRT WinUI 3 main window consume a narrow Rust C interface in the
 > same process while providing enough clipboard-list interaction to justify a
 > real Windows-native product slice?
 
-The executable does **not yet** replace the Tauri window. It now starts a native
-Windows clipboard listener for Unicode, HTML, image, and file payloads. The
+The repository's Windows release contract now publishes this executable instead
+of the Tauri window. It starts a native Windows clipboard listener for Unicode,
+HTML, image, and file payloads. The
 reusable history, paste, privacy, and window-lifecycle policies
 now live in the standalone, Tauri-independent `tiez-core` crate. Release builds
 open the production TieZ data directory by default; Debug/test builds keep the
@@ -18,7 +20,9 @@ synthetic in-memory adapter. **Do not run this executable at the same time
 as Tauri** against the live database. Both runtimes now acquire the same
 per-database Windows ownership mutex before restore or SQLite open, so the
 second process fails with a visible startup error instead of becoming a
-concurrent writer. The existing WebView2 application remains the production fallback.
+concurrent writer. The existing WebView2 application remains available from
+source for rollback and for non-Windows releases, but Windows release automation
+does not publish it.
 The production Tauri list, search, and full-content commands still use the same
 storage-neutral merge/search policies through `TauriHistoryAdapter`; their
 command names and serialized `ClipboardEntry` contract remain unchanged.
@@ -491,9 +495,8 @@ recognition. Record the active adapter with every result.
 
 ## Main-window parity matrix
 
-WebView2 remains the production UI. This table is the first-slice contract for the WinUI
-main window: what the React list does today, which C ABI / `tiez-core` seam the native
-window should call, and which extraction phase owns it.
+WinUI 3 is the published Windows UI. This table records how the former React main-window
+capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns them.
 
 | WebView2 capability | Today's command / event | Native seam | Phase |
 | --- | --- | --- | --- |
@@ -532,7 +535,7 @@ window should call, and which extraction phase owns it.
 | Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
 | LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
 | AI profiles / task, reply, translation actions | AI profile/settings and action commands | shared `tiez-core::ai` + ABI v17 + Chinese native profile/action dialog; keys stay write-only, history eligibility is checked before bounded redirect-free network requests, and results never overwrite source entries | 5 (connected) |
-| Advanced theme store | theme-store commands | phase 5 independent WinUI surface after service ownership and release policy are defined | 5 |
+| Advanced theme store | theme-store commands | Hosted service is disabled by default and is not a production capability until this fork controls its endpoint, signing, privacy, and release policy; it does not block native Windows publishing | service-disabled |
 
 Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
 `tiez-core` first, then the WinUI transport crate, then XAML.
@@ -624,10 +627,12 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
     non-text entries fail before networking, and generated text is copied or
     transiently pasted without changing the source record.
 
-Before the WinUI executable becomes the default daily-driver entry, it still
-needs advanced theme-store parity, signed installer upgrade, real-account
-multi-device sync endurance, and manual Windows 10/11, DPI, IME, accessibility,
-and long-run lifecycle acceptance.
+The Windows publishing contract now makes this executable the default release
+entry and requires a signed MSIX/App Installer package. Release acceptance still
+requires controlled signing secrets, real-account multi-device sync endurance,
+and manual Windows 10/11, DPI, IME, accessibility, installer-upgrade, and long-run
+lifecycle verification. The service-disabled advanced theme store is not a
+cutover gate unless this fork later adopts and controls that hosted service.
 
 ## Primary references
 

@@ -1017,9 +1017,25 @@ namespace winrt::Tiez::WinUIProbe::implementation
     {
     }
 
-    MainWindow::MainWindow(bool startHidden) : m_startHidden(startHidden)
+    MainWindow::MainWindow(bool startHidden) :
+        m_startHidden(startHidden),
+        m_initialHidePending(startHidden)
     {
         InitializeComponent();
+        if (m_initialHidePending)
+        {
+            RootGrid().Opacity(0.0);
+            RootGrid().Loaded([this](auto const&, auto const&)
+            {
+                if (!m_initialHidePending)
+                {
+                    return;
+                }
+                m_initialHidePending = false;
+                HideMainWindow();
+                RootGrid().Opacity(1.0);
+            });
+        }
         Title(L"TieZ · 原生剪贴板");
         SetInitialWindowSize();
         SetupLifecycle();

@@ -325,6 +325,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
         bool m_autostartBusy{};
         bool m_autostartPreference{ true };
         bool m_startHidden{};
+        bool m_initialHidePending{};
         bool m_cloudSyncBusy{};
         bool m_fileTransferRunning{};
         bool m_fileTransferReadOnly{};

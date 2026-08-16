@@ -5,6 +5,7 @@
 
 #include <microsoft.ui.xaml.window.h>
 #include <shellapi.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 
 namespace
 {
@@ -272,12 +273,13 @@ namespace winrt::Tiez::WinUIProbe::implementation
             // Keep the command-line fallback for unpackaged or future activations.
         }
         m_window = winrt::make<MainWindow>(startHidden);
-        m_window.Activate();
         if (startHidden)
         {
-            HWND hwnd{};
-            winrt::check_hresult(m_window.as<::IWindowNative>()->get_WindowHandle(&hwnd));
-            ShowWindow(hwnd, SW_HIDE);
+            m_window.AppWindow().Hide();
+        }
+        else
+        {
+            m_window.Activate();
         }
     }
 }

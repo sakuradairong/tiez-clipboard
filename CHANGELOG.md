@@ -43,6 +43,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
+- Windows draft releases now publish the Chinese-first native WinUI 3 application as the sole Windows package: a required-signed MSIX, SHA256 checksum, and App Installer update feed. The Tauri release/build matrices retain only Linux and macOS packages, and a repository verifier prevents Windows NSIS/MSI from returning to CI unnoticed.
 - The native WinUI main window now inherits and edits existing `app.hotkey` settings instead of hard-coding Alt+C. Keyboard shortcuts use `RegisterHotKey`, while existing `MouseMiddle`/`MButton` settings use a low-level mouse hook that only posts to the native message window and is removed during switching or teardown. The Chinese settings dialog registers a new input method before persisting it, rolls system registration back if the database write fails, and can disable the shortcut with an empty value. Common modifier/key aliases are accepted, and invalid or conflicting changes preserve the previously working shortcut and saved value.
 
 - WebDAV client construction, safe path encoding, retry policy, atomic publication, blob transfer, and remote listing parsers now live in Tauri-independent `tiez-core`, establishing the reusable transport contract for the native WinUI sync runner.
@@ -60,7 +61,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - The native main-window title no longer labels the WinUI runtime as an experiment, and installed startup ownership removes legacy Tauri Run entries to prevent both frontends launching together.
 - WinUI Debug builds now use the correct C++/WinRT namespaces in the generated-XAML unhandled-exception hook.
 
-- Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the production fallback; WinUI is a mutually exclusive alternate entry.
+- Documented the WebView2 → C ABI → phase matrix for the native main window. Tauri remains the non-Windows implementation and a mutually exclusive source-level Windows rollback path, but it is no longer a published Windows package.
 
 ### Security
 
@@ -79,6 +80,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- Native `--autostart` and `--minimized` launches now skip the first WinUI `Window.Activate()`, hide the constructed `AppWindow`, and apply a one-shot root-view loaded guard against WinUI restoring visibility, preventing login startup from revealing the main window while still constructing the tray and Rust services for later activation.
 - WinUI MSIX packaging now reads its UTF-8 manifest and App Installer templates explicitly, preventing Windows PowerShell 5.1 from corrupting Chinese metadata and producing an invalid package manifest.
 - The native SQLite cloud-sync host now inlines local rich-HTML images before upload and safely removes tombstoned managed attachments only when no clipboard or emoji reference remains.
 - `emoji_sync` now uses the same stable text payload hash as the legacy Tauri runner, so native favorites are uploaded once and exact remote payloads can suppress echo uploads.

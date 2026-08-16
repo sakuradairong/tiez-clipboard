@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/status-community%20maintained-4CAF50" alt="Community maintained" />
     <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/license-GPL--3.0-FF9800" alt="GPL-3.0 license" /></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-f44336" alt="Windows, Linux, and macOS" />
-    <img src="https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-2196F3" alt="Tauri 2, React, and Rust" />
+    <img src="https://img.shields.io/badge/stack-WinUI%203%20(Windows)%20%7C%20Tauri%202%20(Linux%2FmacOS)%20%7C%20Rust-2196F3" alt="WinUI 3 on Windows, Tauri 2 on Linux and macOS, and Rust" />
   </p>
   <p>
     <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
@@ -52,12 +52,14 @@ Download the latest build from the [Releases page](../../releases), then choose 
 
 | Platform | Requirement | Packages |
 | :--- | :--- | :--- |
-| **Windows** | Windows 10 or 11, x64 | NSIS `.exe`, MSI `.msi` |
+| **Windows** | Windows 10 or 11, x64 | Signed MSIX `.msix`, App Installer `.appinstaller` |
 | **Linux** | Ubuntu 22.04 or a compatible x64 desktop | DEB `.deb`, AppImage |
 | **macOS** | macOS 11+, Apple Silicon or Intel | DMG `.dmg` |
 
 ### Platform Notes
 
+- **Windows application:** The published Windows app uses a Chinese-first native WinUI 3 main window and does not ship a WebView2 main-window runtime. App Installer provides publisher-verified in-place updates.
+- **Migrating an older Windows install:** Export a TieZ backup, fully exit the legacy tray process, install the `.appinstaller` (preferred) or `.msix`, and confirm the native app can read the existing history before uninstalling the old NSIS/MSI package. Never run the two applications together against the same data directory; a shared database mutex rejects the second writer.
 - **Linux clipboard capture:** Supports X11/XWayland and Wayland compositors that implement the data-control protocol.
 - **Linux automatic paste:** Uses `xdotool` on X11 or `wtype` on Wayland. If neither is available, TieZ leaves the requested content on the clipboard for manual paste.
 - **macOS permissions:** Clipboard history and automatic paste may require Pasteboard and Accessibility access in System Settings.
@@ -67,7 +69,15 @@ Download the latest build from the [Releases page](../../releases), then choose 
 
 ## Development
 
-Install [Node.js LTS](https://nodejs.org/), the [Rust toolchain](https://www.rust-lang.org/tools/install), and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
+For the production Windows application, install Node.js LTS, Rust, PowerShell 7, and Visual Studio 2022 with the Desktop development with C++ workload, then build the native WinUI release:
+
+```powershell
+npm install
+npm run winui:build
+npm run winui:package
+```
+
+Linux/macOS development and the source-level Windows rollback path retain the Tauri frontend and its platform prerequisites:
 
 ```bash
 npm install
@@ -80,6 +90,7 @@ Run the main validation commands before submitting a change:
 npm test
 npm run build
 npm run test:rust
+npm run verify:windows-release
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution scope and pull request guidance.
