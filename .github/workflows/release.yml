@@ -24,26 +24,10 @@ jobs:
           cache: npm
 
       - name: Verify release versions
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
-          const tauri = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
-          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8');
-          const cargoLock = fs.readFileSync('src-tauri/Cargo.lock', 'utf8');
-          const cargoVersion = cargo.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)[1];
-          const lockVersion = cargoLock.match(/\[\[package\]\]\nname = "tiez-app"\nversion = "([^"]+)"/)[1];
-          const versions = [pkg.version, lock.version, lock.packages[''].version, tauri.version, cargoVersion, lockVersion];
-          if (!versions.every(version => version === pkg.version)) {
-            throw new Error(`Release versions do not match: ${versions.join(', ')}`);
-          }
-          if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `v${pkg.version}`) {
-            throw new Error(`Tag ${process.env.GITHUB_REF_NAME} does not match v${pkg.version}`);
-          }
-          console.log(`Validated TieZ v${pkg.version}`);
-          NODE
+        run: npm run verify:versions
+
+      - name: Verify Windows native release contract
+        run: npm run verify:windows-release
 
   publish-tauri:
     needs: preflight
@@ -53,10 +37,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x64
-            platform: windows-latest
-            rust_target: x86_64-pc-windows-msvc
-            args: '--target x86_64-pc-windows-msvc --bundles nsis,msi'
           - name: Linux x64
             platform: ubuntu-22.04
             rust_target: x86_64-unknown-linux-gnu
@@ -70,7 +50,7 @@ jobs:
             rust_target: x86_64-apple-darwin
             args: '--target x86_64-apple-darwin --bundles app,dmg'
 
-    name: ${{ matrix.name }}
+    name: Tauri fallback · ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -131,10 +111,106 @@ jobs:
           releaseBody: |
             Multi-platform release from the maintained TieZ community fork.
 
-            Available for Windows x64, Linux x64, macOS Apple Silicon and macOS Intel.
+            Windows x64 uses the native WinUI 3 application distributed as a signed MSIX with an App Installer update feed. Linux x64, macOS Apple Silicon, and macOS Intel retain the Tauri application.
 
             Linux automatic paste uses xdotool on X11 or wtype on Wayland. macOS builds are not notarized yet and may require explicit Pasteboard and Accessibility permission.
           releaseDraft: true
           prerelease: false
-          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+  publish-winui-windows:
+    name: Windows x64 native WinUI MSIX
+    needs:
+      - preflight
+      - publish-tauri
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      WINUI_MSIX_CERTIFICATE_BASE64: ${{ secrets.WINUI_MSIX_CERTIFICATE_BASE64 }}
+      WINUI_MSIX_CERTIFICATE_PASSWORD: ${{ secrets.WINUI_MSIX_CERTIFICATE_PASSWORD }}
+      WINUI_MSIX_PUBLISHER: ${{ secrets.WINUI_MSIX_PUBLISHER }}
+      WINUI_MSIX_TIMESTAMP_URL: ${{ vars.WINUI_MSIX_TIMESTAMP_URL }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.88.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Validate native signing configuration
+        shell: pwsh
+        run: |
+          $required = @(
+            "WINUI_MSIX_CERTIFICATE_BASE64",
+            "WINUI_MSIX_CERTIFICATE_PASSWORD",
+            "WINUI_MSIX_PUBLISHER",
+            "WINUI_MSIX_TIMESTAMP_URL"
+          )
+          foreach ($name in $required) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) {
+              throw "Missing required native release setting: $name"
+            }
+          }
+          [System.IO.File]::WriteAllBytes(
+            (Join-Path $env:RUNNER_TEMP "tiez-winui-release.pfx"),
+            [Convert]::FromBase64String($env:WINUI_MSIX_CERTIFICATE_BASE64)
+          )
+
+      - name: Build native WinUI release
+        shell: pwsh
+        run: ./experiments/winui3-main-window/build.ps1 -Configuration Release
+
+      - name: Test native WinUI release readiness
+        shell: pwsh
+        run: ./experiments/winui3-main-window/test-release-readiness.ps1 -Configuration Release
+
+      - name: Test configured native WinUI global hotkey
+        shell: pwsh
+        run: ./experiments/winui3-main-window/test-hotkey.ps1 -Configuration Release
+
+      - name: Package and verify signed native MSIX
+        shell: pwsh
+        run: |
+          $arguments = @{
+            SkipBuild = $true
+            Publisher = $env:WINUI_MSIX_PUBLISHER
+            CertificatePath = (Join-Path $env:RUNNER_TEMP "tiez-winui-release.pfx")
+            CertificatePassword = $env:WINUI_MSIX_CERTIFICATE_PASSWORD
+            TimestampUrl = $env:WINUI_MSIX_TIMESTAMP_URL
+            AppInstallerBaseUri = "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+            RequireSigning = $true
+          }
+          ./experiments/winui3-main-window/package-msix.ps1 @arguments
+
+      - name: Upload native assets to draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (node scripts/verify-release-versions.mjs --print).Trim()
+          $assets = @(Get-ChildItem experiments/winui3-main-window/artifacts/packages -File |
+            ForEach-Object FullName)
+          if ($assets.Count -ne 3) {
+            throw "Expected signed MSIX, SHA256, and App Installer assets; found $($assets.Count)."
+          }
+          gh release upload "v$version" @assets --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to upload native WinUI release assets."
+          }
+
+      - name: Remove decoded signing certificate
+        if: always()
+        shell: pwsh
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP "tiez-winui-release.pfx") -Force -ErrorAction SilentlyContinue

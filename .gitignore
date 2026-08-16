@@ -14,6 +14,8 @@ target-codex-*/
 # Tauri signer keys (PRIVATE)
 signer.key
 signer.key.pub
+*.pfx
+*.p12
 .tauri/
 src-tauri/signer.key
 src-tauri/signer.key.pub

@@ -1,0 +1,50 @@
+#define IDI_TIEZ_APP 101
+
+#ifndef TIEZ_VERSION_MAJOR
+#define TIEZ_VERSION_MAJOR 0
+#endif
+#ifndef TIEZ_VERSION_MINOR
+#define TIEZ_VERSION_MINOR 0
+#endif
+#ifndef TIEZ_VERSION_PATCH
+#define TIEZ_VERSION_PATCH 0
+#endif
+
+#define TIEZ_STRINGIZE_INNER(value) #value
+#define TIEZ_STRINGIZE(value) TIEZ_STRINGIZE_INNER(value)
+#define TIEZ_VERSION_TEXT TIEZ_STRINGIZE(TIEZ_VERSION_MAJOR) "." TIEZ_STRINGIZE(TIEZ_VERSION_MINOR) "." TIEZ_STRINGIZE(TIEZ_VERSION_PATCH) ".0"
+
+IDI_TIEZ_APP ICON "../../../src-tauri/icons/icon.ico"
+
+1 VERSIONINFO
+FILEVERSION TIEZ_VERSION_MAJOR,TIEZ_VERSION_MINOR,TIEZ_VERSION_PATCH,0
+PRODUCTVERSION TIEZ_VERSION_MAJOR,TIEZ_VERSION_MINOR,TIEZ_VERSION_PATCH,0
+FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+FILEFLAGS 0x1L
+#else
+FILEFLAGS 0x0L
+#endif
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "TieZ Community\0"
+            VALUE "FileDescription", "TieZ Clipboard Manager\0"
+            VALUE "FileVersion", TIEZ_VERSION_TEXT "\0"
+            VALUE "InternalName", "TieZ\0"
+            VALUE "LegalCopyright", "TieZ contributors\0"
+            VALUE "OriginalFilename", "TieZ.exe\0"
+            VALUE "ProductName", "TieZ\0"
+            VALUE "ProductVersion", TIEZ_VERSION_TEXT "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

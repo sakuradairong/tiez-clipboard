@@ -2,7 +2,7 @@
 
 ## Project priorities
 
-TieZ is a community-maintained Tauri 2 clipboard manager. The maintenance policy favors reproducible builds, release reliability, focused bug fixes, and small reviewable diffs before broad feature work. Read `CONTRIBUTING.md` before changing contributor or release behavior; update `CHANGELOG.md` for changes visible to users or contributors.
+TieZ is a community-maintained clipboard manager. Windows releases use the native WinUI 3 application; Linux/macOS releases retain the Tauri 2 application, which also remains a source-level Windows rollback path. The maintenance policy favors reproducible builds, release reliability, focused bug fixes, and small reviewable diffs before broad feature work. Read `CONTRIBUTING.md` before changing contributor or release behavior; update `CHANGELOG.md` for changes visible to users or contributors.
 
 ## Essential commands
 
@@ -11,13 +11,16 @@ Run commands from the repository root unless noted otherwise.
 | Task | Command | Notes |
 | --- | --- | --- |
 | Install exactly from the lockfile | `npm ci` | This is what CI uses. `npm install` is the documented first-time setup command. |
-| Run the complete desktop app | `npm run tauri:dev` | Runs `tauri dev --features devtools`; requires the platform's Tauri 2 prerequisites. |
+| Build the production Windows app | `npm run winui:build` | Uses PowerShell 7 to build the x64 Release WinUI 3 executable and run the focused Rust/ABI tests. |
+| Test Windows release readiness | `npm run winui:test:release` | Runs five isolated Release starts, 100 lifecycle cycles, and startup/memory limits without touching production data. |
+| Validate an unsigned Windows package | `npm run winui:package` | Packages the existing Release build as an unsigned MSIX for structural validation; published packages must be signed. |
+| Run the Tauri desktop app | `npm run tauri:dev` | Linux/macOS implementation and local Windows rollback; requires the platform's Tauri 2 prerequisites. |
 | Run only the Vite frontend | `npm run dev` | Fixed port `1420`; this does not provide the Rust commands/events used by most features. |
 | Type-check and build the frontend | `npm run build` | Runs `tsc && vite build`; output is `dist/web`. This is the documented build check. |
 | Run frontend unit tests | `npx vitest run` | There is no `test` package script or Vitest config. |
 | Run Rust tests | `cargo test --manifest-path src-tauri/Cargo.toml` | Tests the library and the real desktop binary. On non-Windows systems this compiles platform stubs, not Windows behavior. |
 | Preview the built frontend | `npm run preview` | Vite preview only. |
-| Build a local Tauri bundle | `npm run tauri:build` | The default bundle target in `tauri.conf.json` is NSIS. CI overrides targets per platform. |
+| Build a local Tauri bundle | `npm run tauri:build` | Used for Linux/macOS packages and local rollback only; Windows releases do not publish this bundle. |
 
 There is no configured lint script, formatter configuration, standalone type-check script, or end-to-end test suite. `rustfmt` and `clippy` are installed by `rust-toolchain.toml`, but neither is run by the current CI workflows.
 
@@ -28,10 +31,11 @@ Expected baseline behavior:
 
 ## Release and packaging workflow
 
-- `.github/workflows/build-platforms.yml` is manual-only. It builds unsigned Windows x64 NSIS, Linux x64 DEB, and macOS ARM/Intel app bundles. It uses `.github/tauri-build-test.conf.json` to disable updater artifacts during build validation.
-- `.github/workflows/release.yml` runs for `v*` tags or manual dispatch. It builds Windows NSIS, Linux DEB/AppImage, and macOS app/DMG bundles and creates a draft GitHub release.
-- Release builds enable the updater and require `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Do not enable production updating until the endpoint, public key, and signing infrastructure are controlled by this fork; `.env.example` intentionally defaults `VITE_ENABLE_UPDATER=false`.
-- The application version is duplicated in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Keep all four synchronized.
+- `.github/workflows/build-platforms.yml` validates unsigned Linux x64 DEB/AppImage and macOS ARM/Intel app/DMG Tauri bundles on pull requests, `master`, and manual runs. It uses `.github/tauri-build-test.conf.json` to disable updater artifacts during build validation.
+- `.github/workflows/winui3-probe.yml` validates the native Windows Release build, five-run/100-cycle startup and memory readiness gate, global hotkey, and unsigned MSIX structure on pull requests, `master`, and manual runs.
+- `.github/workflows/release.yml` runs for `v*` tags or manual dispatch. It creates a draft release containing a signed native Windows MSIX/checksum/App Installer feed plus the Linux and macOS Tauri packages. It must never publish a Windows Tauri NSIS/MSI.
+- Linux/macOS Tauri release builds require `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Native Windows publishing additionally requires the controlled `WINUI_MSIX_CERTIFICATE_BASE64`, password, matching Publisher, and RFC 3161 timestamp URL. `.env.example` intentionally leaves inherited hosted services and the Tauri updater disabled for local builds.
+- Release version validation covers the root package files, Tauri config/Cargo files, and `experiments/winui3-main-window/rust-core` Cargo files. Keep all eight reported sources synchronized.
 - The README still describes Linux as upcoming, while current build and release workflows produce Linux artifacts. Treat workflow configuration as the packaging implementation and update documentation deliberately if platform support changes.
 
 ## Architecture

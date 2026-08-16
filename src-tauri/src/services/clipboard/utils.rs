@@ -1745,78 +1745,7 @@ pub fn detect_content_type(text: &str) -> String {
 }
 
 pub fn contains_sensitive_info(text: &str, kinds: &[String], custom_rules: &[String]) -> bool {
-    static PHONE_RE: OnceLock<Regex> = OnceLock::new();
-    static IDCARD_RE: OnceLock<Regex> = OnceLock::new();
-    static EMAIL_RE: OnceLock<Regex> = OnceLock::new();
-    static SECRET_RE: OnceLock<Regex> = OnceLock::new();
-
-    static URL_RE: OnceLock<Regex> = OnceLock::new();
-
-    if text.len() > 5000 || text.starts_with("data:") {
-        return false;
-    }
-
-    let has_kind = |k: &str| kinds.iter().any(|t| t == k);
-
-    if has_kind("url") {
-        let re = URL_RE
-            .get_or_init(|| Regex::new(r"(?i)(?:[a-zA-Z][a-zA-Z0-9+\-.]*://|www\.)\S+").unwrap());
-        if re.is_match(text) {
-            return true;
-        }
-    }
-    if has_kind("phone") {
-        let re = PHONE_RE.get_or_init(|| {
-            Regex::new(r"(?:\+?86)?[-\s\(]*1[3-9]\d{1}[-\s\)]*\d{4}[-\s]*\d{4}").unwrap()
-        });
-        if re.is_match(text) {
-            return true;
-        }
-    }
-    if has_kind("idcard") {
-        let re = IDCARD_RE.get_or_init(|| {
-            Regex::new(
-                r"\b[1-9]\d{5}[1-9]\d{3}((0\d)|(1[0-2]))(([0|1|2]\d)|3[0-1])\d{3}([0-9Xx])\b",
-            )
-            .unwrap()
-        });
-        if re.is_match(text) {
-            return true;
-        }
-    }
-    if has_kind("email") {
-        let re = EMAIL_RE
-            .get_or_init(|| Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap());
-        if re.is_match(text) {
-            return true;
-        }
-    }
-    if has_kind("secret") {
-        let re = SECRET_RE.get_or_init(|| Regex::new(r"(?ix)((?:sk|pk|ghp|gho|github_pat|AIza|AKIA|ya29)[-_][\w\-]{20,}|(?:password|secret|api[_-]?key|access[_-]?key|token|bearer)[\s:=]+[\w\-]{16,})").unwrap());
-        if re.is_match(text) {
-            return true;
-        }
-    }
-    if has_kind("password") {
-        if text.len() >= 8 && text.len() <= 64 && !text.contains(' ') && !text.contains('\n') {
-            let has_upper = text.chars().any(|c| c.is_uppercase());
-            let has_lower = text.chars().any(|c| c.is_lowercase());
-            let has_digit = text.chars().any(|c| c.is_numeric());
-            let has_special = text.chars().any(|c| !c.is_alphanumeric());
-            if has_upper && has_lower && has_digit && has_special {
-                return true;
-            }
-        }
-    }
-
-    for rule in custom_rules {
-        if let Ok(re) = Regex::new(rule) {
-            if re.is_match(text) {
-                return true;
-            }
-        }
-    }
-    false
+    tiez_core::privacy::contains_sensitive_info(text, kinds, custom_rules)
 }
 
 pub fn parse_cleanup_rules(raw_rules: &str) -> Vec<(Regex, String)> {

@@ -248,6 +248,46 @@ async fn restore_clipboard_snapshot(snapshot: ClipboardSnapshot) -> AppResult<()
     }
 }
 
+fn apply_shared_paste_plan(
+    id: i64,
+    content: &mut String,
+    content_type: &str,
+    html_content: &mut Option<String>,
+    paste_with_format: bool,
+    delete_after_use: bool,
+) {
+    if !matches!(content_type, "text" | "url" | "code" | "rich_text") {
+        return;
+    }
+
+    let format = if paste_with_format {
+        tiez_core::paste_coordinator::PasteFormat::Rich
+    } else {
+        tiez_core::paste_coordinator::PasteFormat::Plain
+    };
+    let planned = tiez_core::paste_coordinator::plan_paste(
+        &tiez_core::clipboard_history::HistoryContent {
+            id,
+            content_type: content_type.to_owned(),
+            content: content.clone(),
+            html_content: html_content.clone(),
+            available: true,
+            is_sensitive: false,
+            unavailable_reason: None,
+        },
+        format,
+        delete_after_use,
+    );
+    if let Ok(plan) = planned {
+        *content = plan.payload.text;
+        *html_content = if paste_with_format {
+            plan.payload.html
+        } else {
+            None
+        };
+    }
+}
+
 #[tauri::command]
 pub async fn copy_to_clipboard(
     app_handle: tauri::AppHandle,
@@ -302,6 +342,17 @@ pub async fn copy_to_clipboard(
         }
     }
 
+    let with_format = paste_with_format
+        .unwrap_or(current_type == "rich_text" && html_content.as_deref().is_some());
+    apply_shared_paste_plan(
+        id,
+        &mut content,
+        &current_type,
+        &mut html_content,
+        with_format,
+        delete_after_use,
+    );
+
     // 1. Handle Window Visibility and Focus
     if paste {
         remember_recent_paste(
@@ -318,8 +369,7 @@ pub async fn copy_to_clipboard(
         &content,
         &current_type,
         html_content.as_deref(),
-        paste_with_format
-            .unwrap_or(current_type == "rich_text" && html_content.as_deref().is_some()),
+        with_format,
     )
     .await?;
 

@@ -19,9 +19,21 @@ Large feature work is welcome, but please discuss it in an issue first so it doe
 
 - Node.js LTS
 - Rust stable toolchain
-- Tauri 2 prerequisites for your platform
+- Windows native app: PowerShell 7 and Visual Studio 2022 with the Desktop development with C++ workload
+- Linux/macOS Tauri app, or the source-level Windows rollback path: Tauri 2 prerequisites for your platform
 
 ### Local development
+
+The published Windows application is the native WinUI 3 build:
+
+```powershell
+npm install
+npm run winui:build
+npm run winui:test:release
+npm run winui:package
+```
+
+The Tauri application remains the Linux/macOS implementation and a local Windows rollback path. It is not a published Windows package:
 
 ```bash
 npm install
@@ -32,7 +44,10 @@ npm run tauri:dev
 
 ```bash
 npm run build
+npm run verify:windows-release
 ```
+
+Changes to the native Windows app should also run the focused Rust/ABI tests through `npm run winui:build`. Before a Windows release, `npm run winui:test:release` must pass its five independent startups, 100-cycle lifecycle, startup-latency, and memory gates; also run the global-hotkey script documented in `experiments/winui3-main-window/README.md`. Publishing additionally requires the controlled MSIX signing certificate and timestamp service.
 
 ## Pull request guidelines
 

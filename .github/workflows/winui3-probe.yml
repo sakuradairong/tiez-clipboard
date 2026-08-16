@@ -1,17 +1,40 @@
-name: winui3-probe
+name: Windows native WinUI
 
-# Builds the WinUI 3 probe (Tiez.WinUIProbe) + its Rust core DLL on a Windows runner.
+# Builds the production native TieZ.exe + its Rust core DLL on a Windows runner.
 # Linux hosts cannot run the XAML/XBF compiler, so the complete exe is produced here;
 # the Rust core can be developed and cross-compiled locally on Linux (cargo-xwin).
 # Reuses experiments/winui3-main-window/build.ps1 (test -> cargo -> nuget restore -> msbuild).
 
 on:
   workflow_dispatch:
-  push:
-    branches: [explore/winui3-main-window]
+  pull_request:
     paths:
       - "crates/tiez-core/**"
       - "experiments/winui3-main-window/**"
+      - "scripts/verify-windows-native-release.mjs"
+      - "package.json"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "CONTRIBUTING.md"
+      - "CHANGELOG.md"
+      - "AGENTS.md"
+      - ".github/workflows/build-platforms.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/winui3-probe.yml"
+  push:
+    branches: [master]
+    paths:
+      - "crates/tiez-core/**"
+      - "experiments/winui3-main-window/**"
+      - "scripts/verify-windows-native-release.mjs"
+      - "package.json"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "CONTRIBUTING.md"
+      - "CHANGELOG.md"
+      - "AGENTS.md"
+      - ".github/workflows/build-platforms.yml"
+      - ".github/workflows/release.yml"
       - ".github/workflows/winui3-probe.yml"
 
 permissions:
@@ -30,14 +53,40 @@ jobs:
         with:
           toolchain: "1.88.0"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify Windows native release contract
+        run: npm run verify:windows-release
+
       - name: Build (build.ps1)
         working-directory: experiments/winui3-main-window
         shell: pwsh
         run: ./build.ps1 -Configuration Release -Platform x64
 
+      - name: Test native release readiness
+        working-directory: experiments/winui3-main-window
+        shell: pwsh
+        run: ./test-release-readiness.ps1 -Configuration Release
+
+      - name: Test configured native global hotkey
+        working-directory: experiments/winui3-main-window
+        shell: pwsh
+        run: ./test-hotkey.ps1 -Configuration Release
+
+      - name: Validate unsigned MSIX
+        working-directory: experiments/winui3-main-window
+        shell: pwsh
+        run: ./package-msix.ps1 -SkipBuild
+
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: winui3-probe-x64
-          path: experiments/winui3-main-window/artifacts/x64/Release/
-          if-no-files-found: warn
+          name: tiez-winui-x64
+          path: |
+            experiments/winui3-main-window/artifacts/x64/Release/
+            experiments/winui3-main-window/artifacts/packages/
+          if-no-files-found: error

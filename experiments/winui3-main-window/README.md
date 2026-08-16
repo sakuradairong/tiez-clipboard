@@ -1,38 +1,47 @@
-# TieZ WinUI 3 main-window migration slice
+# TieZ WinUI 3 Windows main window
 
-> **First production-intended native Windows slice — Tauri/WebView2 remains the
-> fallback entry point.**
+> **Production Windows entry point — native WinUI 3 with no WebView2 main
+> window. Tauri remains the Linux/macOS implementation and a source-level,
+> mutually exclusive Windows rollback path.**
 
-This experiment tests one question:
+This implementation answers the migration question:
 
 > Can a C++/WinRT WinUI 3 main window consume a narrow Rust C interface in the
 > same process while providing enough clipboard-list interaction to justify a
 > real Windows-native product slice?
 
-The executable does **not yet** replace the Tauri window or start the real
-clipboard listener. The reusable history behavior now lives in the standalone,
-Tauri-independent `tiez-core` crate. By default it uses synthetic in-memory
-data. An opt-in adapter can open a **copied** TieZ `clipboard.db` in SQLite
-read-only mode. The existing application remains available as a rollback path.
-The production Tauri list, search, and full-content commands now use the same
+The repository's Windows release contract now publishes this executable instead
+of the Tauri window. It starts a native Windows clipboard listener for Unicode,
+HTML, image, and file payloads. The
+reusable history, paste, privacy, and window-lifecycle policies
+now live in the standalone, Tauri-independent `tiez-core` crate. Release builds
+open the production TieZ data directory by default; Debug/test builds keep the
+synthetic in-memory adapter. **Do not run this executable at the same time
+as Tauri** against the live database. Both runtimes now acquire the same
+per-database Windows ownership mutex before restore or SQLite open, so the
+second process fails with a visible startup error instead of becoming a
+concurrent writer. The existing WebView2 application remains available from
+source for rollback and for non-Windows releases, but Windows release automation
+does not publish it.
+The production Tauri list, search, and full-content commands still use the same
 storage-neutral merge/search policies through `TauriHistoryAdapter`; their
 command names and serialized `ClipboardEntry` contract remain unchanged.
 
 ## Shape
 
 ```text
-Tiez.WinUIProbe.exe
+TieZ.exe
   WinUI 3 / XAML / C++/WinRT
-        │ dynamic loading + C ABI v3
+        │ dynamic loading + C ABI v22
         ▼
 tiez_winui_core.dll
   Rust C ABI transport adapter
         │
         ▼
-tiez-core::clipboard_history
-  Tauri-independent deep module with switchable adapters:
-    - synthetic in-memory data (default)
-    - production-schema SQLite history (opt-in, read-only)
+tiez-core
+  ai · backup · clipboard_history/relay · cloud_sync runner/SQLite host · emoji_favorites · file_transfer policy/settings · image_analysis · relay_key · tag_catalog · content_opening · paste_coordinator · ui_lifecycle
+    - production-schema SQLite history (Release default, writable unless TIEZ_WINUI_DB_READ_ONLY=1)
+    - synthetic in-memory data (Debug/test default or explicit diagnostic override)
 ```
 
 The C ABI interface is deliberately small:
@@ -40,18 +49,52 @@ The C ABI interface is deliberately small:
 - create/destroy one core handle;
 - fetch a UTF-8 JSON snapshot for a search query;
 - fetch full content metadata for one stable entry ID;
+- prepare a validated URL or local-file launch plan without invoking a command shell;
 - report the active adapter and whether it is read-only;
-- apply `pin`, `delete`, `paste-plain`, or `paste-rich` in memory mode;
+- apply `pin`, `delete`, protected `clear`, and plain/rich paste or copy actions (memory or writable SQLite);
+- paste transient UTF-8 text without manufacturing a clipboard-history row;
+- list, import, remove, and paste image-Emoji favorites through the existing
+  `app.emoji_favorites` setting and managed `emoji_favorites/` directory;
+- list, search, create, recolor, rename, and permanently delete compatible tags,
+  fetch exact tagged entries, and create whitespace-preserving tagged text;
+- replace item tags from a UTF-8 JSON string array, including session-to-persisted ID replacement;
+- replace the complete pinned order from a UTF-8 JSON integer array;
+- read and update a strict allowlist of non-secret daily-use settings;
+- read and transactionally update the existing WebDAV settings without returning
+  its password, then run a read-only connectivity probe;
+- start, request, stop, and poll the Rust-owned background WebDAV runner without
+  returning its credentials or binding worker lifetime to a XAML object;
+- configure, start, stop, and poll an authenticated Rust-owned LAN transfer
+  server; send text, expose local files as streaming downloads, and retain the
+  existing snake_case message and settings contracts;
+- read and transactionally update existing AI profiles without returning API
+  keys, probe one OpenAI-compatible endpoint, and run a bounded task, reply, or
+  translation action for one approved history entry;
+- read and update the exact rich/plain latest-paste shortcut keys, report the
+  compatible delete-after-paste policy, and execute either shortcut without
+  exposing unrelated or secret settings;
+- read and update the exact sequential-paste mode/shortcut keys, enqueue native
+  captures in a bounded FIFO, and paste or safely requeue the next record without
+  exposing unrelated or secret settings;
+- inspect relay readiness without returning credentials, manage the strict
+  shared key in the Windows credential vault, read and update the existing
+  relay shortcut keys, and explicitly send/fetch one encrypted text clipboard
+  item through the compatible `relay/v1` protocol;
+- create, fully validate, and schedule restoration of the same `.tiez-backup`
+  archives as the Tauri fallback;
 - return a structured mutation result with requested/effective/replacement IDs,
   removal state, generation, and a display message;
 - retrieve per-thread errors and free returned strings.
 
-The shared Rust module owns adapter selection, query filtering, sorting,
-sensitive-preview redaction, relative timestamps, generation tracking, and
-memory-only actions. Its `production_history` policy also owns session/persisted
-merge rules, stable pinned ordering, and session search matching for the Tauri
-adapter. The C ABI library owns only transport concerns: UTF-8/C string
-ownership, panic containment, JSON serialization, and ABI stability.
+The shared Rust module owns adapter selection, query filtering (including
+`type:<content_type>` chips), sorting, sensitive-preview redaction, relative
+timestamps, generation tracking, paste payload planning, tag privacy transitions,
+pin/delete/protected-clear/tag/pinned-order writes, and the backup/rollback transaction.
+`PasteCoordinator` plans hide → restore-focus → clipboard → Ctrl+V; the WinUI
+shell captures the last foreground HWND and the Windows executor applies Unicode
+text plus a paste keystroke. The C ABI library owns only transport concerns:
+UTF-8/C string ownership, panic containment, JSON serialization, and ABI
+stability.
 
 The JSON format is only a prototype transport. A production seam should use
 versioned request/response structs or another explicitly versioned wire format.
@@ -59,34 +102,101 @@ versioned request/response structs or another explicitly versioned wire format.
 ## What the UI demonstrates
 
 - native WinUI 3 cards and controls;
-- search driven by the Rust snapshot;
+- search plus type chips (`type:text` and friends) driven by the Rust snapshot;
 - a native master-detail view backed by full-content lookup;
-- pin/unpin and delete state mutations in Rust;
-- plain/rich paste requests crossing the C interface;
+- pin/unpin and delete, including SQLite writes when the probe is the only process;
+- a Chinese “清空历史” confirmation that preserves pinned, tagged, and sensitive-protected entries and is disabled for read-only adapters;
+- a Chinese native Emoji and image-favorites picker with ten Unicode categories,
+  keyboard/Narrator names, multi-file PNG/JPEG/GIF/WebP import, managed deletion,
+  and Rust-coordinated paste back to the previous window;
+- a Chinese native tag manager with search, counts, colors, exact tagged-entry
+  browsing, manual text creation, protected privacy tags, and explicit permanent
+  deletion confirmation;
+- a Chinese native LAN-transfer dialog with a per-run pairing QR/link, receive
+  directory and automation settings, active-device/message status, text sending,
+  multi-file sharing, and a responsive Chinese phone page for text and bounded
+  direct/chunked uploads;
+- a Chinese native AI assistant with write-only API keys, multiple model profiles,
+  per-action assignments, endpoint probing, explicit task/reply/translation runs,
+  and non-destructive copy or transient paste of generated results;
+- a Chinese native encrypted-clipboard relay panel with write-only shared-key
+  setup, one-time generated-key display, explicit send/fetch actions, editable
+  global send/fetch shortcuts, pending-ACK retry status, background tray
+  notifications, and self-write suppression so copying a generated key does not
+  add it to TieZ history;
+- searchable tag chips and Chinese comma-separated tag editing in the details pane;
+- pinned-card drag-and-drop plus Chinese “上移”/“下移” controls in an unfiltered writable view;
+- real plain/rich paste through `PasteCoordinator` (Unicode, HTML, image, files);
+- copy without paste (clipboard write only);
+- keyboard up/down, Enter, Ctrl+Enter, Ctrl+C, Delete, Esc; IME Enter does not paste;
+- card context menu and double-click paste;
+- focusable clipboard list items with Chinese Narrator summaries, keyboard help, live status announcements, and protected sensitive-preview names;
+- configured keyboard or `MouseMiddle`/`MButton` global toggle (inherited from and editable through `app.hotkey`, default Alt+C), last-foreground HWND capture, and deactivate-to-hide (unless pinned); the Chinese editor registers before persisting, database-write failure rolls registration back, and invalid/conflicting registrations keep the previous working shortcut and saved value;
+- an independently editable global search shortcut inherited from `app.search_hotkey` (default Alt+F) that reveals the tray-owned window, preserves the previous foreground window as the paste target, and focuses the native search box; registration conflicts and database-write failures retain the prior working and saved value;
+- independently editable rich/plain “paste latest” shortcuts inherited from
+  `app.rich_paste_hotkey` (default Alt+Shift+V) and `app.plain_paste_hotkey`
+  (disabled by default); both work while the tray process is hidden, release
+  held shortcut modifiers before Ctrl+V, and honor `app.delete_after_paste`
+  without deleting pinned or tagged records;
+- an independently editable sequential-paste mode and shortcut inherited from
+  `app.sequential_mode` and `app.sequential_hotkey` (default Alt+V); while enabled,
+  native captures enter a bounded FIFO in copy order, a copy after any sequential
+  paste starts a new queue, failures are requeued, and holding Alt while tapping V
+  repeatedly remains usable because the hidden action restores Alt afterward;
+- native TieZ system tray: left-click show, Chinese show/exit menu, close-to-hide, and Explorer restart recovery;
+- process-wide AppLifecycle single-instancing before XAML or Rust/SQLite initialization: hidden startup redirects stay tray-only, while an ordinary second launch exits and reveals the existing native window;
+- a Chinese native settings dialog for theme, compact list, global toggle/search/latest/sequential-paste shortcuts, persistence, limits, capture, privacy, tray, window pinning, and Windows login startup;
+- packaged login startup through the MSIX `StartupTask` contract, plus a current-EXE HKCU Run fallback for unpackaged development; startup activation stays hidden in the tray and packaged ownership removes legacy Tauri Run values;
+- immediate compact-card rendering, theme switching, tray visibility, and real always-on-top behavior without restarting;
+- a no-activate native compact hover preview for text, rich text, files, local images, and protected-entry messages;
+- Chinese “打开” actions for validated links/files and controlled temporary text, rich-text, or image files;
+- asynchronous Chinese backup export and restore controls with native file dialogs,
+  archive/checksum validation, next-startup restore, and seven-day rollback retention;
+- asynchronous OCR/QR recognition with cached native search and sensitive-result protection;
+- Chinese WebDAV setup with write-only password handling, compatible settings,
+  a read-only `PROPFIND` connectivity test, automatic background scheduling,
+  immediate synchronization, and live sanitized status;
+- a Chinese App Installer update check/install entry that uses the feed associated with the installed MSIX;
 - UTF-8 text, including Chinese and emoji;
-- a five-second hide/show lifecycle action;
+- a five-second hide/show lifecycle action for memory measurements;
 - an optional ready marker for startup and memory measurement.
 
-Paste buttons intentionally record requests instead of changing the system
-clipboard. All action buttons are disabled when the real-history adapter is
-active. Connecting them to TieZ's real paste implementation requires first
-extracting Tauri-independent Rust modules.
+Paste uses the shared coordinator. On Windows the probe writes CF_UNICODETEXT and,
+for paste-rich when HTML is available, CF_HTML (`HTML Format`). Image entries with a
+local path or `data:image/` payload write CF_DIB (and PNG when the source is PNG).
+File lists write CF_HDROP. Ctrl+V is sent after hiding and restoring the last
+foreground window. Global paste shortcuts explicitly release Ctrl/Alt/Shift/Win
+before the coordinator sends Ctrl+V, so the registered chord does not leak into
+the destination. Sequential paste restores a physically held Alt key after each
+hidden action so Alt+V can advance the FIFO continuously; failed actions put the
+record back at the front. Synthetic image/file placeholders are not pasteable; use a real
+`clipboard.db` to try those types. Writable SQLite mode decrypts protected payloads
+only inside the Rust core for approved copy/paste operations; native cards and the
+details pane remain redacted. Read-only inspection never exposes protected payloads.
+Do not start Tauri and this executable against the same `clipboard.db` at once.
 
 ## Windows prerequisites
 
 - Windows 11 x64 recommended; Windows 10 2004 is the current project minimum;
-- Visual Studio 2022 with:
+- Visual Studio 2022 (or Build Tools) with:
   - **Desktop development with C++**;
   - **Windows application development** / Windows App SDK tools;
   - MSVC v143;
   - Windows 11 SDK `10.0.26100`;
+  - `build.ps1` searches every VS product, including Build Tools;
 - repository-pinned Rust `1.88.0-x86_64-pc-windows-msvc` toolchain;
 - PowerShell 5.1 or newer;
 - internet access for first-time NuGet restore.
 
 The project currently pins the maintained Windows App SDK `1.8.260710003`
 line instead of the newer `2.x` line so the first build tests a serviced,
-established toolchain before exploring a major SDK upgrade.
+established toolchain before exploring a major SDK upgrade. 1.8 ships WinUI,
+Runtime, and MSIX/MRT build assets as split packages; `packages.config`
+restores those explicitly so XBF compilation and app PRI generation both run
+in command-line builds. Because WinUI's metadata declares `IWebView2`, cppwinrt
+also needs the WebView2 WinMD while generating projections. That reference is
+compile-time-only (`Private=false`): the project does not import WebView2 build
+targets, link its loader, use a WebView control, or ship WebView2 runtime files.
 
 ## Linux development
 
@@ -115,7 +225,7 @@ artifacts/x64/Release/tiez_winui_core.dll
 ```
 
 Use `./build-linux.sh --skip-windows-target` for a native-test-only pass. The
-complete `Tiez.WinUIProbe.exe` still requires `build.ps1` on Windows; the
+complete `TieZ.exe` still requires `build.ps1` on Windows; the
 `winui3-probe` GitHub Actions workflow provides the reproducible remote build.
 
 ## Build and run
@@ -126,7 +236,7 @@ From this directory in PowerShell:
 rustup toolchain install 1.88.0-x86_64-pc-windows-msvc
 Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1 -Configuration Release
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 `build.ps1` performs these steps:
@@ -135,8 +245,70 @@ Set-ExecutionPolicy -Scope Process Bypass
 2. builds the `cdylib` in release mode;
 3. restores the native NuGet packages into the experiment directory;
 4. resolves Visual Studio's MSBuild with `vswhere`;
-5. builds the unpackaged, self-contained WinUI executable;
-6. places the executable and Rust DLL in the same artifact directory.
+5. builds the unpackaged, self-contained WinUI executable and current app PRI;
+6. stamps `TieZ.exe` with the synchronized product version and places it beside
+   the Rust DLL. Release builds enable the production-data adapter by default.
+
+Before packaging, run the same release-readiness gate used by Windows CI and
+signed releases:
+
+```powershell
+.\test-release-readiness.ps1 -Configuration Release
+```
+
+It creates five independent isolated databases and processes. The first process
+must survive 100 activation and `WM_CLOSE`-to-tray cycles; all five contribute
+requested-to-ready and memory samples. The gate requires a median no greater
+than 750 ms, every one of the worst five samples no greater than 1500 ms, peak
+working set no greater than 512 MiB, and private-memory growth no greater than
+64 MiB. It never reads the production database or the user's configured hotkey.
+
+### Package, sign, install, and upgrade
+
+Create and re-open an unsigned MSIX for local/CI structural validation:
+
+```powershell
+.\package-msix.ps1 -SkipBuild
+```
+
+Unsigned packages are never accepted by the release job. A distributable build
+must use a code-signing certificate whose subject exactly matches `Publisher`,
+plus an RFC 3161 timestamp service:
+
+```powershell
+.\package-msix.ps1 `
+  -SkipBuild `
+  -Publisher "CN=Your Publisher" `
+  -CertificatePath "C:\secure\tiez-release.pfx" `
+  -CertificatePassword $env:TIEZ_CERT_PASSWORD `
+  -TimestampUrl "https://your-controlled-timestamp-service.example" `
+  -AppInstallerBaseUri "https://github.com/OWNER/REPO/releases/latest/download" `
+  -RequireSigning
+```
+
+The package script reads the product version from the repository-wide version
+gate, generates `TieZ_<version>.0_x64.msix`, re-opens it with `MakeAppx`, checks
+the package identity, native `TieZStartup` login task, and required runtime files,
+rejects WebView2 payloads, and writes SHA256. The manifest deliberately disables
+AppData write virtualization,
+and the package validator requires that declaration plus the corresponding
+`unvirtualizedResources` capability. This keeps the installed WinUI app and the
+unpackaged Tauri fallback on the same `%APPDATA%\com.tiez` database instead of
+silently creating package-private history. When a base URI is supplied it also creates
+`TieZ-x64.appinstaller`; Windows checks that stable file on launch and in the
+background, and only accepts a package with the same identity/publisher and a
+higher four-part version.
+
+`unvirtualizedResources` is a restricted capability. A signed package may be
+sideloaded without Microsoft approval, but a future Microsoft Store submission
+must justify the capability and pass Store review. Keep the GitHub release in
+draft until `TieZ-x64.appinstaller` has been installed and upgraded on both
+Windows 10 and Windows 11 with the release certificate.
+
+The release workflow requires `WINUI_MSIX_CERTIFICATE_BASE64`,
+`WINUI_MSIX_CERTIFICATE_PASSWORD`, and `WINUI_MSIX_PUBLISHER` secrets plus a
+`WINUI_MSIX_TIMESTAMP_URL` repository variable. The decoded PFX exists only in
+the runner temporary directory and is removed in an `always()` cleanup step.
 
 Override the Rust DLL path for debugging with:
 
@@ -144,41 +316,77 @@ Override the Rust DLL path for debugging with:
 $env:TIEZ_WINUI_CORE_DLL = "C:\path\to\tiez_winui_core.dll"
 ```
 
-### Read copied TieZ history
+### Read or write TieZ history
 
-The default remains the mutable synthetic adapter. To inspect real history,
-first stop TieZ and copy `clipboard.db` to a scratch directory. If
-`clipboard.db-wal` and `clipboard.db-shm` exist, copy them beside it too. Do
-not point this experiment at the live production files.
+Release uses the real writable database by default, so **stop Tauri first**.
+Debug and Rust test builds remain synthetic. The installed Windows database is
+normally under TieZ's
+app-data directory; portable mode stores it under `data\clipboard.db` beside
+the executable, and `datapath.txt` may redirect the directory.
 
-The installed Windows database is normally under TieZ's app-data directory;
-portable mode stores it under `data\clipboard.db` beside the executable, and
-`datapath.txt` may redirect the directory. Then launch the probe with:
+Writable (WinUI as the only process — pin/delete/tag/order changes persist):
 
 ```powershell
 $env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
-.\artifacts\x64\Release\Tiez.WinUIProbe.exe
+.\artifacts\x64\Release\TieZ.exe
+```
+
+To exercise the same production data-directory selection as Tauri without
+copying a path, explicitly enable production data mode:
+
+```powershell
+$env:TIEZ_WINUI_USE_PRODUCTION_DATA = "1"
+.\artifacts\x64\Release\TieZ.exe
+```
+
+This resolves `%APPDATA%\com.tiez`, honors a valid `datapath.txt`, and lets an
+existing `data` directory beside the WinUI executable take precedence. The
+shared ownership mutex still requires Tauri to be fully stopped. Release already
+enables this policy; the flag remains useful for Debug builds. For an isolated
+Release demonstration, set `TIEZ_WINUI_USE_SYNTHETIC_DATA=1` before launch.
+In writable mode the shared Rust bootstrap creates or upgrades schema version
+15 and seeds the same defaults as Tauri. If a scheduled restore is pending,
+WinUI now validates and applies it itself before opening SQLite. Invalid pending
+archives are quarantined, and a successful restore keeps the replaced data in a
+seven-day rollback directory; starting the Tauri fallback is no longer required.
+
+The header should show `sqlite` and **write enabled**. Pin/delete go through
+`tiez_core_apply_action_json`; tag edits go through `tiez_core_update_tags_json`.
+Pinned-order edits go through `tiez_core_update_pinned_order_json` and submit
+the complete visible pinned ID list. Reordering is disabled while search or a
+type filter is active; the Rust core atomically rejects stale or partial lists.
+Persisted positive IDs stay stable. Tagging or pinning a WinUI session-only
+negative ID persists it and returns the new positive `replacement_id`.
+
+Read-only inspection of a copied database (byte-identical check):
+
+```powershell
+$env:TIEZ_WINUI_DB_PATH = "C:\scratch\tiez-history\clipboard.db"
+$env:TIEZ_WINUI_DB_READ_ONLY = "1"
+.\artifacts\x64\Release\TieZ.exe
 ```
 
 The header and status should show `sqlite-read-only`. The adapter reads at
 most 200 latest entries, supports case-insensitive search over preview, source
-app, and content type, and never opens SQLite with write flags. It deliberately
+app, content type, and tags, plus exact `type:<name>` filters. It deliberately
 does not:
 
 - read session-only negative-ID entries held in the running Tauri process;
 - display sensitive-tagged or `dpapi:` previews (they are replaced with a
   sensitive-entry label);
-- expose sensitive or encrypted payloads without the production privacy and
-  Windows decryption adapter;
-- perform mutation/paste operations.
+- expose sensitive or encrypted payloads in read-only mode;
+- perform mutation/paste operations when `TIEZ_WINUI_DB_READ_ONLY=1`.
 
 Use **Open details** to read the full persisted payload for non-sensitive
 entries. The details panel keeps sensitive and encrypted entries metadata-only.
 
-Unset the variable to return to synthetic mode:
+Unset the variables to return to synthetic mode:
 
 ```powershell
 Remove-Item Env:TIEZ_WINUI_DB_PATH -ErrorAction SilentlyContinue
+Remove-Item Env:TIEZ_WINUI_DB_READ_ONLY -ErrorAction SilentlyContinue
+Remove-Item Env:TIEZ_WINUI_USE_PRODUCTION_DATA -ErrorAction SilentlyContinue
+Remove-Item Env:TIEZ_WINUI_USE_SYNTHETIC_DATA -ErrorAction SilentlyContinue
 ```
 
 ## Measurement
@@ -199,9 +407,19 @@ It records requested-to-ready time plus one-second samples of private bytes,
 working set, handles, and thread count. Use the **Hide for 5 seconds** button for
 manual visible/hidden comparison.
 
-The SQLite mode allows UI measurements against a copied production dataset,
-but it still omits the clipboard listener, sync, paste, hotkeys, tray, and
-other production services. Record the active adapter with every result.
+Live capture is always on for Unicode text. CF_HTML and Explorer files follow
+the native capture settings; images remain supported by the format pipeline
+(consecutive-copy dedup, paste-echo skip, configured privacy detection).
+Do not point
+`TIEZ_WINUI_DB_PATH` at the live production `clipboard.db` while Tauri TieZ is
+running. OCR/QR analysis and native search are connected through the shared
+core. WebDAV configuration, safe connectivity testing, redirect-free transport
+(retry, atomic publication, blobs, and remote listings), conflict rules, and the
+single-pass runner are shared. The current ABI owns the native scheduler and writable
+SQLite host; C++ only starts/stops it and polls credential-free status.
+Sensitive or encrypted entries never retain
+plaintext analysis, including when a privacy tag is added during background
+recognition. Record the active adapter with every result.
 
 ## Acceptance checklist
 
@@ -209,39 +427,176 @@ other production services. Record the active adapter with every result.
 
 - [ ] Release build succeeds from a fresh NuGet cache.
 - [ ] `tiez_winui_core.dll` loads without changing `PATH`.
-- [ ] Status shows `Rust ABI 3`.
+- [ ] Status shows `Rust ABI 22`.
+- [ ] The Release directory and EXE import table contain no WebView2 files or loader dependency.
+- [ ] `TieZ.exe` file/product version matches all eight release-version sources.
+- [ ] Unsigned MSIX validation packs and re-opens successfully but is never uploaded as a release.
+- [ ] The packed manifest disables AppData write virtualization and declares `unvirtualizedResources`.
+- [ ] The packed manifest contains the enabled `TieZStartup` task targeting `TieZ.exe`, and an installed login activation starts tray-only without flashing the main window.
+- [ ] `test-release-readiness.ps1 -Configuration Release` passes five independent starts, including 100 lifecycle cycles in the first run, against isolated temporary databases.
+- [ ] `test-hotkey.ps1 -Configuration Release` proves an isolated keyboard shortcut owns its registration, then independently proves real keyboard and mouse-middle input activate the hidden window and survive close-to-tray.
+- [ ] The signed MSIX Publisher matches the certificate subject and `signtool verify /pa` succeeds.
+- [ ] Installing `TieZ-x64.appinstaller` creates the Start-menu entry; a higher four-part version upgrades in place without losing `%APPDATA%\com.tiez` data.
+- [ ] In an App Installer-based installation, “检查更新” reports the current availability and “安装更新” opens only the associated HTTPS feed; unpackaged builds show a local explanatory error instead of using a fallback endpoint.
 - [ ] Chinese and emoji render without replacement characters.
 - [ ] Missing/wrong DLL produces a visible startup error instead of a crash.
 
 ### Interaction
 
 - [ ] Search filters by preview, source app, and content type.
+- [ ] Type chips send `type:text` / `type:image` / `type:url` / `type:code` / `type:file`.
 - [ ] Pin/unpin changes the card and generation.
 - [ ] Delete removes an entry.
+- [ ] “表情” opens a Chinese grouped native picker; Tab and Narrator identify every Unicode Emoji and favorite image, selecting either pastes it into the previous window, and no synthetic history row or echo duplicate is created.
+- [ ] Add several PNG/JPEG/GIF/WebP favorites, restart, and confirm the order and previews survive through the existing `app.emoji_favorites` setting and `emoji_favorites/` directory; spoofed or oversized files are rejected.
+- [ ] Removing a managed favorite updates the setting and deletes only its managed copy; a copied read-only adapter disables add/remove, and a favorite path outside the managed directory is never deleted.
 - [ ] Mutation status shows the Rust result message and generation.
-- [ ] Plain/rich paste buttons update the Rust action status.
+- [ ] Plain/rich paste writes the system clipboard and sends Ctrl+V after restoring the last HWND.
+- [ ] Image paste writes CF_DIB (and PNG when applicable); file paste writes CF_HDROP.
+- [ ] Enter in the search box does not paste while an IME composition is being confirmed.
+- [ ] Up/Down moves the selected card; Enter pastes plain text; Ctrl+Enter pastes rich; Esc hides.
+- [ ] Ctrl+C copies without injecting Ctrl+V; Delete removes the selected card when search is not focused.
+- [ ] Right-click a card for open/paste/copy/pin/delete; double-click pastes plain text.
+- [ ] The configured `app.hotkey` (Alt+C by default, with `MouseMiddle`/`MButton` compatibility) toggles visibility and captures the last foreground window; the Chinese shell displays the active input method.
+- [ ] Editing the shortcut in Chinese native settings registers it before saving it; reopening settings shows the saved value and the main shell immediately shows the active value.
+- [ ] Switching keyboard → mouse middle → keyboard removes the previous registration or hook each time; mouse middle is consumed only while configured and teardown leaves no hook behind.
+- [ ] An invalid or already-registered shortcut leaves both the previous working registration and saved value unchanged; an empty setting disables and persists the shortcut without affecting tray access.
+- [ ] A simulated database-write failure restores the previous system registration and reports a Chinese error; read-only adapters and `TIEZ_WINUI_HOTKEY` diagnostic overrides disable the editor.
+- [ ] The search shortcut reads the exact `app.search_hotkey` value (Alt+F when absent), can be edited or disabled independently, and focuses “搜索剪贴板历史” when invoked from the hidden tray process without losing the previous foreground paste target.
+- [ ] An invalid, conflicting, or failed-to-save search shortcut leaves the previous working registration and saved value unchanged; shutdown releases the dedicated Win32 registration.
+- [ ] The Chinese settings dialog reads exact `app.rich_paste_hotkey` / `app.plain_paste_hotkey` values (Alt+Shift+V / disabled when absent), registers them independently before persistence, and keeps the previous saved/working shortcut after invalid input, conflicts, or write failures.
+- [ ] From a hidden tray process, the rich shortcut pastes the newest record with HTML when available, the plain shortcut rejects a newest non-text record and publishes no HTML, and both release their modifiers before Ctrl+V without revealing the main window.
+- [ ] With `app.delete_after_paste=true`, a successful latest-item shortcut removes an unprotected record but preserves pinned or tagged records; read-only mode disables both actions, and shutdown releases both dedicated Win32 registrations.
+- [ ] The Chinese settings dialog reads exact `app.sequential_mode` / `app.sequential_hotkey` values (disabled / Alt+V when absent), registers the shortcut only while the mode is enabled, persists only after Windows accepts a candidate, and restores the previous saved/working state after conflicts or write failures.
+- [ ] While sequential mode is enabled, new native captures enter a FIFO in copy order; each shortcut invocation pastes one rich/plain/image/file payload while the main window stays hidden, a failed paste returns the record to the front, and the first external copy after a successful sequential paste discards the remaining old queue and starts a new one.
+- [ ] Holding Alt and repeatedly tapping V advances the sequential queue without a stuck or leaked modifier; `app.delete_after_paste=true` removes only unprotected successfully pasted records, read-only mode disables the action, the queue is bounded to the newest 200 records, and shutdown releases the dedicated Win32 registration.
+- [ ] The relay panel reads `app.relay_send_hotkey` and `app.relay_fetch_hotkey`, registers both independently, persists only after Windows accepts a candidate, and leaves the previous saved/working shortcut intact after a conflict or database-write failure.
+- [ ] Relay shortcuts run while the main window is hidden, report Chinese success/error through the tray, never reveal the window, and release both registrations during shutdown.
+- [ ] The TieZ tray icon is registered; left-click shows the main window without replacing the saved paste target.
+- [ ] Closing the main window hides it while the process stays alive; the tray “退出 TieZ” command exits.
+- [ ] An ordinary second launch exits with code 0 and reveals the existing native window without constructing another Rust/SQLite owner.
+- [ ] A `--autostart` or `--minimized` second launch exits with code 0 without revealing a hidden primary window.
+- [ ] Right-clicking the tray icon shows the Chinese “显示主界面” and “退出 TieZ” commands.
+- [ ] Restarting Explorer restores the tray icon.
+- [ ] Sensitive cards show a redacted preview and a sensitive label.
 - [ ] Open details displays full UTF-8 content without WebView2.
-- [ ] Keyboard Tab traversal and text selection work.
-- [ ] Hide/show restores a focused, usable window.
+- [ ] Tab reaches each clipboard record as a focusable list item, then reaches its visible action buttons; the focused record has a visible focus indicator.
+- [ ] Narrator announces each record's pinned/sensitive state, type, source, time, and non-sensitive preview; sensitive records announce only “预览已隐藏”.
+- [ ] Enter or Space on a focused record opens its details without pasting, and Shift+F10 opens the same Chinese card menu as right-click.
+- [ ] Text selection still works inside card previews and the details pane.
+- [ ] Copying text in another app prepends a new card without restarting the probe.
+- [ ] Copying formatted HTML, an image, or Explorer files prepends the matching card type.
+- [ ] The clipboard already present at startup is not ingested.
+- [ ] Pasting from the probe does not create a duplicate card.
+- [ ] Leading/trailing whitespace and internal newlines are preserved.
+- [ ] Tag chips render, tag search finds matching items, and Chinese comma-separated edits persist.
+- [ ] Adding `sensitive`, `密码`, or `password` redacts the item; removing the last sensitive tag restores access.
+- [ ] Tagging a negative session ID follows the positive replacement ID without losing selection.
+- [ ] “标签” opens the Chinese native manager, combines saved and entry-derived tags, shows compatible colors and exact counts, and filters names without blocking the UI.
+- [ ] Create a Chinese tag, change its color, add multiline text with leading/trailing whitespace, restart, and confirm the tag, color, content, and exact tagged-entry list persist.
+- [ ] Rename a tag that is already present on some target entries; every entry keeps a deduplicated tag list, privacy transitions remain encrypted/redacted, and the old tag disappears only after all updates finish.
+- [ ] Permanently deleting an ordinary tag requires the destructive confirmation, removes every tagged record through tombstones and managed-attachment cleanup, and requests WebDAV sync; retrying after an interrupted partial operation completes safely.
+- [ ] `sensitive`, `密码`, and `password` cannot be renamed, deleted, or used by the two-step manual-text action; the UI explains how to save under an ordinary tag and then apply privacy through the secure details mutation. Copied read-only mode disables every tag mutation and never reveals sensitive entry previews.
+- [ ] A tag with more than 1,000 records reports the uncapped total and clearly labels the 1,000-record response limit.
+- [ ] Pinned cards reorder by drag-and-drop and by “上移”/“下移”, then retain that order after restart.
+- [ ] Pinned reordering is unavailable in searched, type-filtered, or read-only views.
+- [ ] The Chinese settings dialog reads existing TieZ values and never exposes secret keys.
+- [ ] Theme, compact list, tray visibility, and window pinning apply immediately and persist after restart.
+- [ ] “开机启动 TieZ” reflects the actual Windows state; disabling it persists locally, user/policy-disabled states explain where to re-enable it, and the setting never crosses WebDAV.
+- [ ] File/rich-text capture, persistence, deduplication, limits, and privacy changes affect subsequent captures.
+- [ ] The Chinese WebDAV section reads the existing Tauri-compatible URL, username, path, intervals, and content preferences without ever displaying the saved password.
+- [ ] Saving WebDAV settings is transactional; leaving the password blank preserves it, while the explicit confirmed clear action removes it.
+- [ ] The WebDAV connectivity action runs off the UI thread, sends only a read-only `PROPFIND`, accepts HTTPS (plus loopback HTTP for local testing), rejects embedded credentials and redirects, and reports Chinese success/authentication/error state.
+- [ ] Enabling automatic WebDAV sync starts the Rust-owned scheduler; “立即同步” works with automatic sync disabled and shows Chinese running/result/error state.
+- [ ] A second device receives text, image, file metadata, tags, settings, and emoji favorites; newer revisions win deterministically and deletions do not echo back.
+- [ ] Remote setting changes apply to the native window without restart, while MQTT/AI/WebDAV credentials, relay keys, and local runner state never appear in settings snapshots.
+- [ ] “AI 助手” reads the existing profiles without displaying saved API keys; leaving the key field blank preserves the secret, and copied read-only mode disables profile mutation.
+- [ ] A profile probe and task/reply/translation action run without blocking the UI; remote addresses require HTTPS, local HTTP is loopback-only, and redirects or credential-bearing URLs fail closed.
+- [ ] Sensitive, unavailable, image, and file records are rejected before network access. An ordinary text result can be copied or transiently pasted, while the source history record remains unchanged.
+- [ ] Hovering a compact card shows the native always-on-top preview without stealing focus; leaving the card or hiding TieZ closes it.
+- [ ] An ordinary image can run OCR/QR recognition without blocking the UI, shows Chinese progress/error state, and copies the combined result.
+- [ ] Reopening an analyzed image uses the cache, “重新识别” forces a refresh, and searching recognized OCR text or a QR payload finds the image card without exposing that payload in its preview.
+- [ ] Sensitive/encrypted images expose no recognition action or cached plaintext; adding a privacy tag during recognition leaves no persisted analysis row.
+- [ ] HTTP/HTTPS and existing files open through the Windows default handler without `cmd` or PowerShell.
+- [ ] Custom URL protocols and local rich-text HTML require Chinese confirmation; dangerous URL protocols and sensitive entries are rejected.
+- [ ] Text and embedded images open from uniquely named files under the TieZ temporary directory without changing the stored clipboard entry.
+- [ ] The Chinese settings dialog exports a backup without blocking the UI and reports version, record count, file count, and byte size.
+- [ ] Restore rejects a malformed or checksum-mismatched archive before changing current data.
+- [ ] A scheduled restore applies on the next WinUI startup before SQLite opens, removes the pending archive, and keeps a rollback directory.
+- [ ] Read-only production mode permits export but disables restore; synthetic mode disables both actions.
+- [ ] The UI warns that backup archives are not additionally encrypted and DPAPI-protected fields remain bound to the current Windows account.
 
 ### Copied production history
 
-- [ ] `TIEZ_WINUI_DB_PATH` switches the badge to `sqlite-read-only`.
+- [ ] `TIEZ_WINUI_DB_PATH` with `TIEZ_WINUI_DB_READ_ONLY=1` switches the badge to `sqlite-read-only`.
 - [ ] The newest persisted items match the production TieZ history ordering.
-- [ ] Search matches preview, source app, and content type without writing.
-- [ ] All item action buttons are disabled.
+- [ ] Search matches preview, source app, content type, cached OCR text, and QR payloads without writing.
+- [ ] Mutation/paste/copy buttons are disabled in read-only mode; details and safe opening remain available for non-sensitive content.
 - [ ] Sensitive-tagged and encrypted previews show the sensitive-entry label.
 - [ ] Sensitive-tagged and encrypted details remain metadata-only.
 - [ ] The copied database and optional WAL/SHM files remain byte-identical.
+- [ ] Without `TIEZ_WINUI_DB_READ_ONLY`, pin/delete persist and the badge shows write enabled.
 
 ### Evidence before a real product slice
 
-- [ ] At least five independent release memory runs.
-- [ ] At least 100 open/hide/show/close cycles without crashes.
+- [ ] `test-release-readiness.ps1 -Configuration Release` records at least five independent release memory runs.
+- [ ] The same readiness command completes 100 show/WM_CLOSE-to-tray cycles without changing the first primary PID or exiting its Rust owner.
+- [ ] `test-hotkey.ps1 -Configuration Release` completes without touching the production database or the user's configured shortcut.
 - [ ] Median requested-to-ready no more than 750 ms.
 - [ ] Worst five requested-to-ready samples no more than 1500 ms.
-- [ ] Narrator announces search, buttons, list content, and status changes.
+- [ ] Narrator announces the Chinese search, buttons, focusable clipboard list items, help text, empty state, image-analysis status, and global status changes.
 - [ ] Per-monitor DPI, IME, multiple monitors, and Windows 10/11 startup pass.
+
+## Main-window parity matrix
+
+WinUI 3 is the published Windows UI. This table records how the former React main-window
+capabilities map to the C ABI / `tiez-core` seam and which extraction phase owns them.
+
+| WebView2 capability | Today's command / event | Native seam | Phase |
+| --- | --- | --- | --- |
+| Search by preview, source, type | `search_clipboard_history` / client `useFilteredHistory` | `tiez_core_get_snapshot_json` (`type:` prefix or free text) | 1 |
+| Type chips (`text`, `image`, `url`, `code`, `file`) | header chips in `AppHeader.tsx` | same snapshot query (`type:<name>`) | 1 |
+| Open details / full content | `get_clipboard_content` (unused by UI; paste loads by id) | `tiez_core_get_content_json` | 1 |
+| Sensitive preview + metadata-only details | renderer blur + `sensitive`/`密码`/`password` | snapshot `is_sensitive` + redacted `HistoryContent` | 1 |
+| Pin / unpin | `toggle_clipboard_pin` | `tiez_core_apply_action_json` `pin` (SQLite write adapter) | 1 |
+| Delete | `delete_clipboard_entry` | `tiez_core_apply_action_json` `delete` | 1 |
+| Paste plain (click / Enter) | `copy_to_clipboard` `paste: true`, `pasteWithFormat: false` | `PasteCoordinator` + `paste-plain` | 1 |
+| Paste rich (right-click) | `copy_to_clipboard` `pasteWithFormat: true` | `PasteCoordinator` + `paste-rich` | 1 |
+| Esc hide | `hide_window_cmd` | WinUI `UiLifecycle` hide | 1 |
+| Keyboard up/down + Enter | `useKeyboardNavigation` / `navigation-action` | WinUI list selection | 1 |
+| Configured keyboard/mouse-middle toggle (default Alt+C) | `toggle_window_cmd` + `app.hotkey` | allowlisted native settings read/write + parsed WinUI `RegisterHotKey` or scoped `WH_MOUSE_LL`, registration-first persistence, rollback, teardown, and last HWND | 5 (connected) |
+| Global search shortcut (default Alt+F) | `focus-search-input` + `app.search_hotkey` | ABI v20 exact-key adapter + parsed WinUI `RegisterHotKey`, registration-first persistence/rollback, hidden-window wake, search focus, and last-HWND preservation | 5 (connected) |
+| Rich/plain latest-paste shortcuts | `paste_latest` + `app.rich_paste_hotkey` / `app.plain_paste_hotkey` / `app.delete_after_paste` | ABI v21 exact-key adapter + independent WinUI `RegisterHotKey`, held-modifier release, hidden-window latest-item paste, text-only plain guard, protected delete-after policy, rollback, and teardown | 5 (connected) |
+| Sequential paste mode / shortcut | paste queue + `app.sequential_mode` / `app.sequential_hotkey` / `app.delete_after_paste` | ABI v22 bounded native-capture FIFO + mode-scoped WinUI `RegisterHotKey`, hidden rich/plain/image/file paste, failure requeue, post-paste new-copy reset, held-Alt restoration, protected delete-after policy, rollback, and teardown | 5 (connected) |
+| Blur hide / window pin | `handle_window_event` / `set_window_pinned` | WinUI `Activated` + pin flag | 1 |
+| System tray / close-to-hide / explicit exit | `setup_tray` / `CloseRequested` | `Shell_NotifyIconW` + native `WM_CLOSE` policy | 4 |
+| Second launch / tray wake | single-instance plugin + window commands | AppLifecycle key registration and activation redirection before XAML/Rust startup | 5 (connected) |
+| Last-focus HWND for paste | `LAST_ACTIVE_HWND` / `restore_focus_before_paste` | recorded on hotkey-show, restored before paste | 1 |
+| Live capture (Unicode, HTML, image, files) | clipboard listener + pipeline | `CaptureFilter` + `tiez_core_start_capture`; privacy, OCR/QR, and automatic WebDAV change distribution connected | 5 (connected) |
+| Item tags / tag search | `update_tags` | `tiez_core_update_tags_json` + secure SQLite transition | 4 |
+| Pinned drag reorder | `update_pinned_order` | `tiez_core_update_pinned_order_json` + atomic complete-set validation | 4 |
+| Compact preview window | `WebviewWindow` `compact-preview` | no-activate native WinUI/Win32 popup | 4 |
+| Open URL/file/text/rich/image | `open_content` | `tiez_core_prepare_open_content_json` + native `ShellExecuteW`, without command shells | 4 |
+| Daily native settings | `get_all_settings` / `save_setting` | `tiez_core_get_settings_json` / `tiez_core_update_setting_json` allowlist + Chinese dialog | 4 |
+| Windows login startup / silent activation | Tauri Run value + minimized argument | MSIX `StartupTask` + AppLifecycle activation, with current-EXE Run fallback for unpackaged development | 5 (connected) |
+| Backup / inspect / restore | `create_backup` / `inspect_backup` / `schedule_backup_restore` | shared `tiez-core::backup` + current ABI + async native file dialogs and startup restore | 4 |
+| Image OCR / QR analysis and search | `get_image_analysis` / `analyze_image_entry` | shared `tiez-core::image_analysis` + current ABI + async Chinese details panel and cached-index search | 5 (connected) |
+| WebDAV settings / connectivity | `get_all_settings` / `save_setting` / provider test | shared `tiez-core::cloud_sync_settings` + current ABI + write-only secret and read-only `PROPFIND` | 5 (connected) |
+| WebDAV transport | request retry, path/layout, atomic PUT/MOVE, blobs, remote listing | shared `tiez-core::cloud_sync_webdav`; Tauri uses compatibility wrappers and WinUI can reuse it directly | 5 (extracted) |
+| Cloud-sync wire model / conflict identity | local item, snapshot, op/head structs and digest/revision rules | shared `tiez-core::cloud_sync_protocol`; existing snake_case JSON and whitespace-preserving hash versions remain stable | 5 (extracted) |
+| Cloud-sync runner host boundary | Tauri `AppHandle`, repositories, settings, emoji and events | shared `tiez-core::cloud_sync_runner::CloudSyncHost`; typed runtime state/events and bounded remote planning, with no window handle in the port | 5 (defined) |
+| Background cloud upload/download and conflict reconciliation | cloud-sync service and mutation distribution | shared `run_webdav_once` plus `SqliteCloudSyncHost`; the current WinUI ABI owns scheduling/cancellation/status and Tauri retains a local-only legacy escape hatch | 5 (connected) |
+| Check/install application update | Tauri updater plugin | packaged `PackageManager` availability check + associated HTTPS App Installer feed | 5 (connected) |
+| Unicode Emoji picker / direct paste | `paste_text_directly` | `tiez_core_paste_text` + Chinese native grouped dialog | 5 (connected) |
+| Emoji image favorites | `get_emoji_favorites` / `add_emoji_favorite` / `remove_emoji_favorite` / `paste_emoji_image` | shared `tiez-core::emoji_favorites` + ABI v14 + Chinese native preview/import/remove/paste dialog, retaining the existing setting, managed directory, backup, and cloud-sync contracts | 5 (connected) |
+| Tag manager | `get_all_tags_with_count` / `get_entries_by_tag` / create, color, rename, delete, add item | shared `tiez-core::tag_catalog` + ABI v15 + Chinese native catalog and exact-entry dialog; entry changes reuse secure history mutations, tombstones, cleanup, and sync requests | 5 (connected) |
+| LAN file/text transfer | `toggle_file_server`, `send_chat_message`, `send_file_to_client`, upload/download routes and transfer events | shared `tiez-core::file_transfer` policy/settings + ABI v16 authenticated native server + Chinese WinUI/phone surfaces; compatible keys and snake_case message fields retained | 5 (connected) |
+| AI profiles / task, reply, translation actions | AI profile/settings and action commands | shared `tiez-core::ai` + ABI v17 + Chinese native profile/action dialog; keys stay write-only, history eligibility is checked before bounded redirect-free network requests, and results never overwrite source entries | 5 (connected) |
+| Encrypted clipboard relay / shared key / shortcuts | relay send/fetch, relay shortcut settings, and OS credential-store commands | shared `tiez-core::clipboard_relay` / `relay_key` + ABI v19 + Chinese native panel; the `relay/v1` wire format, SQLite receipts, HTTPS-only transport, legacy WebDAV fallback, write-only key boundary, and `app.relay_*_hotkey` keys remain compatible | 5 (connected) |
+| Advanced theme store | theme-store commands | Hosted service is disabled by default and is not a production capability until this fork controls its endpoint, signing, privacy, and release policy; it does not block native Windows publishing | service-disabled |
+
+Do not add Tauri `AppHandle` or `invoke` names to the C ABI. New behavior lands in
+`tiez-core` first, then the WinUI transport crate, then XAML.
 
 ## Production extraction path
 
@@ -256,13 +611,107 @@ this order, each with an in-memory adapter and the existing Tauri adapter:
    delete, clear, and pinned-order changes through `TauriMutationAdapter` and
    `tiez-core` session policies, while preserving replacement IDs, privacy
    encryption/decryption jobs, cleanup events, and cloud sync. The WinUI SQLite
-   adapter remains read-only until a production write adapter and C ABI are
-   validated on Windows;
-3. `PasteCoordinator` — focus restoration, rich/plain payload, paste queue;
-4. `UiLifecycle` — hotkey/tray wake, hide, close, and single-instance policy.
+   **write** adapter now persists pin/delete/tag/pinned-order changes when the probe is the
+   only process. Pinning or tagging session entries returns the positive
+   replacement ID, while sensitive tag changes synchronously protect storage;
+3. `PasteCoordinator` — **latest and sequential paste shortcuts connected**: payload planning,
+   hide/restore-focus/Ctrl+V contract, delete-after-paste intent, and a bounded
+   paste-queue policy. ABI v21 reads the compatible rich/plain shortcut keys,
+   releases held modifiers, pastes the newest eligible record while hidden, and
+   preserves pinned/tagged records under delete-after-paste. ABI v22 also owns
+   the compatible sequential-mode/hotkey settings and a 200-record native-capture
+   FIFO with failure requeue and post-paste new-copy reset. WinUI executes
+   Unicode, CF_HTML, CF_DIB/PNG, and CF_HDROP paste on Windows;
+   Tauri still wraps the existing Win32 clipboard/keystroke path after planning
+   text payloads;
+4. `UiLifecycle` — **WinUI daily shell connected**: inherited and natively editable keyboard/mouse-middle toggle plus ABI v22 search, latest-paste, and sequential-paste shortcuts, Esc hide,
+   deactivate hide unless pinned, last-foreground HWND for paste, native tray,
+   close-to-hide, explicit tray exit, Explorer restart recovery, AppLifecycle
+   launch redirection, and shared per-database single-instance ownership;
+5. `ClipboardCapture` — **WinUI Unicode/HTML/image/file connected**: format
+   priority (files, rich text, image, text), CRLF normalization without trim,
+   consecutive-copy dedup, self-paste echo skip, and a `WM_CLIPBOARDUPDATE`
+   worker that never reads the clipboard in WndProc. Configured privacy tagging
+   and protected persistence are connected. Positive persisted captures request
+   automatic WebDAV distribution only when both cloud sync and auto sync are enabled;
+6. `ContentOpening` — **WinUI native shell connected**: the shared core rejects
+   sensitive/unavailable payloads and dangerous URL protocols, normalizes web
+   links, resolves existing files, and creates unique UTF-8/HTML/image temporary
+   files. WinUI confirms custom protocols or local HTML, then calls
+   `ShellExecuteW` directly without `cmd` or PowerShell. Editing temporary files
+   back into history remains a later parity item;
+7. `BackupRestore` — **shared core and WinUI surface connected**: Tauri command
+   wrappers and the current WinUI ABI use one manifest/checksum implementation.
+   Native export and restore run off the UI thread; restore is staged, revalidated,
+   applied before SQLite opens, and retains a rollback directory;
+8. `ImageAnalysis` — **shared core and WinUI surface connected**: Windows OCR
+   and QR decoding run off the UI thread, Tauri keeps its command contract,
+   cached text is searchable from native snapshots, and sensitive/encrypted
+   results are memory-only with a pre-write privacy recheck.
+9. `CloudSync` — **shared core, Tauri adapter, and WinUI runtime connected**: the current ABI
+   reads and transactionally writes the existing WebDAV keys, keeps passwords
+   write-only, validates HTTPS and safe remote paths, and runs a redirect-free
+   read-only `PROPFIND` off the UI thread. `CloudSyncWebDav` now also owns the
+   reusable retry, safe path/layout, atomic PUT/MOVE, blob, JSON, and listing
+   transport contract, while `CloudSyncProtocol` owns the compatible item,
+   snapshot, op/head, digest, and deterministic revision-collapse model.
+   `SqliteCloudSyncHost` applies remote revisions, tombstones, tags, sensitive
+   DPAPI storage, settings, attachments, and emoji materialization. It inlines
+   local rich-HTML image resources before upload and removes tombstoned managed
+   attachments only after verifying that clipboard history and emoji favorites
+   no longer reference them. The Rust ABI owns the periodic/manual scheduler,
+   cancellation, worker teardown, and credential-free status; WinUI renders it
+   in Chinese. Real-account endurance and multi-device installer testing remain
+   required before default cutover.
+10. `EmojiFavorites` — **shared core and WinUI surface connected**: the native
+    picker reads and repairs the existing ordered `app.emoji_favorites` path
+    list, stores validated PNG/JPEG/GIF/WebP bytes in `emoji_favorites/`, and
+    reuses the existing backup/data-path/cloud-sync representation. Removal
+    deletes only canonicalized files inside the managed directory, writable
+    mutations request synchronization, and copied read-only databases remain
+    non-mutating.
+11. `TagCatalog` — **shared core and WinUI surface connected**: the native
+    manager reads the existing `saved_tags` and `entry_tags` schema, combines
+    compatible counts and colors, and exposes exact tagged-entry metadata with
+    sensitive previews redacted. Catalog metadata changes stay separate from
+    entry mutations; rename routes each entry through the secure tag-update path,
+    permanent delete routes each entry through the tombstone and attachment-
+    cleanup path, and catalog finalization happens only after all entry work
+    succeeds. Interrupted work is safely retryable, protected privacy tags are
+    immutable and reject non-atomic manual creation, copied read-only databases
+    cannot mutate, and one exact-entry
+    response is bounded to 1,000 records while retaining the uncapped total.
+12. `AI` — **shared core and WinUI surface connected**: the native assistant
+    preserves the existing camelCase stored profile schema and strategy-setting
+    keys, while exposing only key-presence metadata across ABI v17. API keys stay
+    inside DPAPI-compatible Rust storage; endpoints require HTTPS except loopback
+    HTTP and cannot contain credentials, queries, fragments, or redirects.
+    Explicit task, reply, and translation actions run off the UI thread with
+    bounded input, response size, and timeouts. Sensitive, unavailable, and
+    non-text entries fail before networking, and generated text is copied or
+    transiently pasted without changing the source record.
+13. `ClipboardRelay` — **shared core and WinUI surface connected**: Tauri and
+    WinUI use the same `relay/v1` authenticated message/ack format, bounded
+    WebDAV queue, TTL, stable device identity, and SQLite receipt states. The
+    shared key remains in the OS credential vault, never enters serialized
+    settings, and crosses C++ only in the one-time generate response needed for
+    device pairing. Fetch writes
+    through the native clipboard adapter and marks the self-write before capture
+    so the delivered item is not duplicated in history; pending acknowledgement
+    retries retain at-most-once local delivery. Generated-key copies are likewise
+    pre-registered as self-write echoes so the secret is not captured into TieZ.
+    ABI v19 also reads and updates the existing `app.relay_send_hotkey` and
+    `app.relay_fetch_hotkey` values without exposing credentials. WinUI registers
+    each candidate before persistence, rolls back on conflicts or write failures,
+    executes the actions without revealing a hidden window, and reports results
+    through Chinese tray notifications.
 
-Only after the first three modules work through both adapters should the WinUI
-executable become an alternative application entry point.
+The Windows publishing contract now makes this executable the default release
+entry and requires a signed MSIX/App Installer package. Release acceptance still
+requires controlled signing secrets, real-account multi-device sync endurance,
+and manual Windows 10/11, DPI, IME, accessibility, installer-upgrade, and long-run
+lifecycle verification. The service-disabled advanced theme store is not a
+cutover gate unless this fork later adopts and controls that hosted service.
 
 ## Primary references
 
@@ -270,4 +719,7 @@ executable become an alternative application entry point.
 - [Create a WinUI 3 app](https://learn.microsoft.com/en-us/windows/apps/get-started/start-here)
 - [Distribute an unpackaged WinUI app](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/unpackage-winui-app)
 - [Windows App SDK runtime bootstrap](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/use-windows-app-sdk-run-time)
+- [AppLifecycle rich activation](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-rich-activation)
+- [App instancing with AppLifecycle](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/applifecycle/applifecycle-instancing)
+- [Desktop startup-task manifest extension](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions)
 - [Official C++ unpackaged self-contained sample](https://github.com/microsoft/WindowsAppSDK-Samples/tree/main/Samples/SelfContainedDeployment/cpp/cpp-winui-unpackaged)

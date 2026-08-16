@@ -1,7 +1,5 @@
 use crate::app::commands::file_cmd::{image_ext_from_mime, save_emoji_favorite_bytes_to_dir};
-use crate::database::{
-    calc_legacy_text_hash, has_sensitive_tag, uses_text_content_hash, DbState, ENCRYPT_PREFIX,
-};
+use crate::database::{has_sensitive_tag, DbState, ENCRYPT_PREFIX};
 use crate::domain::models::ClipboardEntry;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::encryption;
@@ -17,6 +15,41 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
+use tiez_core::cloud_sync_protocol::{
+    collapse_items_by_sync_key as shared_collapse_items_by_sync_key,
+    compute_legacy_sync_content_hash as shared_compute_legacy_sync_content_hash,
+    compute_sync_content_hash as shared_compute_sync_content_hash,
+    is_cloud_sync_setting_eligible as shared_is_setting_sync_eligible,
+    item_revision as shared_item_revision, item_updated_at as shared_item_updated_at,
+    resolved_content_hash as shared_resolved_content_hash,
+    sync_digest_for_item as shared_sync_digest_for_item,
+    sync_key_for_item as shared_sync_key_for_item,
+    uses_text_sync_hash as shared_uses_text_sync_hash, CloudSyncContentPrefs, CloudSyncItem,
+    WebDavDeviceHead, WebDavDeviceSnapshot, WebDavOpsBatch, WebDavSettingsSnapshot, WebDavSyncHead,
+    HASH_VERSION_LEGACY, HASH_VERSION_WHITESPACE,
+};
+use tiez_core::cloud_sync_runner::{
+    run_webdav_once as shared_run_webdav_once, should_pull_snapshot as shared_should_pull_snapshot,
+    should_run_periodic_snapshot as shared_should_run_periodic_snapshot,
+    update_head_device as shared_update_head_device, CloudSyncHost as SharedCloudSyncHost,
+    CloudSyncHostError as SharedCloudSyncHostError,
+    CloudSyncHostErrorKind as SharedCloudSyncHostErrorKind,
+    CloudSyncHostEvent as SharedCloudSyncHostEvent,
+    CloudSyncLocalDelta as SharedCloudSyncLocalDelta,
+    CloudSyncRunStatus as SharedCloudSyncRunStatus,
+    CloudSyncRunnerConfig as SharedCloudSyncRunnerConfig,
+    CloudSyncRunnerError as SharedCloudSyncRunnerError,
+    CloudSyncRuntimeState as SharedCloudSyncRuntimeState,
+};
+use tiez_core::cloud_sync_webdav::{
+    build_webdav_http_client_with_timeout, collection_url as shared_webdav_collection_url,
+    fetch_json_with_retry as shared_fetch_webdav_json,
+    parse_op_references as shared_parse_webdav_op_refs,
+    parse_snapshot_ids as shared_parse_webdav_snapshot_ids,
+    resource_url as shared_webdav_resource_url, send_with_retry as shared_webdav_send_with_retry,
+    WebDavLayout as WebDavPaths, WebDavOpReference as WebDavOpRef, WebDavRetryPolicy,
+    WebDavTransport, WebDavTransportError,
+};
 use tokio::time::sleep;
 use urlencoding::decode;
 
@@ -40,6 +73,9 @@ const CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY: &str = "cloud_sync_webdav_blob_cache";
 const CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY: &str = "cloud_sync_webdav_last_snapshot_push_at";
 const CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY: &str = "cloud_sync_webdav_last_snapshot_pull_at";
 const CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY: &str = "cloud_sync_webdav_last_head_rebuild_at";
+const CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY: &str = "cloud_sync_settings_applied_at";
+const CLOUD_SYNC_CURSOR_KEY: &str = "cloud_sync_cursor";
+const CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY: &str = "cloud_sync_webdav_use_legacy_runner";
 const BLOB_KIND_IMAGE: &str = "image";
 const BLOB_KIND_CONTENT: &str = "content";
 const BLOB_KIND_HTML: &str = "html";
@@ -52,13 +88,6 @@ const WEBDAV_RETRY_BASE_DELAY_MS: u64 = 600;
 const WEBDAV_HEAD_REBUILD_INTERVAL_SECS: i64 = 5 * 60;
 const WEBDAV_HEAD_FILENAME: &str = "head.json";
 const WEBDAV_BLOB_CACHE_MAX_ENTRIES: usize = 5000;
-const HASH_VERSION_LEGACY: i64 = 1;
-const HASH_VERSION_WHITESPACE: i64 = 2;
-
-fn default_hash_version() -> i64 {
-    HASH_VERSION_LEGACY
-}
-
 static CLOUD_SYNC_TASK_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLOUD_SYNC_REQUESTED: AtomicBool = AtomicBool::new(false);
 static CLOUD_SYNC_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -95,48 +124,6 @@ pub struct CloudSyncStatus {
     pub received_items: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CloudSyncContentPrefs {
-    #[serde(default = "default_cloud_sync_pref_true")]
-    text: bool,
-    #[serde(default = "default_cloud_sync_pref_true")]
-    image: bool,
-    #[serde(rename = "file_path", default = "default_cloud_sync_pref_true")]
-    file_path: bool,
-    #[serde(default = "default_cloud_sync_pref_true")]
-    emoji: bool,
-}
-
-const fn default_cloud_sync_pref_true() -> bool {
-    true
-}
-
-impl Default for CloudSyncContentPrefs {
-    fn default() -> Self {
-        Self {
-            text: true,
-            image: true,
-            file_path: true,
-            emoji: true,
-        }
-    }
-}
-
-impl CloudSyncContentPrefs {
-    fn includes_content_type(&self, content_type: &str) -> bool {
-        if !is_cloud_clipboard_content_type(content_type) {
-            return false;
-        }
-        match content_type {
-            "image" => self.image,
-            "file" | "video" => self.file_path,
-            "emoji_sync" => self.emoji,
-            "text" | "code" | "url" | "rich_text" => self.text,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct CloudSyncConfig {
     enabled: bool,
@@ -155,37 +142,206 @@ struct CloudSyncConfig {
     content_prefs: CloudSyncContentPrefs,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CloudSyncItem {
-    pub content_type: String,
-    pub content: String,
-    #[serde(default)]
-    pub content_hash: i64,
-    #[serde(default = "default_hash_version")]
-    pub hash_version: i64,
-    #[serde(default)]
-    pub deleted_at: i64,
-    #[serde(default)]
-    pub html_content: Option<String>,
-    #[serde(default)]
-    pub content_blob_hash: Option<String>,
-    #[serde(default)]
-    pub html_blob_hash: Option<String>,
-    pub source_app: String,
-    pub timestamp: i64,
-    #[serde(default)]
-    pub updated_at: i64,
-    #[serde(default)]
-    pub updated_by: String,
-    pub preview: String,
-    #[serde(default)]
-    pub is_pinned: bool,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub use_count: i32,
-    #[serde(default)]
-    pub pinned_order: i64,
+struct TauriCloudSyncHost {
+    app: AppHandle,
+}
+
+impl TauriCloudSyncHost {
+    fn new(app: &AppHandle) -> Self {
+        Self { app: app.clone() }
+    }
+}
+
+impl SharedCloudSyncHost for TauriCloudSyncHost {
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        cloud_sync_cancel_requested()
+    }
+
+    fn load_runtime_state(
+        &mut self,
+    ) -> Result<SharedCloudSyncRuntimeState, SharedCloudSyncHostError> {
+        Ok(SharedCloudSyncRuntimeState {
+            local_op_seq: get_local_webdav_op_seq(&self.app),
+            op_cursors: load_webdav_op_cursor_map(&self.app).into_iter().collect(),
+            blob_cache: load_webdav_blob_cache(&self.app),
+            last_snapshot_push_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY,
+                0,
+            ),
+            last_snapshot_pull_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY,
+                0,
+            ),
+            last_head_rebuild_at: get_setting_i64(
+                &self.app,
+                CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY,
+                0,
+            ),
+            settings_applied_at: get_setting_i64(&self.app, CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY, 0),
+            cursor: get_setting_i64(&self.app, CLOUD_SYNC_CURSOR_KEY, 0),
+        })
+    }
+
+    fn save_runtime_state(
+        &mut self,
+        state: &SharedCloudSyncRuntimeState,
+    ) -> Result<(), SharedCloudSyncHostError> {
+        save_shared_runtime_state(&self.app, state)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn collect_local_items(
+        &mut self,
+        preferences: &CloudSyncContentPrefs,
+    ) -> Result<Vec<CloudSyncItem>, SharedCloudSyncHostError> {
+        collect_local_syncable_items(&self.app, preferences)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn collect_local_delta(
+        &mut self,
+        local_items: &[CloudSyncItem],
+    ) -> Result<SharedCloudSyncLocalDelta, SharedCloudSyncHostError> {
+        collect_local_incremental_items(&self.app, local_items)
+            .map(|(items, collapsed_index)| SharedCloudSyncLocalDelta {
+                items,
+                collapsed_index,
+            })
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn replace_local_index(
+        &mut self,
+        collapsed_index: &BTreeMap<String, CloudSyncItem>,
+    ) -> Result<(), SharedCloudSyncHostError> {
+        replace_local_sync_index(&self.app, collapsed_index)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn apply_remote_items(
+        &mut self,
+        remote_items: &[CloudSyncItem],
+        preferences: &CloudSyncContentPrefs,
+    ) -> Result<usize, SharedCloudSyncHostError> {
+        apply_remote_changes(&self.app, remote_items, preferences)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Storage, error))
+    }
+
+    fn prepare_upload_items(
+        &mut self,
+        items: &mut [CloudSyncItem],
+    ) -> Result<(), SharedCloudSyncHostError> {
+        for item in items {
+            *item = normalize_item_for_sync(item.clone()).ok_or_else(|| {
+                SharedCloudSyncHostError::new(
+                    SharedCloudSyncHostErrorKind::Payload,
+                    "prepare cloud sync payload failed",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn materialize_remote_image(
+        &mut self,
+        data_url: &str,
+    ) -> Result<String, SharedCloudSyncHostError> {
+        if let Some(data_dir) = get_app_data_dir(&self.app) {
+            if let Some(path) = crate::database::save_image_to_file(data_url, &data_dir) {
+                return Ok(path);
+            }
+        }
+        Ok(data_url.to_owned())
+    }
+
+    fn collect_syncable_settings(
+        &mut self,
+    ) -> Result<HashMap<String, String>, SharedCloudSyncHostError> {
+        collect_syncable_settings(&self.app)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Settings, error))
+    }
+
+    fn apply_synced_settings(
+        &mut self,
+        incoming: &HashMap<String, String>,
+    ) -> Result<usize, SharedCloudSyncHostError> {
+        apply_synced_settings(&self.app, incoming)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Settings, error))
+    }
+
+    fn next_emoji_operation(&mut self) -> Result<Option<CloudSyncItem>, SharedCloudSyncHostError> {
+        check_and_create_emoji_sync_op(&self.app)
+            .map_err(|error| shared_host_error(SharedCloudSyncHostErrorKind::Payload, error))
+    }
+
+    fn mark_emoji_uploaded(&mut self, content_hash: i64) {
+        LAST_PUSHED_EMOJI_HASH.store(content_hash, Ordering::Relaxed);
+    }
+
+    fn emit(&mut self, event: SharedCloudSyncHostEvent) {
+        match event {
+            // The existing outer `sync_once` wrapper remains the single owner of
+            // Tauri status storage and status events during the migration.
+            SharedCloudSyncHostEvent::Status(_) => {}
+            SharedCloudSyncHostEvent::HistoryChanged => {
+                let _ = self.app.emit("clipboard-changed", ());
+            }
+            SharedCloudSyncHostEvent::SettingsChanged => {
+                let _ = self.app.emit("settings-changed", ());
+            }
+        }
+    }
+}
+
+fn shared_host_error(
+    kind: SharedCloudSyncHostErrorKind,
+    error: impl std::fmt::Display,
+) -> SharedCloudSyncHostError {
+    SharedCloudSyncHostError::new(kind, error.to_string())
+}
+
+fn shared_runner_config(cfg: &CloudSyncConfig) -> SharedCloudSyncRunnerConfig {
+    SharedCloudSyncRunnerConfig::new(
+        &cfg.device_id,
+        &cfg.webdav_url,
+        &cfg.webdav_username,
+        &cfg.webdav_password,
+        &cfg.webdav_base_path,
+        cfg.interval_secs,
+        cfg.snapshot_interval_secs,
+        cfg.content_prefs.clone(),
+    )
+}
+
+fn shared_status_to_tauri(status: SharedCloudSyncRunStatus) -> CloudSyncStatus {
+    CloudSyncStatus {
+        state: status.state,
+        running: status.running,
+        last_sync_at: status.last_sync_at,
+        last_error: status.last_error,
+        uploaded_items: status.uploaded_items,
+        received_items: status.received_items,
+    }
+}
+
+fn map_shared_runner_error(error: SharedCloudSyncRunnerError) -> AppError {
+    match error {
+        SharedCloudSyncRunnerError::Transport(error) => map_webdav_transport_error(error),
+        SharedCloudSyncRunnerError::Protocol(message) => AppError::Validation(message),
+        SharedCloudSyncRunnerError::Host(error) => match error.kind() {
+            SharedCloudSyncHostErrorKind::Storage => AppError::Database(error.to_string()),
+            SharedCloudSyncHostErrorKind::Payload => AppError::Validation(error.to_string()),
+            SharedCloudSyncHostErrorKind::Settings | SharedCloudSyncHostErrorKind::Internal => {
+                AppError::Internal(error.to_string())
+            }
+        },
+    }
 }
 
 type LocalSyncEntryState = (
@@ -215,65 +371,6 @@ struct CloudSyncResponse {
     cursor: Option<i64>,
     #[serde(default)]
     entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavDeviceSnapshot {
-    device_id: String,
-    updated_at: i64,
-    #[serde(default)]
-    latest_op_seq: i64,
-    entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavSettingsSnapshot {
-    device_id: String,
-    updated_at: i64,
-    settings: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-struct WebDavPaths {
-    devices_path: String,
-    settings_path: String,
-    ops_path: String,
-    head_path: String,
-    blobs_path: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct WebDavOpsBatch {
-    device_id: String,
-    seq: i64,
-    updated_at: i64,
-    entries: Vec<CloudSyncItem>,
-}
-
-#[derive(Debug, Clone)]
-struct WebDavOpRef {
-    device_id: String,
-    seq: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct WebDavDeviceHead {
-    #[serde(default)]
-    latest_op_seq: i64,
-    #[serde(default)]
-    snapshot_updated_at: i64,
-    #[serde(default)]
-    snapshot_op_seq: i64,
-    #[serde(default)]
-    settings_updated_at: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct WebDavSyncHead {
-    #[serde(default)]
-    updated_at: i64,
-    #[serde(default)]
-    devices: BTreeMap<String, WebDavDeviceHead>,
 }
 
 fn now_ms() -> i64 {
@@ -533,36 +630,7 @@ fn is_cloud_clipboard_content_type(content_type: &str) -> bool {
 }
 
 fn is_setting_sync_eligible(key: &str) -> bool {
-    !matches!(
-        key,
-        "app.anon_id"
-            | "clipboard_relay_shared_key"
-            | "app.emoji_favorites"
-            | "app.last_ping_date"
-            | "app.window_width"
-            | "app.window_height"
-            | "app.tag_manager_size"
-            | "cloud_sync_enabled"
-            | "cloud_sync_auto"
-            | "cloud_sync_provider"
-            | "cloud_sync_server"
-            | "cloud_sync_api_key"
-            | "cloud_sync_interval_sec"
-            | "cloud_sync_snapshot_interval_min"
-            | "cloud_sync_cursor"
-            | "cloud_sync_webdav_url"
-            | "cloud_sync_webdav_username"
-            | "cloud_sync_webdav_password"
-            | "cloud_sync_webdav_base_path"
-            | "cloud_sync_content_prefs"
-            | "cloud_sync_webdav_local_seq"
-            | "cloud_sync_webdav_op_cursor_map"
-            | "cloud_sync_webdav_blob_cache"
-            | "cloud_sync_webdav_last_snapshot_push_at"
-            | "cloud_sync_webdav_last_snapshot_pull_at"
-            | "cloud_sync_webdav_last_head_rebuild_at"
-            | "cloud_sync_settings_applied_at"
-    )
+    shared_is_setting_sync_eligible(key)
 }
 
 fn to_data_url_from_path(path: &str) -> Option<String> {
@@ -826,25 +894,15 @@ fn normalize_item_for_sync(mut item: CloudSyncItem) -> Option<CloudSyncItem> {
 }
 
 fn uses_text_sync_hash(content_type: &str) -> bool {
-    uses_text_content_hash(content_type)
+    shared_uses_text_sync_hash(content_type)
 }
 
 fn compute_sync_content_hash(content_type: &str, content: &str) -> i64 {
-    match content_type {
-        "image" => crate::database::calc_image_hash(content).unwrap_or(0),
-        content_type if uses_text_sync_hash(content_type) => {
-            crate::database::calc_text_hash(content) as i64
-        }
-        _ => 0,
-    }
+    shared_compute_sync_content_hash(content_type, content)
 }
 
 fn compute_legacy_sync_content_hash(content_type: &str, content: &str) -> i64 {
-    if uses_text_sync_hash(content_type) {
-        calc_legacy_text_hash(content) as i64
-    } else {
-        compute_sync_content_hash(content_type, content)
-    }
+    shared_compute_legacy_sync_content_hash(content_type, content)
 }
 
 fn canonicalize_incoming_live_hash(item: &mut CloudSyncItem) {
@@ -880,62 +938,23 @@ fn canonicalize_incoming_live_hash(item: &mut CloudSyncItem) {
 }
 
 fn resolved_content_hash(item: &CloudSyncItem) -> i64 {
-    if item.content_hash != 0 {
-        item.content_hash
-    } else {
-        compute_sync_content_hash(&item.content_type, &item.content)
-    }
+    shared_resolved_content_hash(item)
 }
 
 fn item_updated_at(item: &CloudSyncItem) -> i64 {
-    if item.updated_at > 0 {
-        item.updated_at
-    } else {
-        item.timestamp
-    }
+    shared_item_updated_at(item)
 }
 
 fn item_revision(item: &CloudSyncItem) -> i64 {
-    item.deleted_at.max(item_updated_at(item))
+    shared_item_revision(item)
 }
 
 fn sync_key_for_item(item: &CloudSyncItem) -> Option<String> {
-    let hash = resolved_content_hash(item);
-    if hash == 0 {
-        return None;
-    }
-    Some(format!(
-        "{}:{}:{}",
-        item.content_type, item.hash_version, hash
-    ))
+    shared_sync_key_for_item(item)
 }
 
 fn sync_digest_for_item(item: &CloudSyncItem) -> String {
-    let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
-    let html_hash = item
-        .html_content
-        .as_ref()
-        .map(|v| crate::database::calc_text_hash(v))
-        .unwrap_or(0);
-    let preview_hash = crate::database::calc_text_hash(&item.preview);
-    let source_hash = crate::database::calc_text_hash(&item.source_app);
-    let meta = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        resolved_content_hash(item),
-        item.hash_version,
-        item.timestamp,
-        item.updated_at,
-        item.updated_by,
-        item.deleted_at,
-        item.is_pinned,
-        item.pinned_order,
-        item.use_count,
-        html_hash,
-        preview_hash,
-        source_hash,
-        crate::database::calc_text_hash(&tags_json)
-    );
-    crate::database::calc_text_hash(&meta).to_string()
+    shared_sync_digest_for_item(item)
 }
 
 async fn process_items_blobs_before_push(
@@ -1051,26 +1070,7 @@ async fn enrich_item_blobs_after_pull(
 }
 
 fn collapse_items_by_sync_key(items: &[CloudSyncItem]) -> BTreeMap<String, CloudSyncItem> {
-    let mut map: BTreeMap<String, CloudSyncItem> = BTreeMap::new();
-    for item in items {
-        let Some(key) = sync_key_for_item(item) else {
-            continue;
-        };
-        let mut normalized = item.clone();
-        normalized.content_hash = resolved_content_hash(item);
-
-        let replace = map
-            .get(&key)
-            .map(|old| {
-                (item_revision(&normalized), normalized.updated_by.as_str())
-                    >= (item_revision(old), old.updated_by.as_str())
-            })
-            .unwrap_or(true);
-        if replace {
-            map.insert(key, normalized);
-        }
-    }
-    map
+    shared_collapse_items_by_sync_key(items)
 }
 
 fn load_local_sync_index(app: &AppHandle) -> AppResult<HashMap<String, String>> {
@@ -1340,6 +1340,60 @@ fn save_webdav_blob_cache(app: &AppHandle, cache: &HashMap<String, i64>) {
             .settings_repo
             .set(CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY, &payload);
     }
+}
+
+fn save_shared_runtime_state(
+    app: &AppHandle,
+    state: &SharedCloudSyncRuntimeState,
+) -> AppResult<()> {
+    let cursor_map = serde_json::to_string(&state.op_cursors)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let blob_cache = serde_json::to_string(&state.blob_cache)
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let values = [
+        (
+            CLOUD_SYNC_WEBDAV_LOCAL_SEQ_KEY,
+            state.local_op_seq.to_string(),
+        ),
+        (CLOUD_SYNC_WEBDAV_OP_CURSOR_MAP_KEY, cursor_map),
+        (CLOUD_SYNC_WEBDAV_BLOB_CACHE_KEY, blob_cache),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PUSH_AT_KEY,
+            state.last_snapshot_push_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY,
+            state.last_snapshot_pull_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_WEBDAV_LAST_HEAD_REBUILD_AT_KEY,
+            state.last_head_rebuild_at.to_string(),
+        ),
+        (
+            CLOUD_SYNC_SETTINGS_APPLIED_AT_KEY,
+            state.settings_applied_at.to_string(),
+        ),
+        (CLOUD_SYNC_CURSOR_KEY, state.cursor.to_string()),
+    ];
+
+    let db_state = app
+        .try_state::<DbState>()
+        .ok_or_else(|| AppError::Internal("DB state unavailable".to_owned()))?;
+    let mut connection = db_state
+        .conn
+        .lock()
+        .map_err(|error| AppError::Internal(error.to_string()))?;
+    let transaction = connection.transaction().map_err(AppError::from)?;
+    for (key, value) in values {
+        transaction
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![key, value],
+            )
+            .map_err(AppError::from)?;
+    }
+    transaction.commit().map_err(AppError::from)
 }
 
 fn get_app_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -2177,22 +2231,23 @@ fn build_http_client() -> AppResult<Client> {
     Client::builder()
         .timeout(Duration::from_secs(WEBDAV_REQUEST_TIMEOUT_SECS))
         .build()
-        .map_err(|e| AppError::Network(e.to_string()))
+        .map_err(|error| AppError::Network(error.to_string()))
 }
 
-fn webdav_retry_delay(attempt: usize) -> Duration {
-    let factor = 1u64 << attempt.min(4);
-    Duration::from_millis(WEBDAV_RETRY_BASE_DELAY_MS.saturating_mul(factor))
+fn build_webdav_client(cfg: &CloudSyncConfig) -> AppResult<Client> {
+    let client =
+        build_webdav_http_client_with_timeout(Duration::from_secs(WEBDAV_REQUEST_TIMEOUT_SECS))
+            .map_err(map_webdav_transport_error)?;
+    shared_webdav_transport(&client, cfg)?;
+    Ok(client)
 }
 
-fn is_retryable_webdav_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::GATEWAY_TIMEOUT
-    )
+fn webdav_retry_policy() -> WebDavRetryPolicy {
+    WebDavRetryPolicy {
+        max_request_retries: WEBDAV_MAX_RETRIES,
+        max_json_read_retries: WEBDAV_JSON_READ_RETRIES,
+        base_delay: Duration::from_millis(WEBDAV_RETRY_BASE_DELAY_MS),
+    }
 }
 
 fn check_webdav_status_for_backoff(status: StatusCode) {
@@ -2206,36 +2261,37 @@ fn check_webdav_status_for_backoff(status: StatusCode) {
     }
 }
 
+fn map_webdav_transport_error(error: WebDavTransportError) -> AppError {
+    if let Some(status) = error
+        .status_code()
+        .and_then(|code| StatusCode::from_u16(code).ok())
+    {
+        check_webdav_status_for_backoff(status);
+    }
+    AppError::Network(error.to_string())
+}
+
+fn shared_webdav_transport(client: &Client, cfg: &CloudSyncConfig) -> AppResult<WebDavTransport> {
+    WebDavTransport::with_client(
+        client.clone(),
+        cfg.webdav_url.clone(),
+        cfg.webdav_username.clone(),
+        cfg.webdav_password.clone(),
+        cfg.device_id.clone(),
+    )
+    .map(|transport| transport.with_retry_policy(webdav_retry_policy()))
+    .map_err(map_webdav_transport_error)
+}
+
 async fn webdav_send_with_retry<F>(mut build_request: F) -> AppResult<Response>
 where
     F: FnMut() -> RequestBuilder,
 {
-    let mut last_error = None;
-
-    for attempt in 0..=WEBDAV_MAX_RETRIES {
-        match build_request().send().await {
-            Ok(resp) => {
-                check_webdav_status_for_backoff(resp.status());
-                if is_retryable_webdav_status(resp.status()) && attempt < WEBDAV_MAX_RETRIES {
-                    last_error = Some(format!("transient WebDAV status {}", resp.status()));
-                    sleep(webdav_retry_delay(attempt)).await;
-                    continue;
-                }
-                return Ok(resp);
-            }
-            Err(err) => {
-                last_error = Some(err.to_string());
-                if attempt < WEBDAV_MAX_RETRIES {
-                    sleep(webdav_retry_delay(attempt)).await;
-                    continue;
-                }
-            }
-        }
-    }
-
-    Err(AppError::Network(
-        last_error.unwrap_or_else(|| "webdav request failed".to_string()),
-    ))
+    let response = shared_webdav_send_with_retry(|| build_request(), webdav_retry_policy())
+        .await
+        .map_err(map_webdav_transport_error)?;
+    check_webdav_status_for_backoff(response.status());
+    Ok(response)
 }
 
 fn webdav_with_auth(req: RequestBuilder, cfg: &CloudSyncConfig) -> RequestBuilder {
@@ -2246,44 +2302,12 @@ fn webdav_with_auth(req: RequestBuilder, cfg: &CloudSyncConfig) -> RequestBuilde
     }
 }
 
-fn encode_webdav_relative_path(relative_path: &str, collection: bool) -> String {
-    let mut encoded = relative_path
-        .replace('\\', "/")
-        .split('/')
-        .filter_map(|segment| {
-            let trimmed = segment.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(urlencoding::encode(trimmed).into_owned())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    if collection && !encoded.is_empty() {
-        encoded.push('/');
-    }
-
-    encoded
-}
-
 fn webdav_resource_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
-    let encoded = encode_webdav_relative_path(relative_path, false);
-    if encoded.is_empty() {
-        cfg.webdav_url.trim_end_matches('/').to_string()
-    } else {
-        format!("{}/{}", cfg.webdav_url.trim_end_matches('/'), encoded)
-    }
+    shared_webdav_resource_url(&cfg.webdav_url, relative_path)
 }
 
 fn webdav_collection_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
-    let encoded = encode_webdav_relative_path(relative_path, true);
-    if encoded.is_empty() {
-        format!("{}/", cfg.webdav_url.trim_end_matches('/'))
-    } else {
-        format!("{}/{}", cfg.webdav_url.trim_end_matches('/'), encoded)
-    }
+    shared_webdav_collection_url(&cfg.webdav_url, relative_path)
 }
 
 fn webdav_url_for(cfg: &CloudSyncConfig, relative_path: &str) -> String {
@@ -2364,55 +2388,10 @@ async fn delete_webdav_resource_if_exists(
     cfg: &CloudSyncConfig,
     relative_path: &str,
 ) -> AppResult<()> {
-    let url = webdav_url_for(cfg, relative_path);
-    let resp = webdav_send_with_retry(|| webdav_with_auth(client.delete(&url), cfg)).await?;
-
-    if resp.status().is_success() || resp.status().as_u16() == 404 {
-        return Ok(());
-    }
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(AppError::Network(format!(
-        "webdav DELETE cleanup failed for {}: {} {}",
-        url, status, text
-    )))
-}
-
-async fn move_webdav_resource(
-    client: &Client,
-    cfg: &CloudSyncConfig,
-    from_relative: &str,
-    to_relative: &str,
-) -> AppResult<bool> {
-    let from_url = webdav_url_for(cfg, from_relative);
-    let destination = webdav_url_for(cfg, to_relative);
-    let resp = webdav_send_with_retry(|| {
-        let method = Method::from_bytes(b"MOVE").expect("MOVE is a valid HTTP method");
-        webdav_with_auth(
-            client
-                .request(method, &from_url)
-                .header("Destination", destination.clone())
-                .header("Overwrite", "T"),
-            cfg,
-        )
-    })
-    .await?;
-
-    if resp.status().is_success() {
-        return Ok(true);
-    }
-
-    if matches!(resp.status().as_u16(), 405 | 409 | 412 | 501) {
-        return Ok(false);
-    }
-
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    Err(AppError::Network(format!(
-        "webdav MOVE publish failed for {} -> {}: {} {}",
-        from_url, destination, status, text
-    )))
+    shared_webdav_transport(client, cfg)?
+        .delete_if_exists(relative_path)
+        .await
+        .map_err(map_webdav_transport_error)
 }
 
 async fn upload_webdav_bytes_resource(
@@ -2423,64 +2402,10 @@ async fn upload_webdav_bytes_resource(
     content_type: &str,
     label: &str,
 ) -> AppResult<()> {
-    async fn upload_target(
-        client: &Client,
-        cfg: &CloudSyncConfig,
-        url: &str,
-        payload: &[u8],
-        content_type: &str,
-        label: &str,
-    ) -> AppResult<()> {
-        let url_owned = url.to_string();
-        let payload_owned = payload.to_vec();
-        let content_type_owned = content_type.to_string();
-
-        let resp = webdav_send_with_retry(|| {
-            webdav_with_auth(
-                client
-                    .put(&url_owned)
-                    .header("Content-Type", &content_type_owned)
-                    .body(payload_owned.clone()),
-                cfg,
-            )
-        })
-        .await?;
-
-        if resp.status().is_success() {
-            return Ok(());
-        }
-
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        Err(AppError::Network(format!(
-            "webdav PUT {} failed: {} {}",
-            label, status, text
-        )))
-    }
-
-    let final_url = webdav_url_for(cfg, relative_path);
-    let temp_relative = format!(
-        "{}.uploading.{}.{}.tmp",
-        relative_path.trim_end_matches('/'),
-        cfg.device_id,
-        now_ms()
-    );
-    let temp_url = webdav_url_for(cfg, &temp_relative);
-
-    upload_target(client, cfg, &temp_url, &body, content_type, label).await?;
-
-    match move_webdav_resource(client, cfg, &temp_relative, relative_path).await {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            let fallback = upload_target(client, cfg, &final_url, &body, content_type, label).await;
-            let _ = delete_webdav_resource_if_exists(client, cfg, &temp_relative).await;
-            fallback
-        }
-        Err(err) => {
-            let _ = delete_webdav_resource_if_exists(client, cfg, &temp_relative).await;
-            Err(err)
-        }
-    }
+    shared_webdav_transport(client, cfg)?
+        .put_bytes_atomic(relative_path, &body, content_type, label)
+        .await
+        .map_err(map_webdav_transport_error)
 }
 
 async fn upload_webdav_json_resource(
@@ -2503,47 +2428,15 @@ where
     T: for<'de> Deserialize<'de>,
     F: FnMut() -> RequestBuilder,
 {
-    for attempt in 0..=WEBDAV_JSON_READ_RETRIES {
-        let resp = webdav_send_with_retry(|| make_request()).await?;
-
-        let status_code = resp.status().as_u16();
-        if status_code == missing_status {
-            return Ok(None);
-        }
-
-        // 兼容坚果云：如果父目录不存在，GET 可能返回 409 Conflict (AncestorsNotFound)
-        if status_code == 409 {
-            return Ok(None);
-        }
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Network(format!(
-                "{}: {} {}",
-                fetch_error_label, status, text
-            )));
-        }
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| AppError::Network(e.to_string()))?;
-        match serde_json::from_slice::<T>(&bytes) {
-            Ok(parsed) => return Ok(Some(parsed)),
-            Err(err)
-                if matches!(err.classify(), serde_json::error::Category::Eof)
-                    && attempt < WEBDAV_JSON_READ_RETRIES =>
-            {
-                sleep(webdav_retry_delay(attempt)).await;
-            }
-            Err(err) => return Err(AppError::Network(format!("{}: {}", parse_error_label, err))),
-        }
-    }
-
-    Err(AppError::Network(format!(
-        "{}: exhausted retries",
-        parse_error_label
-    )))
+    shared_fetch_webdav_json(
+        || make_request(),
+        missing_status,
+        fetch_error_label,
+        parse_error_label,
+        webdav_retry_policy(),
+    )
+    .await
+    .map_err(map_webdav_transport_error)
 }
 
 async fn ensure_webdav_directories(
@@ -2634,63 +2527,14 @@ async fn download_webdav_blob(
     kind: &str,
     hash: &str,
 ) -> AppResult<Vec<u8>> {
-    let blob_file_path = get_blob_path(base_blobs, kind, hash);
-    let url = webdav_url_for(cfg, &blob_file_path);
-    let resp = webdav_with_auth(client.get(&url), cfg)
-        .send()
+    shared_webdav_transport(client, cfg)?
+        .download_blob(base_blobs, kind, hash)
         .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-
-    if !resp.status().is_success() {
-        return Err(AppError::Network(format!(
-            "webdav GET blob failed: {} ({})",
-            resp.status(),
-            blob_file_path
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
-    Ok(bytes.to_vec())
+        .map_err(map_webdav_transport_error)
 }
 
 fn parse_webdav_snapshot_ids(xml: &str) -> Vec<String> {
-    let Ok(re) = Regex::new(r"(?is)<[^>]*href[^>]*>\s*([^<]+)\s*</[^>]*href>") else {
-        return Vec::new();
-    };
-
-    let mut ids = Vec::new();
-    for caps in re.captures_iter(xml) {
-        let Some(raw_match) = caps.get(1) else {
-            continue;
-        };
-        let raw_href = raw_match.as_str().trim();
-        if raw_href.is_empty() {
-            continue;
-        }
-
-        let decoded_href = urlencoding::decode(raw_href)
-            .map(|v| v.into_owned())
-            .unwrap_or_else(|_| raw_href.to_string());
-
-        let normalized = decoded_href.trim_end_matches('/');
-        let Some(file_name) = normalized.rsplit('/').next() else {
-            continue;
-        };
-
-        let Some(device_id) = file_name.strip_suffix(".json") else {
-            continue;
-        };
-        if device_id.is_empty() {
-            continue;
-        }
-        if ids.iter().any(|existing| existing == device_id) {
-            continue;
-        }
-        ids.push(device_id.to_string());
-    }
-    ids
+    shared_parse_webdav_snapshot_ids(xml)
 }
 
 async fn upload_webdav_snapshot(
@@ -2805,53 +2649,13 @@ async fn upload_webdav_ops_batch(
 }
 
 fn parse_webdav_op_refs(xml: &str) -> Vec<WebDavOpRef> {
-    let Ok(re_href) = Regex::new(r"(?is)<[^>]*href[^>]*>\s*([^<]+)\s*</[^>]*href>") else {
-        return Vec::new();
-    };
-    let Ok(re_file) = Regex::new(r"^(.+)__(\d+)\.json$") else {
-        return Vec::new();
-    };
-
-    let mut refs: HashMap<String, WebDavOpRef> = HashMap::new();
-    let _start = std::time::Instant::now();
-    for caps in re_href.captures_iter(xml) {
-        let Some(raw_match) = caps.get(1) else {
-            continue;
-        };
-        let raw_href = raw_match.as_str().trim();
-        if raw_href.is_empty() {
-            continue;
-        }
-
-        let decoded_href = urlencoding::decode(raw_href)
-            .map(|v| v.into_owned())
-            .unwrap_or_else(|_| raw_href.to_string());
-        let normalized = decoded_href.trim_end_matches('/');
-        let Some(file_name) = normalized.rsplit('/').next() else {
-            continue;
-        };
-        let Some(file_caps) = re_file.captures(file_name) else {
-            continue;
-        };
-        let Some(device_id_match) = file_caps.get(1) else {
-            continue;
-        };
-        let Some(seq_match) = file_caps.get(2) else {
-            continue;
-        };
-        let Ok(seq) = seq_match.as_str().parse::<i64>() else {
-            continue;
-        };
-        let device_id = device_id_match.as_str().to_string();
-        let dedup_key = format!("{}:{}", device_id, seq);
-        refs.entry(dedup_key)
-            .or_insert(WebDavOpRef { device_id, seq });
-    }
-
-    let mut out: Vec<WebDavOpRef> = refs.into_values().collect();
-
-    out.sort_by(|a, b| a.device_id.cmp(&b.device_id).then(a.seq.cmp(&b.seq)));
-    out
+    shared_parse_webdav_op_refs(xml)
+        .into_iter()
+        .map(|op_ref| WebDavOpRef {
+            device_id: op_ref.device_id,
+            seq: op_ref.seq,
+        })
+        .collect()
 }
 
 async fn list_webdav_op_refs(
@@ -3080,8 +2884,7 @@ fn update_webdav_head_device<F>(head: &mut WebDavSyncHead, device_id: &str, mut 
 where
     F: FnMut(&mut WebDavDeviceHead),
 {
-    let entry = head.devices.entry(device_id.to_string()).or_default();
-    update(entry);
+    shared_update_head_device(head, device_id, |device| update(device));
 }
 
 async fn fetch_webdav_sync_head(
@@ -3373,10 +3176,7 @@ async fn cleanup_local_webdav_ops(
 }
 
 fn should_run_periodic_snapshot(last_ts: i64, now: i64, interval_secs: i64) -> bool {
-    if last_ts <= 0 {
-        return true;
-    }
-    now.saturating_sub(last_ts) >= interval_secs.saturating_mul(1000)
+    shared_should_run_periodic_snapshot(last_ts, now, interval_secs)
 }
 
 fn should_push_webdav_snapshot(app: &AppHandle, now: i64, snapshot_interval_secs: i64) -> bool {
@@ -3391,11 +3191,13 @@ fn should_pull_webdav_snapshot(
     snapshot_interval_secs: i64,
 ) -> bool {
     let last = get_setting_i64(app, CLOUD_SYNC_WEBDAV_LAST_SNAPSHOT_PULL_AT_KEY, 0);
-    if !has_remote_op_cursor {
-        // Cold-start fallback for new peers without op cursors yet.
-        return should_run_periodic_snapshot(last, now, (5 * 60).min(snapshot_interval_secs));
-    }
-    should_run_periodic_snapshot(last, now, snapshot_interval_secs)
+    shared_should_pull_snapshot(
+        false,
+        last,
+        now,
+        has_remote_op_cursor,
+        snapshot_interval_secs,
+    )
 }
 
 async fn pull_remote_webdav_ops(
@@ -3516,6 +3318,36 @@ async fn sync_once_http(app: &AppHandle, cfg: &CloudSyncConfig) -> AppResult<Clo
     })
 }
 
+fn use_legacy_webdav_runner(app: &AppHandle) -> bool {
+    app.try_state::<DbState>()
+        .and_then(|db| {
+            db.settings_repo
+                .get(CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY)
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|value| legacy_webdav_runner_requested(&value))
+}
+
+fn legacy_webdav_runner_requested(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("true")
+}
+
+async fn sync_once_webdav_shared(
+    app: &AppHandle,
+    cfg: &CloudSyncConfig,
+    force_snapshot: bool,
+) -> AppResult<CloudSyncStatus> {
+    let mut host = TauriCloudSyncHost::new(app);
+    let status = shared_run_webdav_once(&mut host, &shared_runner_config(cfg), force_snapshot)
+        .await
+        .map_err(map_shared_runner_error)?;
+    if let Some(timestamp) = status.last_sync_at {
+        CLOUD_SYNC_LAST_SYNC_AT.store(timestamp, Ordering::Relaxed);
+    }
+    Ok(shared_status_to_tauri(status))
+}
+
 async fn sync_once_webdav(
     app: &AppHandle,
     cfg: &CloudSyncConfig,
@@ -3527,7 +3359,7 @@ async fn sync_once_webdav(
     let now = now_ms();
     let local_items = collect_local_syncable_items(app, &cfg.content_prefs)?;
     let (delta_items, collapsed_index) = collect_local_incremental_items(app, &local_items)?;
-    let client = build_http_client()?;
+    let client = build_webdav_client(cfg)?;
     let paths = ensure_webdav_directories(&client, cfg).await?;
     let mut sync_head = resolve_webdav_sync_head(app, &client, cfg, &paths, now).await?;
     let mut webdav_blob_cache = load_webdav_blob_cache(app);
@@ -3773,7 +3605,10 @@ async fn sync_once(
 
     let result = match cfg.provider {
         CloudSyncProvider::Http => sync_once_http(app, cfg).await,
-        CloudSyncProvider::WebDav => sync_once_webdav(app, cfg, force_snapshot).await,
+        CloudSyncProvider::WebDav if use_legacy_webdav_runner(app) => {
+            sync_once_webdav(app, cfg, force_snapshot).await
+        }
+        CloudSyncProvider::WebDav => sync_once_webdav_shared(app, cfg, force_snapshot).await,
     };
 
     match result {
@@ -4111,11 +3946,13 @@ mod tests {
         apply_remote_emoji_item, apply_remote_live_item_with_conn,
         apply_remote_tombstone_with_conn, canonicalize_incoming_live_hash,
         clear_matching_tombstones, collapse_items_by_sync_key, decode_persisted_sync_text,
-        emoji_sync_payload_hash, find_existing_entry_for_sync, load_persisted_sync_item,
-        matching_tombstone_deleted_at, merged_emoji_suppression_hash, normalize_item_for_sync,
-        record_remote_sync_digest, remote_tombstone_matches_stored_entry,
-        rewrite_rich_html_resources_for_sync, sync_digest_for_item, sync_key_for_item,
-        update_existing_entry_from_sync, CloudSyncItem, HASH_VERSION_LEGACY,
+        emoji_sync_payload_hash, find_existing_entry_for_sync, is_setting_sync_eligible,
+        legacy_webdav_runner_requested, load_persisted_sync_item, matching_tombstone_deleted_at,
+        merged_emoji_suppression_hash, normalize_item_for_sync, record_remote_sync_digest,
+        remote_tombstone_matches_stored_entry, rewrite_rich_html_resources_for_sync,
+        shared_runner_config, shared_status_to_tauri, sync_digest_for_item, sync_key_for_item,
+        update_existing_entry_from_sync, CloudSyncConfig, CloudSyncItem, CloudSyncProvider,
+        SharedCloudSyncRunStatus, CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY, HASH_VERSION_LEGACY,
         HASH_VERSION_WHITESPACE, RICH_IMAGE_FALLBACK_PREFIX, RICH_IMAGE_FALLBACK_SUFFIX,
     };
     use crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository;
@@ -4160,6 +3997,61 @@ mod tests {
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             use_count: 0,
             pinned_order: 0,
+        }
+    }
+
+    #[test]
+    fn shared_runner_adapter_preserves_config_and_status_contracts() {
+        let config = CloudSyncConfig {
+            enabled: true,
+            auto_sync: true,
+            provider: CloudSyncProvider::WebDav,
+            base_url: String::new(),
+            api_key: String::new(),
+            device_id: "aaaaaaaa".to_owned(),
+            interval_secs: 120,
+            snapshot_interval_secs: 43_200,
+            cursor: 0,
+            webdav_url: "https://dav.example.test/root".to_owned(),
+            webdav_username: "user".to_owned(),
+            webdav_password: "secret".to_owned(),
+            webdav_base_path: "tiez-sync".to_owned(),
+            content_prefs: super::CloudSyncContentPrefs::default(),
+        };
+        let shared = shared_runner_config(&config);
+        assert_eq!(shared.device_id, config.device_id);
+        assert_eq!(shared.webdav_url, config.webdav_url);
+        assert_eq!(shared.webdav_username, config.webdav_username);
+        assert_eq!(shared.webdav_password, config.webdav_password);
+        assert_eq!(shared.snapshot_interval_secs, 43_200);
+
+        let status = shared_status_to_tauri(SharedCloudSyncRunStatus::idle(42, 2, 3));
+        assert_eq!(status.state, "idle");
+        assert_eq!(status.last_sync_at, Some(42));
+        assert_eq!(status.uploaded_items, 2);
+        assert_eq!(status.received_items, 3);
+    }
+
+    #[test]
+    fn legacy_runner_escape_hatch_is_local_only_and_strict() {
+        assert!(legacy_webdav_runner_requested(" TRUE "));
+        assert!(!legacy_webdav_runner_requested("1"));
+        assert!(!legacy_webdav_runner_requested("false"));
+        assert!(!is_setting_sync_eligible(
+            CLOUD_SYNC_WEBDAV_USE_LEGACY_RUNNER_KEY
+        ));
+    }
+
+    #[test]
+    fn cloud_setting_sync_rejects_all_database_sensitive_keys() {
+        for key in [
+            "mqtt_password",
+            "mqtt_username",
+            "ai_profiles",
+            "cloud_sync_api_key",
+            "cloud_sync_webdav_password",
+        ] {
+            assert!(!is_setting_sync_eligible(key), "{key}");
         }
     }
 

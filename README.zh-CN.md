@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/badge/status-community%20maintained-4CAF50" alt="社区维护" />
     <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/license-GPL--3.0-FF9800" alt="GPL-3.0 协议" /></a>
     <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-f44336" alt="Windows、Linux 和 macOS" />
-    <img src="https://img.shields.io/badge/stack-Tauri%202%20%7C%20React%20%7C%20Rust-2196F3" alt="Tauri 2、React 和 Rust" />
+    <img src="https://img.shields.io/badge/stack-WinUI%203%20(Windows)%20%7C%20Tauri%202%20(Linux%2FmacOS)%20%7C%20Rust-2196F3" alt="Windows 使用 WinUI 3，Linux 和 macOS 使用 Tauri 2，核心使用 Rust" />
   </p>
   <p>
     <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
@@ -52,12 +52,14 @@ TieZ 将常用剪贴板内容保留在本地，不依赖托管服务存储历史
 
 | 平台 | 运行环境 | 安装包 |
 | :--- | :--- | :--- |
-| **Windows** | Windows 10 或 11，x64 | NSIS `.exe`、MSI `.msi` |
+| **Windows** | Windows 10 或 11，x64 | 已签名 MSIX `.msix`、App Installer `.appinstaller` |
 | **Linux** | Ubuntu 22.04 或兼容的 x64 桌面环境 | DEB `.deb`、AppImage |
 | **macOS** | macOS 11+，Apple Silicon 或 Intel | DMG `.dmg` |
 
 ### 平台说明
 
+- **Windows 原生界面：** 正式发布的 Windows 版使用中文优先的 WinUI 3 原生主窗口，不再随主窗口分发 WebView2 运行时；App Installer 负责校验发布者签名并原位升级。
+- **从旧版 Windows 安装迁移：** 请先导出 TieZ 备份并彻底退出旧版托盘进程，再优先安装 `.appinstaller`（也可安装 `.msix`）。确认原生版能够读取原有历史后，才卸载旧 NSIS/MSI 包。不要让两种程序同时访问同一数据目录；共享数据库互斥锁会拒绝第二个写入进程。
 - **Linux 剪贴板采集：** 支持 X11/XWayland，以及实现 data-control 协议的 Wayland 桌面环境。
 - **Linux 自动粘贴：** X11 使用 `xdotool`，Wayland 使用 `wtype`。如果两者均不可用，TieZ 会将目标内容留在剪贴板中，供用户手动粘贴。
 - **macOS 权限：** 剪贴板历史和自动粘贴可能需要在系统设置中授予 Pasteboard 与辅助功能权限。
@@ -67,7 +69,18 @@ TieZ 将常用剪贴板内容保留在本地，不依赖托管服务存储历史
 
 ## 本地开发
 
-请先安装 [Node.js LTS](https://nodejs.org/)、[Rust 工具链](https://www.rust-lang.org/tools/install)，以及当前平台所需的 [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)。
+开发正式 Windows 应用时，请安装 Node.js LTS、Rust、PowerShell 7，以及带“使用 C++ 的桌面开发”工作负载的 Visual Studio 2022，然后构建 WinUI 原生版本：
+
+```powershell
+npm install
+npm run winui:build
+npm run winui:test:release
+npm run winui:package
+```
+
+发布就绪命令会启动 5 个互相隔离的原生进程，在首个进程中执行 100 次显示/关闭到托盘循环，并在允许发布 Windows 安装包前强制检查启动延迟和内存上限。
+
+Linux/macOS 开发以及 Windows 源码级回退仍保留 Tauri 前端，并需要对应平台的 Tauri 2 前置依赖：
 
 ```bash
 npm install
@@ -80,6 +93,7 @@ npm run tauri:dev
 npm test
 npm run build
 npm run test:rust
+npm run verify:windows-release
 ```
 
 贡献范围和 PR 要求请查看 [CONTRIBUTING.md](./CONTRIBUTING.md)。

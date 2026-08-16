@@ -1,0 +1,11 @@
+node_modules/
+dist/
+crates/tiez-core/target/
+src-tauri/target/
+src-tauri/gen/
+experiments/winui3-main-window/.tools/
+experiments/winui3-main-window/artifacts/
+experiments/winui3-main-window/packages/
+experiments/winui3-main-window/rust-core/target/
+experiments/winui3-main-window/winui-app/Generated Files/
+experiments/winui3-main-window/x64/

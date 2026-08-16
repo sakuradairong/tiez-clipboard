@@ -21,6 +21,8 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{App, AppHandle, Emitter, Manager};
+use tiez_core::data_directory::resolve_data_directory;
+use tiez_core::runtime_instance::DatabaseInstanceGuard;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HINSTANCE, HWND, POINT, RECT};
 #[cfg(target_os = "windows")]
@@ -37,6 +39,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 static WINDOW_SIZE_SAVE_PENDING: AtomicBool = AtomicBool::new(false);
 static LAST_WINDOW_SIZE_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_WINDOW_SIZE: OnceLock<Mutex<(u32, u32)>> = OnceLock::new();
+static DATABASE_INSTANCE_GUARD: OnceLock<DatabaseInstanceGuard> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug)]
 struct WindowRect {
@@ -54,6 +57,18 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Data Directory & Migration
     let app_dir = resolve_data_dir(app)?;
+    let db_path = app_dir.join("clipboard.db");
+
+    let instance_guard = DatabaseInstanceGuard::acquire(&db_path).map_err(|error| {
+        let message = format!(
+            "另一个 TieZ 实例正在使用此数据目录。请先退出 Tauri 或 WinUI 版本后再试。\n\n{error}"
+        );
+        WindowExt::show_error_box("TieZ 启动错误", &message);
+        error
+    })?;
+    DATABASE_INSTANCE_GUARD
+        .set(instance_guard)
+        .map_err(|_| "数据库实例守卫已初始化")?;
 
     // Apply a previously validated restore before opening the database.
     if let Err(error) = crate::services::backup::apply_pending_restore(&app_dir) {
@@ -65,7 +80,6 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     info!(">>> [STARTUP] TieZ starting up...");
 
     // 3. Database Initialization
-    let db_path = app_dir.join("clipboard.db");
     let db_path_str = db_path.to_string_lossy();
     let conn = database::init_db(&db_path_str).map_err(|e| {
         let err_msg = format!("数据库初始化失败: {}", e);
@@ -162,31 +176,8 @@ fn resolve_data_dir(app: &App) -> Result<std::path::PathBuf, Box<dyn std::error:
         }
     });
 
-    let redirect_file = default_app_dir.join("datapath.txt");
-    let mut app_dir = if redirect_file.exists() {
-        if let Ok(content) = std::fs::read_to_string(&redirect_file) {
-            let custom_path = content.trim();
-            if !custom_path.is_empty() && std::path::Path::new(custom_path).exists() {
-                std::path::PathBuf::from(custom_path)
-            } else {
-                default_app_dir.clone()
-            }
-        } else {
-            default_app_dir.clone()
-        }
-    } else {
-        default_app_dir.clone()
-    };
-
-    // Portable mode check
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let portable_data = exe_dir.join("data");
-            if portable_data.exists() && portable_data.is_dir() {
-                app_dir = portable_data;
-            }
-        }
-    }
+    let executable_path = std::env::current_exe().ok();
+    let app_dir = resolve_data_directory(&default_app_dir, executable_path.as_deref()).path;
 
     std::fs::create_dir_all(&app_dir)?;
     Ok(app_dir)

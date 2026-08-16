@@ -38,10 +38,7 @@ pub fn set_paste_queue(
     }
 
     let mut queue = state.inner().0.lock().unwrap();
-    queue.items.clear();
-    for id in item_ids {
-        queue.items.push_back(id);
-    }
+    tiez_core::paste_coordinator::replace_paste_ids(&mut queue.items, item_ids, usize::MAX);
     queue.last_action_was_paste = false;
     queue.last_pasted_content = None;
     queue.last_pasted_fingerprint = None;
