@@ -20,6 +20,8 @@ namespace
     constexpr UINT kRelaySendHotkeyId = 2;
     constexpr UINT kRelayFetchHotkeyId = 3;
     constexpr UINT kSearchHotkeyId = 4;
+    constexpr UINT kRichPasteHotkeyId = 5;
+    constexpr UINT kPlainPasteHotkeyId = 6;
     constexpr UINT_PTR kMessageWindowSubclassId = 1;
     constexpr UINT_PTR kMainWindowSubclassId = 2;
     constexpr UINT_PTR kHoverPreviewSubclassId = 3;
@@ -82,6 +84,23 @@ namespace
             --last;
         }
         return std::wstring{ value.substr(first, last - first) };
+    }
+
+    void ReleasePasteShortcutModifiers()
+    {
+        WORD const keys[] = { VK_LWIN, VK_RWIN, VK_MENU, VK_CONTROL, VK_SHIFT };
+        INPUT inputs[std::size(keys)]{};
+        for (std::size_t index = 0; index < std::size(keys); ++index)
+        {
+            inputs[index].type = INPUT_KEYBOARD;
+            inputs[index].ki.wVk = keys[index];
+            inputs[index].ki.dwFlags = KEYEVENTF_KEYUP;
+        }
+        SendInput(
+            static_cast<UINT>(std::size(inputs)),
+            inputs,
+            static_cast<int>(sizeof(INPUT)));
+        Sleep(50);
     }
 
     std::wstring UpperAscii(std::wstring value)
@@ -1058,6 +1077,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             LoadSettings();
             LoadRelayHotkeys();
             LoadSearchHotkey();
+            LoadPasteHotkeys();
             RefreshAutostartStateAsync(true);
             if (m_productionData && !m_settingsReadOnly)
             {
@@ -5704,6 +5724,242 @@ namespace winrt::Tiez::WinUIProbe::implementation
         SetStatus(winrt::hstring{ message });
     }
 
+    void MainWindow::LoadPasteHotkeys()
+    {
+        if (!m_core || m_hotkeyHwnd == nullptr)
+        {
+            return;
+        }
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(m_core->PasteHotkeys()));
+            m_pasteHotkeysAvailable = response.GetNamedBoolean(L"available", false);
+            m_pasteHotkeysReadOnly = response.GetNamedBoolean(L"read_only", true);
+            m_deleteAfterPaste = response.GetNamedBoolean(L"delete_after_paste", false);
+            auto const richHotkey = response.GetNamedString(L"rich_hotkey", L"");
+            auto const plainHotkey = response.GetNamedString(L"plain_hotkey", L"");
+            m_configuredRichPasteHotkey = richHotkey;
+            m_configuredPlainPasteHotkey = plainHotkey;
+            auto const canRegister = m_pasteHotkeysAvailable && !m_pasteHotkeysReadOnly;
+            auto const richApplied = ApplyRelayHotkey(
+                kRichPasteHotkeyId,
+                canRegister ? richHotkey : winrt::hstring{},
+                m_richPasteHotkeyRegistered,
+                m_richPasteHotkeyModifiers,
+                m_richPasteHotkeyVirtualKey,
+                m_registeredRichPasteHotkey,
+                L"富文本粘贴");
+            auto const plainApplied = ApplyRelayHotkey(
+                kPlainPasteHotkeyId,
+                canRegister ? plainHotkey : winrt::hstring{},
+                m_plainPasteHotkeyRegistered,
+                m_plainPasteHotkeyModifiers,
+                m_plainPasteHotkeyVirtualKey,
+                m_registeredPlainPasteHotkey,
+                L"纯文本粘贴");
+
+            if (m_richPasteHotkeyEditor)
+            {
+                m_richPasteHotkeyEditor.Text(richHotkey);
+                m_richPasteHotkeyEditor.IsEnabled(
+                    m_pasteHotkeysAvailable && !m_pasteHotkeysReadOnly);
+            }
+            if (m_plainPasteHotkeyEditor)
+            {
+                m_plainPasteHotkeyEditor.Text(plainHotkey);
+                m_plainPasteHotkeyEditor.IsEnabled(
+                    m_pasteHotkeysAvailable && !m_pasteHotkeysReadOnly);
+            }
+            if (m_richPasteHotkeyApplyButton)
+            {
+                m_richPasteHotkeyApplyButton.IsEnabled(
+                    m_pasteHotkeysAvailable && !m_pasteHotkeysReadOnly);
+            }
+            if (m_plainPasteHotkeyApplyButton)
+            {
+                m_plainPasteHotkeyApplyButton.IsEnabled(
+                    m_pasteHotkeysAvailable && !m_pasteHotkeysReadOnly);
+            }
+            if (m_pasteHotkeyStatus)
+            {
+                std::wstring message;
+                if (!m_pasteHotkeysAvailable)
+                {
+                    auto const reason = response.GetNamedValue(L"unavailable_reason");
+                    message = reason.ValueType() == JsonValueType::String
+                        ? reason.GetString().c_str()
+                        : L"当前运行模式不支持粘贴快捷键。";
+                }
+                else if (m_pasteHotkeysReadOnly)
+                {
+                    message = L"当前数据库为只读，粘贴操作和两项全局快捷键均已停用。";
+                }
+                else
+                {
+                    message = richHotkey.empty()
+                        ? L"富文本：未设置"
+                        : richApplied ? L"富文本：已启用 " : L"富文本：当前不可用 ";
+                    if (!richHotkey.empty())
+                    {
+                        message.append(richHotkey.c_str(), richHotkey.size());
+                    }
+                    message.append(plainHotkey.empty()
+                        ? L"；纯文本：未设置"
+                        : plainApplied ? L"；纯文本：已启用 " : L"；纯文本：当前不可用 ");
+                    if (!plainHotkey.empty())
+                    {
+                        message.append(plainHotkey.c_str(), plainHotkey.size());
+                    }
+                    message.append(m_deleteAfterPaste
+                        ? L"。已启用“粘贴后删除”；置顶或带标签记录仍会保留。"
+                        : L"。粘贴后保留历史记录。");
+                }
+                m_pasteHotkeyStatus.Text(winrt::hstring{ message });
+            }
+        }
+        catch (std::exception const& error)
+        {
+            auto const message = StatusMessage(
+                L"读取粘贴快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            if (m_pasteHotkeyStatus) m_pasteHotkeyStatus.Text(message);
+            SetStatus(message);
+        }
+    }
+
+    void MainWindow::SavePasteHotkey(bool rich)
+    {
+        if (!m_core || !m_pasteHotkeysAvailable || m_pasteHotkeysReadOnly)
+        {
+            auto const message = winrt::hstring{ L"当前模式不能修改粘贴快捷键。" };
+            if (m_pasteHotkeyStatus) m_pasteHotkeyStatus.Text(message);
+            SetStatus(message);
+            return;
+        }
+        auto const editor = rich ? m_richPasteHotkeyEditor : m_plainPasteHotkeyEditor;
+        if (!editor)
+        {
+            return;
+        }
+        auto const candidate = winrt::hstring{ TrimHotkeyText(editor.Text().c_str()) };
+        auto& configured = rich
+            ? m_configuredRichPasteHotkey
+            : m_configuredPlainPasteHotkey;
+        auto& registered = rich
+            ? m_richPasteHotkeyRegistered
+            : m_plainPasteHotkeyRegistered;
+        auto& modifiers = rich
+            ? m_richPasteHotkeyModifiers
+            : m_plainPasteHotkeyModifiers;
+        auto& virtualKey = rich
+            ? m_richPasteHotkeyVirtualKey
+            : m_plainPasteHotkeyVirtualKey;
+        auto& registeredHotkey = rich
+            ? m_registeredRichPasteHotkey
+            : m_registeredPlainPasteHotkey;
+        auto const id = rich ? kRichPasteHotkeyId : kPlainPasteHotkeyId;
+        auto const label = rich ? L"富文本粘贴" : L"纯文本粘贴";
+        auto const kind = rich ? "rich" : "plain";
+        auto const previousConfigured = configured;
+        auto const previousRegistered = registered;
+        auto const previousRegisteredHotkey = registeredHotkey;
+        if (!ApplyRelayHotkey(
+            id,
+            candidate,
+            registered,
+            modifiers,
+            virtualKey,
+            registeredHotkey,
+            label))
+        {
+            editor.Text(previousConfigured);
+            if (m_pasteHotkeyStatus)
+            {
+                m_pasteHotkeyStatus.Text(
+                    L"快捷键格式无效、无法启用或已被占用；原设置保持不变。");
+            }
+            return;
+        }
+
+        try
+        {
+            (void)m_core->UpdatePasteHotkey(kind, winrt::to_string(candidate));
+            configured = candidate;
+            editor.Text(candidate);
+            std::wstring message{ label };
+            message.append(candidate.empty() ? L"快捷键已停用。" : L"快捷键已保存并启用：");
+            if (!candidate.empty())
+            {
+                message.append(candidate.c_str(), candidate.size());
+            }
+            auto const status = winrt::hstring{ message };
+            if (m_pasteHotkeyStatus) m_pasteHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
+        catch (std::exception const& error)
+        {
+            auto const rollback = previousRegistered
+                ? previousRegisteredHotkey
+                : winrt::hstring{};
+            auto const restored = ApplyRelayHotkey(
+                id,
+                rollback,
+                registered,
+                modifiers,
+                virtualKey,
+                registeredHotkey,
+                label);
+            configured = previousConfigured;
+            editor.Text(previousConfigured);
+            auto const base = StatusMessage(
+                L"保存粘贴快捷键失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what()));
+            std::wstring message{ base.c_str(), base.size() };
+            message.append(restored ? L"；已恢复原快捷键。" : L"；无法恢复原快捷键。");
+            auto const status = winrt::hstring{ message };
+            if (m_pasteHotkeyStatus) m_pasteHotkeyStatus.Text(status);
+            SetStatus(status);
+        }
+    }
+
+    void MainWindow::PasteLatestFromHotkey(bool rich)
+    {
+        if (!m_core)
+        {
+            return;
+        }
+        auto const foreground = GetForegroundWindow();
+        if (foreground != nullptr && foreground != GetWindowHandle())
+        {
+            m_lastHwnd = foreground;
+        }
+        PreparePasteTarget();
+        ReleasePasteShortcutModifiers();
+        try
+        {
+            auto const response = JsonObject::Parse(
+                tiez::probe::RustCoreBridge::Utf8ToHstring(
+                    m_core->PasteLatest(rich ? "rich" : "plain")));
+            RefreshItems();
+            std::wstring message = rich
+                ? L"已用富文本快捷键粘贴最新记录。"
+                : L"已用纯文本快捷键粘贴最新文本记录。";
+            if (response.GetNamedBoolean(L"removed", false))
+            {
+                message.append(L" 已按设置删除未保护记录。");
+            }
+            SetStatus(winrt::hstring{ message });
+        }
+        catch (std::exception const& error)
+        {
+            SetStatus(StatusMessage(
+                rich ? L"富文本快捷键粘贴失败：" : L"纯文本快捷键粘贴失败：",
+                tiez::probe::RustCoreBridge::Utf8ToHstring(error.what())));
+        }
+        m_suspendLifecycle = false;
+    }
+
     void MainWindow::TeardownLifecycle()
     {
         RemoveTrayIcon();
@@ -5738,6 +5994,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
             {
                 UnregisterHotKey(m_hotkeyHwnd, kSearchHotkeyId);
                 m_searchHotkeyRegistered = false;
+            }
+            if (m_richPasteHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kRichPasteHotkeyId);
+                m_richPasteHotkeyRegistered = false;
+            }
+            if (m_plainPasteHotkeyRegistered)
+            {
+                UnregisterHotKey(m_hotkeyHwnd, kPlainPasteHotkeyId);
+                m_plainPasteHotkeyRegistered = false;
             }
             m_hotkeyRegistered = false;
             RemoveWindowSubclass(
@@ -5960,6 +6226,16 @@ namespace winrt::Tiez::WinUIProbe::implementation
         if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kSearchHotkeyId)
         {
             ShowSearchFromHotkey();
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kRichPasteHotkeyId)
+        {
+            PasteLatestFromHotkey(true);
+            return true;
+        }
+        if (hwnd == m_hotkeyHwnd && message == WM_HOTKEY && wParam == kPlainPasteHotkeyId)
+        {
+            PasteLatestFromHotkey(false);
             return true;
         }
         if (hwnd == m_hotkeyHwnd
@@ -7395,6 +7671,65 @@ namespace winrt::Tiez::WinUIProbe::implementation
             Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
         m_settingsPanel.Children().Append(m_searchHotkeyStatus);
 
+        TextBlock pasteHotkeyTitle;
+        pasteHotkeyTitle.Text(L"粘贴最新记录快捷键");
+        pasteHotkeyTitle.Style(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"SubtitleTextBlockStyle")).as<Style>());
+        m_settingsPanel.Children().Append(pasteHotkeyTitle);
+
+        TextBlock pasteHotkeyDescription;
+        pasteHotkeyDescription.Text(
+            L"富文本快捷键粘贴最新一条可用记录；纯文本快捷键只处理文本、代码、链接和富文本。沿用旧版 app.rich_paste_hotkey（默认 Alt+Shift+V）与 app.plain_paste_hotkey（默认停用）。触发时不会显示 TieZ，并会遵守“粘贴后删除”，但始终保留置顶或带标签记录。");
+        pasteHotkeyDescription.TextWrapping(TextWrapping::Wrap);
+        pasteHotkeyDescription.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        m_settingsPanel.Children().Append(pasteHotkeyDescription);
+
+        m_richPasteHotkeyEditor = TextBox();
+        m_richPasteHotkeyEditor.Header(winrt::box_value(L"富文本粘贴最新记录"));
+        m_richPasteHotkeyEditor.PlaceholderText(L"例如 Alt+Shift+V；留空停用");
+        m_richPasteHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_richPasteHotkeyEditor, L"富文本粘贴快捷键");
+        AutomationProperties::SetHelpText(
+            m_richPasteHotkeyEditor,
+            L"新组合会先向 Windows 注册，确认可用后才保存。留空可停用。");
+        m_settingsPanel.Children().Append(m_richPasteHotkeyEditor);
+
+        m_richPasteHotkeyApplyButton = Button();
+        m_richPasteHotkeyApplyButton.Content(winrt::box_value(L"应用富文本粘贴快捷键"));
+        AutomationProperties::SetName(
+            m_richPasteHotkeyApplyButton,
+            L"应用富文本粘贴快捷键");
+        m_settingsPanel.Children().Append(m_richPasteHotkeyApplyButton);
+
+        m_plainPasteHotkeyEditor = TextBox();
+        m_plainPasteHotkeyEditor.Header(winrt::box_value(L"纯文本粘贴最新记录"));
+        m_plainPasteHotkeyEditor.PlaceholderText(L"例如 Ctrl+Alt+V；留空停用");
+        m_plainPasteHotkeyEditor.MaxLength(64);
+        AutomationProperties::SetName(m_plainPasteHotkeyEditor, L"纯文本粘贴快捷键");
+        AutomationProperties::SetHelpText(
+            m_plainPasteHotkeyEditor,
+            L"仅当最新记录是文本类内容时执行；新组合先注册再保存。留空可停用。");
+        m_settingsPanel.Children().Append(m_plainPasteHotkeyEditor);
+
+        m_plainPasteHotkeyApplyButton = Button();
+        m_plainPasteHotkeyApplyButton.Content(winrt::box_value(L"应用纯文本粘贴快捷键"));
+        AutomationProperties::SetName(
+            m_plainPasteHotkeyApplyButton,
+            L"应用纯文本粘贴快捷键");
+        m_settingsPanel.Children().Append(m_plainPasteHotkeyApplyButton);
+
+        m_pasteHotkeyStatus = TextBlock();
+        m_pasteHotkeyStatus.Text(L"正在读取已保存的粘贴快捷键……");
+        m_pasteHotkeyStatus.TextWrapping(TextWrapping::Wrap);
+        m_pasteHotkeyStatus.Foreground(Application::Current().Resources()
+            .Lookup(winrt::box_value(L"TextFillColorSecondaryBrush")).as<Brush>());
+        AutomationProperties::SetName(m_pasteHotkeyStatus, L"粘贴快捷键状态");
+        AutomationProperties::SetLiveSetting(
+            m_pasteHotkeyStatus,
+            Microsoft::UI::Xaml::Automation::Peers::AutomationLiveSetting::Polite);
+        m_settingsPanel.Children().Append(m_pasteHotkeyStatus);
+
         TextBlock historyTitle;
         historyTitle.Text(L"历史与捕获");
         historyTitle.Style(Application::Current().Resources()
@@ -7725,6 +8060,20 @@ namespace winrt::Tiez::WinUIProbe::implementation
                 SaveSearchHotkey();
             }
         });
+        m_richPasteHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading)
+            {
+                SavePasteHotkey(true);
+            }
+        });
+        m_plainPasteHotkeyApplyButton.Click([this](auto const&, auto const&)
+        {
+            if (!m_settingsLoading)
+            {
+                SavePasteHotkey(false);
+            }
+        });
         m_compactModeToggle.Toggled([this](auto const&, auto const&)
         {
             if (m_settingsLoading) return;
@@ -7856,6 +8205,7 @@ namespace winrt::Tiez::WinUIProbe::implementation
             }
         });
         LoadSearchHotkey();
+        LoadPasteHotkeys();
     }
 
     void MainWindow::LoadSettings()

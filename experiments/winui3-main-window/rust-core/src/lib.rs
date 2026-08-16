@@ -51,6 +51,7 @@ use tiez_core::tag_catalog::{
 mod clipboard_relay_service;
 mod cloud_sync_service;
 mod file_transfer_service;
+mod paste_hotkey_service;
 mod search_hotkey_service;
 mod win32_capture;
 #[cfg(windows)]
@@ -62,11 +63,14 @@ use clipboard_relay_service::{
 };
 use cloud_sync_service::{NativeCloudSyncService, NativeCloudSyncStatus};
 use file_transfer_service::{FileTransferSnapshot, NativeFileTransferService, ReceivedTransfer};
+use paste_hotkey_service::{
+    NativePasteHotkeyMutation, NativePasteHotkeySnapshot, NativePasteHotkeys,
+};
 use search_hotkey_service::{
     NativeSearchHotkey, NativeSearchHotkeyMutation, NativeSearchHotkeySnapshot,
 };
 
-const ABI_VERSION: u32 = 20;
+const ABI_VERSION: u32 = 21;
 const DATABASE_ENV: &str = "TIEZ_WINUI_DB_PATH";
 const DATABASE_READ_ONLY_ENV: &str = "TIEZ_WINUI_DB_READ_ONLY";
 const PRODUCTION_DATA_ENV: &str = "TIEZ_WINUI_USE_PRODUCTION_DATA";
@@ -102,6 +106,7 @@ pub struct TiezCoreHandle {
     cloud_settings: Mutex<CloudSyncSettings>,
     cloud_sync: NativeCloudSyncService,
     clipboard_relay: NativeClipboardRelay,
+    paste_hotkeys: NativePasteHotkeys,
     search_hotkey: NativeSearchHotkey,
     file_transfer: NativeFileTransferService,
     session: Mutex<Option<win32_capture::Session>>,
@@ -146,6 +151,7 @@ impl TiezCoreHandle {
             cloud_settings: Mutex::new(cloud_settings),
             cloud_sync: NativeCloudSyncService::unavailable(),
             clipboard_relay: NativeClipboardRelay::unavailable(),
+            paste_hotkeys: NativePasteHotkeys::unavailable(),
             search_hotkey: NativeSearchHotkey::unavailable(),
             file_transfer,
             session: Mutex::new(None),
@@ -218,6 +224,7 @@ impl TiezCoreHandle {
             );
             handle.clipboard_relay =
                 NativeClipboardRelay::new(&database_path, data_dir.clone(), read_only);
+            handle.paste_hotkeys = NativePasteHotkeys::new(&database_path, read_only);
             handle.search_hotkey = NativeSearchHotkey::new(&database_path, read_only);
             handle.file_transfer = NativeFileTransferService::new(
                 FileTransferPreferences::open_sqlite(
@@ -384,6 +391,20 @@ struct SearchHotkeyMutationResponse<'a> {
     abi_version: u32,
     #[serde(flatten)]
     mutation: &'a NativeSearchHotkeyMutation,
+}
+
+#[derive(Serialize)]
+struct PasteHotkeySnapshotResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    snapshot: &'a NativePasteHotkeySnapshot,
+}
+
+#[derive(Serialize)]
+struct PasteHotkeyMutationResponse<'a> {
+    abi_version: u32,
+    #[serde(flatten)]
+    mutation: &'a NativePasteHotkeyMutation,
 }
 
 #[derive(Serialize)]
@@ -605,6 +626,22 @@ fn search_hotkey_mutation_json(mutation: &NativeSearchHotkeyMutation) -> Result<
         mutation,
     })
     .map_err(|error| format!("无法序列化搜索快捷键结果：{error}"))
+}
+
+fn paste_hotkey_snapshot_json(snapshot: &NativePasteHotkeySnapshot) -> Result<String, String> {
+    serde_json::to_string(&PasteHotkeySnapshotResponse {
+        abi_version: ABI_VERSION,
+        snapshot,
+    })
+    .map_err(|error| format!("无法序列化粘贴快捷键状态：{error}"))
+}
+
+fn paste_hotkey_mutation_json(mutation: &NativePasteHotkeyMutation) -> Result<String, String> {
+    serde_json::to_string(&PasteHotkeyMutationResponse {
+        abi_version: ABI_VERSION,
+        mutation,
+    })
+    .map_err(|error| format!("无法序列化粘贴快捷键结果：{error}"))
 }
 
 fn emoji_favorites_json(snapshot: &EmojiFavoritesSnapshot) -> Result<String, String> {
@@ -878,6 +915,55 @@ fn apply_history_action(
     history
         .apply_action(entry_id, action)
         .map_err(|error| error.to_string())
+}
+
+fn paste_latest_history(
+    handle: &TiezCoreHandle,
+    kind: &str,
+) -> Result<HistoryMutationResult, String> {
+    let (text_only, action, label) = match kind.trim().to_ascii_lowercase().as_str() {
+        "rich" => (false, "paste-rich", "富文本"),
+        "plain" => (true, "paste-plain", "纯文本"),
+        _ => return Err("粘贴类型必须是 rich 或 plain".to_owned()),
+    };
+    let latest = {
+        let history = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?;
+        history
+            .snapshot("")
+            .map_err(|error| error.to_string())?
+            .items
+            .into_iter()
+            .next()
+            .ok_or_else(|| "剪贴板历史为空，没有可粘贴的记录".to_owned())?
+    };
+    if text_only && !is_text_type(&latest.content_type) {
+        return Err(format!(
+            "最新记录是 {}，纯文本快捷键只粘贴文本、代码、链接或富文本",
+            latest.content_type
+        ));
+    }
+
+    let delete_after = handle.paste_hotkeys.delete_after_paste()?;
+    let protected = latest.is_pinned || !latest.tags.is_empty();
+    let mut mutation = apply_history_action(handle, latest.id, action)?;
+    if delete_after && !protected {
+        let mut deleted = handle
+            .inner
+            .history
+            .lock()
+            .map_err(|_| "ClipboardHistory lock is poisoned".to_owned())?
+            .apply_action(latest.id, "delete")
+            .map_err(|error| error.to_string())?;
+        deleted.action = action.to_owned();
+        deleted.message = format!("{}；粘贴后已删除未保护记录", mutation.message);
+        return Ok(deleted);
+    }
+    mutation.message = format!("已通过{label}快捷键粘贴最新记录；{}", mutation.message);
+    Ok(mutation)
 }
 
 fn paste_transient_text(handle: &TiezCoreHandle, text: &str) -> Result<(), String> {
@@ -2219,6 +2305,60 @@ pub unsafe extern "C" fn tiez_core_update_search_hotkey_json(
 }
 
 #[no_mangle]
+/// Return only the Tauri-compatible rich/plain latest-paste shortcut settings.
+///
+/// # Safety
+/// `handle` must point to a live handle returned by `tiez_core_create`.
+pub unsafe extern "C" fn tiez_core_get_paste_hotkeys_json(
+    handle: *mut TiezCoreHandle,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let snapshot = handle.paste_hotkeys.snapshot()?;
+        into_owned_c_string(paste_hotkey_snapshot_json(&snapshot)?)
+    })
+}
+
+#[no_mangle]
+/// Persist one paste shortcut after the native host has registered it.
+///
+/// # Safety
+/// `handle`, `kind_utf8`, and `value_utf8` must be valid readable pointers.
+pub unsafe extern "C" fn tiez_core_update_paste_hotkey_json(
+    handle: *mut TiezCoreHandle,
+    kind_utf8: *const c_char,
+    value_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let kind = required_utf8(kind_utf8, "kind_utf8")?;
+        let value = required_utf8(value_utf8, "value_utf8")?;
+        let mutation = handle.paste_hotkeys.update(&kind, &value)?;
+        into_owned_c_string(paste_hotkey_mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
+/// Paste the newest history entry as rich or plain content.
+///
+/// # Safety
+/// `handle` must be live and `kind_utf8` must be readable UTF-8.
+pub unsafe extern "C" fn tiez_core_paste_latest_json(
+    handle: *mut TiezCoreHandle,
+    kind_utf8: *const c_char,
+) -> *mut c_char {
+    with_ffi_result(ptr::null_mut(), || {
+        let handle =
+            unsafe { handle.as_ref() }.ok_or_else(|| "handle must not be null".to_owned())?;
+        let kind = required_utf8(kind_utf8, "kind_utf8")?;
+        let mutation = paste_latest_history(handle, &kind)?;
+        into_owned_c_string(mutation_json(&mutation)?)
+    })
+}
+
+#[no_mangle]
 /// Return AI settings and profile summaries without API keys.
 ///
 /// # Safety
@@ -2739,7 +2879,9 @@ pub extern "C" fn tiez_core_take_last_error() -> *mut c_char {
 /// `tiez_core_update_tags_json`, or
 /// `tiez_core_update_pinned_order_json`, `tiez_core_get_settings_json`,
 /// `tiez_core_update_setting_json`, `tiez_core_get_search_hotkey_json`,
-/// `tiez_core_update_search_hotkey_json`, `tiez_core_get_cloud_sync_settings_json`,
+/// `tiez_core_update_search_hotkey_json`, `tiez_core_get_paste_hotkeys_json`,
+/// `tiez_core_update_paste_hotkey_json`, `tiez_core_paste_latest_json`,
+/// `tiez_core_get_cloud_sync_settings_json`,
 /// `tiez_core_update_cloud_sync_settings_json`,
 /// `tiez_core_probe_cloud_sync_json`, `tiez_core_get_cloud_sync_status_json`,
 /// or `tiez_core_take_last_error`. A
@@ -3364,6 +3506,131 @@ mod tests {
             tiez_core_string_free(error);
             tiez_core_destroy(handle);
         }
+    }
+
+    #[test]
+    fn paste_hotkey_export_is_sanitized_and_latest_plain_rejects_non_text() {
+        let handle = Box::into_raw(Box::new(
+            TiezCoreHandle::wrap(ClipboardHistory::synthetic()),
+        ));
+        let plain = CString::new("plain").unwrap();
+        let value = CString::new("Ctrl+Alt+P").unwrap();
+
+        unsafe {
+            let snapshot = tiez_core_get_paste_hotkeys_json(handle);
+            assert!(!snapshot.is_null());
+            let json = CStr::from_ptr(snapshot).to_str().unwrap();
+            assert!(json.contains(&format!("\"abi_version\":{ABI_VERSION}")));
+            assert!(json.contains("\"available\":false"));
+            assert!(json.contains("\"rich_hotkey\":\"\""));
+            assert!(json.contains("\"plain_hotkey\":\"\""));
+            assert!(!json.contains("mqtt_password"));
+            tiez_core_string_free(snapshot);
+
+            assert!(
+                tiez_core_update_paste_hotkey_json(handle, plain.as_ptr(), value.as_ptr(),)
+                    .is_null()
+            );
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("生产数据模式"));
+            tiez_core_string_free(error);
+
+            let pasted = tiez_core_paste_latest_json(handle, plain.as_ptr());
+            assert!(!pasted.is_null());
+            let pasted_json = CStr::from_ptr(pasted).to_str().unwrap();
+            assert!(pasted_json.contains("\"requested_id\":101"));
+            assert!(pasted_json.contains("\"action\":\"paste-plain\""));
+            tiez_core_string_free(pasted);
+            tiez_core_destroy(handle);
+        }
+
+        let image_history = ClipboardHistory::in_memory(vec![HistoryItem {
+            id: 1,
+            content_type: "image".to_owned(),
+            preview: "not-a-real-image".to_owned(),
+            source_app: "Snipping Tool".to_owned(),
+            captured_at: "Just now".to_owned(),
+            is_pinned: false,
+            tags: Vec::new(),
+            is_sensitive: false,
+        }]);
+        let handle = Box::into_raw(Box::new(TiezCoreHandle::wrap(image_history)));
+        unsafe {
+            assert!(tiez_core_paste_latest_json(handle, plain.as_ptr()).is_null());
+            let error = tiez_core_take_last_error();
+            assert!(!error.is_null());
+            assert!(CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("只粘贴文本"));
+            tiez_core_string_free(error);
+            tiez_core_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn latest_paste_honors_delete_after_paste_but_preserves_protected_entries() {
+        let root = temporary_database_root("paste-hotkey-delete");
+        std::fs::create_dir_all(&root).unwrap();
+        let settings_path = root.join("settings.db");
+        rusqlite::Connection::open(&settings_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings (key, value) VALUES
+                    ('app.delete_after_paste', 'true');",
+            )
+            .unwrap();
+        let plain = CString::new("plain").unwrap();
+
+        let unprotected = ClipboardHistory::in_memory(vec![HistoryItem {
+            id: 1,
+            content_type: "text".to_owned(),
+            preview: "remove me after paste".to_owned(),
+            source_app: "Notepad".to_owned(),
+            captured_at: "Just now".to_owned(),
+            is_pinned: false,
+            tags: Vec::new(),
+            is_sensitive: false,
+        }]);
+        let mut handle = TiezCoreHandle::wrap(unprotected);
+        handle.paste_hotkeys = NativePasteHotkeys::new(&settings_path, false);
+        let handle = Box::into_raw(Box::new(handle));
+        unsafe {
+            let value = tiez_core_paste_latest_json(handle, plain.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"removed\":true"));
+            assert!(json.contains("粘贴后已删除未保护记录"));
+            tiez_core_string_free(value);
+            let snapshot = tiez_core_get_snapshot_json(handle, ptr::null());
+            assert!(!snapshot.is_null());
+            assert!(CStr::from_ptr(snapshot)
+                .to_str()
+                .unwrap()
+                .contains("\"total\":0"));
+            tiez_core_string_free(snapshot);
+            tiez_core_destroy(handle);
+        }
+
+        let mut protected_handle = TiezCoreHandle::wrap(ClipboardHistory::synthetic());
+        protected_handle.paste_hotkeys = NativePasteHotkeys::new(&settings_path, false);
+        let protected_handle = Box::into_raw(Box::new(protected_handle));
+        unsafe {
+            let value = tiez_core_paste_latest_json(protected_handle, plain.as_ptr());
+            assert!(!value.is_null());
+            let json = CStr::from_ptr(value).to_str().unwrap();
+            assert!(json.contains("\"requested_id\":101"));
+            assert!(json.contains("\"removed\":false"));
+            tiez_core_string_free(value);
+            tiez_core_destroy(protected_handle);
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

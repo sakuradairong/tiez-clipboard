@@ -19,7 +19,7 @@ typedef struct TiezCoreHandle TiezCoreHandle;
 
 enum
 {
-    TIEZ_CORE_ABI_VERSION = 20,
+    TIEZ_CORE_ABI_VERSION = 21,
 };
 
 typedef void (*TiezChangedCallback)(void* user_data, uint64_t generation);
@@ -190,6 +190,18 @@ TIEZ_CORE_API char* tiez_core_get_search_hotkey_json(
 TIEZ_CORE_API char* tiez_core_update_search_hotkey_json(
     TiezCoreHandle* handle,
     const char* value_utf8);
+
+// Returns and updates only app.rich_paste_hotkey/app.plain_paste_hotkey plus
+// the non-secret delete-after-paste state used by the latest-item action.
+TIEZ_CORE_API char* tiez_core_get_paste_hotkeys_json(
+    TiezCoreHandle* handle);
+TIEZ_CORE_API char* tiez_core_update_paste_hotkey_json(
+    TiezCoreHandle* handle,
+    const char* kind_utf8,
+    const char* value_utf8);
+TIEZ_CORE_API char* tiez_core_paste_latest_json(
+    TiezCoreHandle* handle,
+    const char* kind_utf8);
 
 // Returns AI settings and profile summaries without API keys.
 TIEZ_CORE_API char* tiez_core_get_ai_settings_json(TiezCoreHandle* handle);

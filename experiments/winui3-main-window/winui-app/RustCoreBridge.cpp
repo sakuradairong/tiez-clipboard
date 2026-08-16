@@ -85,6 +85,12 @@ namespace tiez::probe
                 "tiez_core_get_search_hotkey_json");
             m_updateSearchHotkeyJson = Resolve<JsonRequestFn>(
                 "tiez_core_update_search_hotkey_json");
+            m_pasteHotkeysJson = Resolve<SettingsJsonFn>(
+                "tiez_core_get_paste_hotkeys_json");
+            m_updatePasteHotkeyJson = Resolve<UpdateSettingJsonFn>(
+                "tiez_core_update_paste_hotkey_json");
+            m_pasteLatestJson = Resolve<JsonRequestFn>(
+                "tiez_core_paste_latest_json");
             m_aiSettingsJson = Resolve<SettingsJsonFn>("tiez_core_get_ai_settings_json");
             m_updateAiSettingsJson = Resolve<JsonRequestFn>(
                 "tiez_core_update_ai_settings_json");
@@ -507,6 +513,44 @@ namespace tiez::probe
         if (result == nullptr)
         {
             throw std::runtime_error("Rust search hotkey update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::PasteHotkeys() const
+    {
+        auto* result = m_pasteHotkeysJson(m_handle);
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust paste hotkey lookup failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::UpdatePasteHotkey(
+        std::string_view kind,
+        std::string_view value) const
+    {
+        std::string pasteKind{ kind };
+        std::string hotkeyValue{ value };
+        auto* result = m_updatePasteHotkeyJson(
+            m_handle,
+            pasteKind.c_str(),
+            hotkeyValue.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust paste hotkey update failed: " + TakeLastError());
+        }
+        return ConsumeString(result);
+    }
+
+    std::string RustCoreBridge::PasteLatest(std::string_view kind) const
+    {
+        std::string pasteKind{ kind };
+        auto* result = m_pasteLatestJson(m_handle, pasteKind.c_str());
+        if (result == nullptr)
+        {
+            throw std::runtime_error("Rust latest-item paste failed: " + TakeLastError());
         }
         return ConsumeString(result);
     }

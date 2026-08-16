@@ -52,6 +52,11 @@ namespace tiez::probe
             std::string_view value) const;
         [[nodiscard]] std::string SearchHotkey() const;
         [[nodiscard]] std::string UpdateSearchHotkey(std::string_view value) const;
+        [[nodiscard]] std::string PasteHotkeys() const;
+        [[nodiscard]] std::string UpdatePasteHotkey(
+            std::string_view kind,
+            std::string_view value) const;
+        [[nodiscard]] std::string PasteLatest(std::string_view kind) const;
         [[nodiscard]] std::string AiSettings() const;
         [[nodiscard]] std::string UpdateAiSettings(std::string_view requestJson) const;
         [[nodiscard]] std::string ProbeAiProfile(std::string_view profileId) const;
@@ -150,6 +155,9 @@ namespace tiez::probe
         UpdateSettingJsonFn m_updateSettingJson{};
         SettingsJsonFn m_searchHotkeyJson{};
         JsonRequestFn m_updateSearchHotkeyJson{};
+        SettingsJsonFn m_pasteHotkeysJson{};
+        UpdateSettingJsonFn m_updatePasteHotkeyJson{};
+        JsonRequestFn m_pasteLatestJson{};
         SettingsJsonFn m_aiSettingsJson{};
         JsonRequestFn m_updateAiSettingsJson{};
         JsonRequestFn m_probeAiProfileJson{};
