@@ -3,6 +3,7 @@ use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::global_state::HOTKEY_STRING;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -20,36 +21,55 @@ pub(crate) fn normalize_hotkey_aliases(hotkey: &str) -> String {
         .join("+")
 }
 
-fn register_shortcut(app_handle: &AppHandle, hotkey: &str) -> AppResult<()> {
-    if hotkey.is_empty()
+fn is_ignorable_hotkey(hotkey: &str) -> bool {
+    hotkey.is_empty()
         || hotkey.eq_ignore_ascii_case("MouseMiddle")
         || hotkey.eq_ignore_ascii_case("MButton")
-    {
+}
+
+fn parse_shortcut(hotkey: &str) -> AppResult<Shortcut> {
+    let normalized = normalize_hotkey_aliases(hotkey);
+    normalized
+        .parse::<Shortcut>()
+        .map_err(|_| AppError::Validation(format!("invalid hotkey: {hotkey}")))
+}
+
+pub(crate) fn unique_configured_hotkeys(hotkeys: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+
+    for hotkey in hotkeys {
+        if is_ignorable_hotkey(&hotkey) {
+            continue;
+        }
+        let normalized = normalize_hotkey_aliases(&hotkey);
+        if seen.insert(normalized) {
+            unique.push(hotkey);
+        }
+    }
+
+    unique
+}
+
+fn register_shortcut(app_handle: &AppHandle, hotkey: &str) -> AppResult<()> {
+    if is_ignorable_hotkey(hotkey) {
         return Ok(());
     }
 
-    let normalized = normalize_hotkey_aliases(hotkey);
-    let shortcut = normalized
-        .parse::<Shortcut>()
-        .map_err(|_| AppError::Validation(format!("invalid hotkey: {hotkey}")))?;
-    app_handle
-        .global_shortcut()
+    let shortcut = parse_shortcut(hotkey)?;
+    let global_shortcut = app_handle.global_shortcut();
+    // Re-sync can run while a shortcut is still registered; clear it first.
+    let _ = global_shortcut.unregister(shortcut.clone());
+    global_shortcut
         .register(shortcut)
         .map_err(|e| AppError::Internal(format!("failed to register {hotkey}: {e}")))
 }
 
 pub(crate) fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
-    let mut errors = Vec::new();
-    if let Err(error) = app_handle.global_shortcut().unregister_all() {
-        errors.push(format!("failed to unregister hotkeys: {error}"));
-    }
+    let _ = app_handle.global_shortcut().unregister_all();
 
     let Some(settings) = app_handle.try_state::<SettingsState>() else {
-        return if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(AppError::Internal(errors.join("; ")))
-        };
+        return Ok(());
     };
 
     let main_hotkey = settings
@@ -99,7 +119,9 @@ pub(crate) fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
         relay_send_hotkey,
         relay_fetch_hotkey,
     ]);
-    for hotkey in configured {
+
+    let mut errors = Vec::new();
+    for hotkey in unique_configured_hotkeys(configured) {
         if let Err(error) = register_shortcut(app_handle, &hotkey) {
             errors.push(error.to_string());
         }
@@ -109,6 +131,13 @@ pub(crate) fn sync_registered_hotkeys(app_handle: &AppHandle) -> AppResult<()> {
         Ok(())
     } else {
         Err(AppError::Internal(errors.join("; ")))
+    }
+}
+
+fn internal_error_message(error: &AppError) -> String {
+    match error {
+        AppError::Internal(message) => message.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -156,12 +185,15 @@ pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
         let registration_rollback = sync_registered_hotkeys(&app_handle);
         if let Err(error) = persistence_rollback {
             return Err(AppError::Internal(format!(
-                "{registration_error}; failed to restore setting: {error}"
+                "{}; failed to restore setting: {error}",
+                internal_error_message(&registration_error)
             )));
         }
         if let Err(error) = registration_rollback {
             return Err(AppError::Internal(format!(
-                "{registration_error}; failed to restore hotkeys: {error}"
+                "{}; failed to restore hotkeys: {}",
+                internal_error_message(&registration_error),
+                internal_error_message(&error)
             )));
         }
         return Err(registration_error);
@@ -172,21 +204,17 @@ pub fn register_hotkey(app_handle: AppHandle, hotkey: String) -> AppResult<()> {
 
 #[tauri::command]
 pub fn test_hotkey_available(app_handle: AppHandle, hotkey: String) -> AppResult<bool> {
-    if hotkey.is_empty()
-        || hotkey.eq_ignore_ascii_case("MouseMiddle")
-        || hotkey.eq_ignore_ascii_case("MButton")
-    {
+    if is_ignorable_hotkey(&hotkey) {
         return Ok(true);
     }
 
-    let normalized = normalize_hotkey_aliases(&hotkey);
-    let shortcut = normalized
-        .parse::<Shortcut>()
-        .map_err(|_| AppError::Validation("快捷键格式无效".to_string()))?;
+    let shortcut = parse_shortcut(&hotkey)?;
+    let global_shortcut = app_handle.global_shortcut();
+    let _ = global_shortcut.unregister(shortcut.clone());
 
-    match app_handle.global_shortcut().register(shortcut.clone()) {
+    match global_shortcut.register(shortcut.clone()) {
         Ok(_) => {
-            let _ = app_handle.global_shortcut().unregister(shortcut);
+            let _ = global_shortcut.unregister(shortcut);
             Ok(true)
         }
         Err(e) => {
@@ -198,5 +226,34 @@ pub fn test_hotkey_available(app_handle: AppHandle, hotkey: String) -> AppResult
             };
             Err(AppError::Internal(user_msg))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_configured_hotkeys;
+
+    #[test]
+    fn unique_configured_hotkeys_dedupes_normalized_aliases() {
+        assert_eq!(
+            unique_configured_hotkeys(vec![
+                "Win+V".to_string(),
+                "Super+V".to_string(),
+                "Alt+C".to_string(),
+            ]),
+            vec!["Win+V".to_string(), "Alt+C".to_string()]
+        );
+    }
+
+    #[test]
+    fn unique_configured_hotkeys_skips_empty_and_mouse_bindings() {
+        assert_eq!(
+            unique_configured_hotkeys(vec![
+                "".to_string(),
+                "MouseMiddle".to_string(),
+                "Alt+F".to_string(),
+            ]),
+            vec!["Alt+F".to_string()]
+        );
     }
 }
