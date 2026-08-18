@@ -12,6 +12,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 - Sound effect preview button in settings so volume can be verified before copying.
 - Setting to choose whether number quick paste stays active while the window is edge-docked/hidden.
+- Per-item plain text paste action on text and rich-text clipboard entries.
 
 ### Changed
 
@@ -25,6 +26,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - Silent startup and `--minimized` autostart now hide the main window instead of leaving it visible.
 - Settings hotkey labels no longer force macOS symbols on Windows.
 - Global hotkey re-sync no longer fails with `Win+V already registered` when the same shortcut is registered twice during sync.
+- Pressing Backspace while recording a shortcut now clears it instead of trying to register `Backspace` as a global hotkey.
 
 ## [0.3.8] - 2026-07-27
 

@@ -57,6 +57,9 @@ interface UseHotkeyConfigOptions {
   pushToast: (msg: string, duration?: number) => number;
 }
 
+const isUnrecordableHotkeyPayload = (payload: string) =>
+  payload === "Backspace" || payload === "Delete";
+
 export const useHotkeyConfig = ({
   hotkey,
   setHotkey,
@@ -367,6 +370,9 @@ export const useHotkeyConfig = ({
 
     if (isRecording || isRecordingSequential || isRecordingRich || isRecordingPlain || isRecordingSearch || isRecordingRelaySend || isRecordingRelayFetch) {
       const unlisten = listen<string>("hotkey-recorded", (event) => {
+        if (isUnrecordableHotkeyPayload(event.payload)) {
+          return;
+        }
         if (isRecording) updateHotkey(event.payload);
         if (isRecordingSequential) updateSequentialHotkey(event.payload);
         if (isRecordingRich) updateRichPasteHotkey(event.payload);
@@ -374,6 +380,16 @@ export const useHotkeyConfig = ({
         if (isRecordingSearch) updateSearchHotkey(event.payload);
         if (isRecordingRelaySend) updateRelaySendHotkey(event.payload);
         if (isRecordingRelayFetch) updateRelayFetchHotkey(event.payload);
+      });
+
+      const unlistenClear = listen("hotkey-cleared", () => {
+        if (isRecording) updateHotkey("");
+        if (isRecordingSequential) updateSequentialHotkey("");
+        if (isRecordingRich) updateRichPasteHotkey("");
+        if (isRecordingPlain) updatePlainPasteHotkey("");
+        if (isRecordingSearch) updateSearchHotkey("");
+        if (isRecordingRelaySend) updateRelaySendHotkey("");
+        if (isRecordingRelayFetch) updateRelayFetchHotkey("");
       });
 
       const unlistenCancel = listen("recording-cancelled", () => {
@@ -388,6 +404,7 @@ export const useHotkeyConfig = ({
 
       return () => {
         unlisten.then((f) => f());
+        unlistenClear.then((f) => f());
         unlistenCancel.then((f) => f());
       };
     }

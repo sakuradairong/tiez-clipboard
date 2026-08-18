@@ -175,6 +175,15 @@ pub unsafe extern "system" fn keyboard_proc(
                 return CallNextHookEx(None, n_code, w_param, l_param);
             }
 
+            // Backspace/Delete should clear the hotkey, not record unusable lone keys.
+            if (vk == 0x08 || vk == 0x2E) && is_down {
+                IS_RECORDING.store(false, Ordering::SeqCst);
+                if let Some(handle) = GLOBAL_APP_HANDLE.get() {
+                    let _ = handle.emit("hotkey-cleared", ());
+                }
+                return LRESULT(1);
+            }
+
             let is_win = vk == 0x5B || vk == 0x5C;
             let is_other_modifier = (vk >= 0x10 && vk <= 0x12) || (vk >= 0xA0 && vk <= 0xA5);
 
