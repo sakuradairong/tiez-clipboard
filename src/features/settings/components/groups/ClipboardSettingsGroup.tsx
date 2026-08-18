@@ -58,6 +58,8 @@ interface ClipboardSettingsGroupProps {
     updateRelayFetchHotkey: (key: string) => void;
     quickPasteModifier: QuickPasteModifier;
     setQuickPasteModifier: (val: QuickPasteModifier) => void;
+    quickPasteWhenEdgeHidden: boolean;
+    setQuickPasteWhenEdgeHidden: (val: boolean) => void;
     deleteAfterPaste: boolean;
     setDeleteAfterPaste: (val: boolean) => void;
     moveToTopAfterPaste: boolean;
@@ -666,7 +668,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                             onChange={(e) => {
                                 const value = e.target.value as QuickPasteModifier;
                                 props.setQuickPasteModifier(value);
-                                invoke("set_quick_paste_modifier", { modifier: value }).catch(console.error);
+                                props.saveAppSetting('quick_paste_modifier', value);
                             }}
                             style={{
                                 padding: '4px 8px',
@@ -685,6 +687,28 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
                             ))}
                         </select>
                     </div>
+                    {props.quickPasteModifier !== "disabled" && (
+                        <div className="setting-item" style={{ marginLeft: '18px' }}>
+                            <props.LabelWithHint
+                                label={props.t('quick_paste_when_edge_hidden')}
+                                hint={props.t('quick_paste_when_edge_hidden_hint')}
+                                hintKey="quick_paste_when_edge_hidden"
+                            />
+                            <label className="switch">
+                                <input
+                                    className="cb"
+                                    type="checkbox"
+                                    checked={props.quickPasteWhenEdgeHidden}
+                                    onChange={(e) => {
+                                        const enabled = e.target.checked;
+                                        props.setQuickPasteWhenEdgeHidden(enabled);
+                                        props.saveAppSetting('quick_paste_when_edge_hidden', String(enabled));
+                                    }}
+                                />
+                                <div className="toggle"><div className="left" /><div className="right" /></div>
+                            </label>
+                        </div>
+                    )}
                     <div className="setting-item">
                         <props.LabelWithHint
                             label={props.t('delete_after_paste')}

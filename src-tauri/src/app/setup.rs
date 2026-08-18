@@ -225,6 +225,7 @@ pub struct StartupSettings {
     pub relay_send_hotkey: String,
     pub relay_fetch_hotkey: String,
     pub quick_paste_modifier: String,
+    pub quick_paste_when_edge_hidden: bool,
     pub sound_enabled: bool,
     pub hide_tray_icon: bool,
     pub edge_docking: bool,
@@ -332,6 +333,11 @@ fn load_settings(repo: &impl SettingsRepository) -> StartupSettings {
             .get("app.quick_paste_modifier")
             .unwrap_or(Some("disabled".to_string()))
             .unwrap_or("disabled".to_string()),
+        quick_paste_when_edge_hidden: repo
+            .get("app.quick_paste_when_edge_hidden")
+            .unwrap_or(Some("true".to_string()))
+            .map(|v| v == "true")
+            .unwrap_or(true),
         sound_enabled: repo
             .get("app.sound_enabled")
             .unwrap_or(Some("false".to_string()))
@@ -433,6 +439,7 @@ fn setup_state(
         relay_send_hotkey: std::sync::Mutex::new(s.relay_send_hotkey.clone()),
         relay_fetch_hotkey: std::sync::Mutex::new(s.relay_fetch_hotkey.clone()),
         quick_paste_modifier: std::sync::Mutex::new(s.quick_paste_modifier.clone()),
+        quick_paste_when_edge_hidden: AtomicBool::new(s.quick_paste_when_edge_hidden),
         sound_enabled: AtomicBool::new(s.sound_enabled),
         hide_tray_icon: AtomicBool::new(s.hide_tray_icon),
         edge_docking: AtomicBool::new(s.edge_docking),

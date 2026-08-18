@@ -277,6 +277,11 @@ pub fn save_setting(
                 *guard = value.clone();
             }
         }
+        "app.quick_paste_when_edge_hidden" => {
+            settings_state
+                .quick_paste_when_edge_hidden
+                .store(value == "true", Ordering::Relaxed);
+        }
         _ => {}
     }
 

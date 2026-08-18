@@ -101,6 +101,7 @@ interface UseSettingsPostInitOptions {
   setRelaySendHotkey: (val: string) => void;
   setRelayFetchHotkey: (val: string) => void;
   setQuickPasteModifier: (val: QuickPasteModifier) => void;
+  setQuickPasteWhenEdgeHidden: (val: boolean) => void;
   setSequentialModeState: (val: boolean) => void;
   setSoundEnabled: (val: boolean) => void;
   setPasteSoundEnabled: (val: boolean) => void;
@@ -190,6 +191,7 @@ export const useSettingsPostInit = ({
   setRelaySendHotkey,
   setRelayFetchHotkey,
   setQuickPasteModifier,
+  setQuickPasteWhenEdgeHidden,
   setSequentialModeState,
   setSoundEnabled,
   setPasteSoundEnabled,
@@ -398,6 +400,7 @@ export const useSettingsPostInit = ({
       setRelayFetchHotkey(settings["app.relay_fetch_hotkey"]);
     }
     setQuickPasteModifier(normalizeQuickPasteModifier(settings["app.quick_paste_modifier"]));
+    setQuickPasteWhenEdgeHidden(settings["app.quick_paste_when_edge_hidden"] !== "false");
     if (settings["app.sequential_mode"] === "true") setSequentialModeState(true);
     if (settings["app.sound_enabled"] === "true") setSoundEnabled(true);
     setPasteSoundEnabled(settings["app.sound_paste_enabled"] !== "false");
@@ -543,6 +546,7 @@ export const useSettingsPostInit = ({
     setPlainPasteHotkey,
     setSearchHotkey,
     setQuickPasteModifier,
+  setQuickPasteWhenEdgeHidden,
     setSequentialModeState,
     setSoundEnabled,
     setPasteSoundEnabled,

@@ -94,6 +94,8 @@ export interface AppState {
   setRelayFetchHotkey: StateSetter<string>;
   quickPasteModifier: QuickPasteModifier;
   setQuickPasteModifier: StateSetter<QuickPasteModifier>;
+  quickPasteWhenEdgeHidden: boolean;
+  setQuickPasteWhenEdgeHidden: StateSetter<boolean>;
   sequentialMode: boolean;
   setSequentialModeState: StateSetter<boolean>;
   isRecording: boolean;

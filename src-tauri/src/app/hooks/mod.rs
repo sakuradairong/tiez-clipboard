@@ -293,6 +293,23 @@ pub unsafe extern "system" fn keyboard_proc(
                         win_down,
                     )
                 {
+                    let quick_paste_allowed = if IS_HIDDEN.load(Ordering::Relaxed) {
+                        GLOBAL_APP_HANDLE
+                            .get()
+                            .map(|handle| {
+                                handle
+                                    .state::<SettingsState>()
+                                    .quick_paste_when_edge_hidden
+                                    .load(Ordering::Relaxed)
+                            })
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    };
+                    if !quick_paste_allowed {
+                        return CallNextHookEx(None, n_code, w_param, l_param);
+                    }
+
                     let pressed_mask = QUICK_PASTE_DIGIT_MASK.fetch_or(bit, Ordering::SeqCst);
                     if pressed_mask & bit != 0 {
                         return LRESULT(1);

@@ -27,6 +27,7 @@ pub struct SettingsState {
     pub relay_send_hotkey: Mutex<String>,
     pub relay_fetch_hotkey: Mutex<String>,
     pub quick_paste_modifier: Mutex<String>,
+    pub quick_paste_when_edge_hidden: AtomicBool,
     pub sound_enabled: AtomicBool,
     pub hide_tray_icon: AtomicBool,
     pub edge_docking: AtomicBool,

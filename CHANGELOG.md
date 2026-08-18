@@ -11,6 +11,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Added
 
 - Sound effect preview button in settings so volume can be verified before copying.
+- Setting to choose whether number quick paste stays active while the window is edge-docked/hidden.
 
 ### Changed
 

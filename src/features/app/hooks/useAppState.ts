@@ -62,6 +62,7 @@ export const useAppState = (): AppState => {
   const [relayFetchHotkey, setRelayFetchHotkey] = useState<string>("");
   const [quickPasteModifier, setQuickPasteModifier] =
     useState<QuickPasteModifier>("disabled");
+  const [quickPasteWhenEdgeHidden, setQuickPasteWhenEdgeHidden] = useState(true);
   const [sequentialMode, setSequentialModeState] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isRecordingSequential, setIsRecordingSequential] = useState(false);
@@ -259,6 +260,8 @@ export const useAppState = (): AppState => {
     setRelayFetchHotkey,
     quickPasteModifier,
     setQuickPasteModifier,
+    quickPasteWhenEdgeHidden,
+    setQuickPasteWhenEdgeHidden,
     sequentialMode,
     setSequentialModeState,
     isRecording,

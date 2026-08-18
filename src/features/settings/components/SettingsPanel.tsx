@@ -68,6 +68,8 @@ interface SettingsPanelProps {
     isRecordingRelayFetch: boolean;
     quickPasteModifier: "disabled" | "ctrl" | "alt" | "shift" | "win";
     setQuickPasteModifier: (val: "disabled" | "ctrl" | "alt" | "shift" | "win") => void;
+    quickPasteWhenEdgeHidden: boolean;
+    setQuickPasteWhenEdgeHidden: (val: boolean) => void;
     privacyProtection: boolean;
     privacyProtectionKinds: string[];
     setPrivacyProtectionKinds: (val: string[]) => void;
@@ -263,7 +265,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
         t, pushToast, theme, language, colorMode, showSourceAppIcon, setShowSourceAppIcon,
         collapsedGroups, settingsSubpage, autoStart, silentStart, persistent, persistentLimitEnabled, persistentLimit, deduplicate, captureFiles, captureRichText, richTextSnapshotPreview, deleteAfterPaste, moveToTopAfterPaste,
         sequentialMode, sequentialHotkey, isRecordingSequential,
-        richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, relaySendHotkey, isRecordingRelaySend, relayFetchHotkey, isRecordingRelayFetch, quickPasteModifier, setQuickPasteModifier,
+        richPasteHotkey, isRecordingRich, plainPasteHotkey, isRecordingPlain, searchHotkey, isRecordingSearch, relaySendHotkey, isRecordingRelaySend, relayFetchHotkey, isRecordingRelayFetch, quickPasteModifier, setQuickPasteModifier, quickPasteWhenEdgeHidden, setQuickPasteWhenEdgeHidden,
         privacyProtection, privacyProtectionKinds, setPrivacyProtectionKinds, privacyProtectionCustomRules, setPrivacyProtectionCustomRules, sensitiveMaskPrefixVisible, setSensitiveMaskPrefixVisible, sensitiveMaskSuffixVisible, setSensitiveMaskSuffixVisible, sensitiveMaskEmailDomain, setSensitiveMaskEmailDomain, cleanupRules, setCleanupRules, appCleanupPolicies, setAppCleanupPolicies, registryWinVEnabled, setRegistryWinVEnabled, showSearchBox, setShowSearchBox, scrollTopButtonEnabled, setScrollTopButtonEnabled, arrowKeySelection, setArrowKeySelection,
         soundEnabled, setSoundEnabled, pasteSoundEnabled, setPasteSoundEnabled,
         soundVolume, setSoundVolume,
@@ -602,6 +604,8 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                 updateRelayFetchHotkey={updateRelayFetchHotkey}
                 quickPasteModifier={quickPasteModifier}
                 setQuickPasteModifier={setQuickPasteModifier}
+                quickPasteWhenEdgeHidden={quickPasteWhenEdgeHidden}
+                setQuickPasteWhenEdgeHidden={setQuickPasteWhenEdgeHidden}
                 deleteAfterPaste={deleteAfterPaste}
                 setDeleteAfterPaste={setDeleteAfterPaste}
                 moveToTopAfterPaste={moveToTopAfterPaste}
