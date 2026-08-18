@@ -57,18 +57,6 @@ jobs:
             platform: windows-latest
             rust_target: x86_64-pc-windows-msvc
             args: '--target x86_64-pc-windows-msvc --bundles nsis,msi'
-          - name: Linux x64
-            platform: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
-            args: '--target x86_64-unknown-linux-gnu --bundles deb,appimage'
-          - name: macOS Apple Silicon
-            platform: macos-latest
-            rust_target: aarch64-apple-darwin
-            args: '--target aarch64-apple-darwin --bundles app,dmg'
-          - name: macOS Intel
-            platform: macos-latest
-            rust_target: x86_64-apple-darwin
-            args: '--target x86_64-apple-darwin --bundles app,dmg'
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.platform }}
@@ -129,11 +117,9 @@ jobs:
           tagName: v__VERSION__
           releaseName: "TieZ v__VERSION__"
           releaseBody: |
-            Multi-platform release from the maintained TieZ community fork.
+            Windows-focused maintenance release from the maintained TieZ community fork.
 
-            Available for Windows x64, Linux x64, macOS Apple Silicon and macOS Intel.
-
-            Linux automatic paste uses xdotool on X11 or wtype on Wayland. macOS builds are not notarized yet and may require explicit Pasteboard and Accessibility permission.
+            Available for Windows x64 (NSIS installer and MSI).
           releaseDraft: true
           prerelease: false
           updaterJsonPreferNsis: true

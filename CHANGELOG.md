@@ -6,6 +6,24 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-08-18
+
+### Added
+
+- Sound effect preview button in settings so volume can be verified before copying.
+
+### Changed
+
+- Documented that active development and release validation currently target Windows only.
+
+### Fixed
+
+- Restored audible copy/paste sound effects by fixing the volume scale (`0~1` was incorrectly divided by 100).
+- Rich-text paste no longer falls back to the preview image snapshot when HTML content is available.
+- Duplicate-content merge no longer clears tags when updating an existing persisted entry.
+- Silent startup and `--minimized` autostart now hide the main window instead of leaving it visible.
+- Settings hotkey labels no longer force macOS symbols on Windows.
+
 ## [0.3.8] - 2026-07-27
 
 ### Added

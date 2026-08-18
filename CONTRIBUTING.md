@@ -11,6 +11,8 @@ This repository is currently maintained as a community fork. The short-term goal
 - bug fixes
 - maintenance-oriented improvements
 
+**Platform focus:** active development and release validation currently target **Windows only**. Linux and macOS code may compile, but fixes and releases are validated on Windows in this maintenance phase. Please note cross-platform impact when a change cannot stay Windows-local.
+
 Large feature work is welcome, but please discuss it in an issue first so it does not conflict with ongoing stabilization work.
 
 ## Development setup

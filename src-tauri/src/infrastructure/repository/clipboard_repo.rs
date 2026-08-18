@@ -594,6 +594,28 @@ impl SqliteClipboardRepository {
             }
         }
 
+        if entry.id > 0 && cleaned_tags.is_empty() {
+            if let Ok(existing_tags_json) = conn.query_row(
+                "SELECT tags FROM clipboard_history WHERE id = ?1",
+                params![entry.id],
+                |row| row.get::<_, String>(0),
+            ) {
+                if let Ok(existing_tags) = serde_json::from_str::<Vec<String>>(&existing_tags_json)
+                {
+                    for tag in existing_tags {
+                        let t = tag.trim();
+                        if t.is_empty() {
+                            continue;
+                        }
+                        let t_owned = t.to_string();
+                        if seen.insert(t_owned.clone()) {
+                            cleaned_tags.push(t_owned);
+                        }
+                    }
+                }
+            }
+        }
+
         let tags_json = serde_json::to_string(&cleaned_tags).unwrap_or_else(|_| "[]".to_string());
 
         with_repository_savepoint(conn, || {
@@ -1909,6 +1931,42 @@ mod tests {
         assert_eq!(tags_json, "[\"work\"]");
         assert_eq!(normalized_tags, vec!["work"]);
         assert_eq!(tombstone_count, 0);
+    }
+
+    #[test]
+    fn update_existing_entry_preserves_tags_when_incoming_tags_empty() {
+        let conn = setup_repository_db();
+        let repo = SqliteClipboardRepository::new(conn.clone());
+        let mut entry = test_entry(&["work"]);
+        let id = repo.save(&entry, None).expect("insert tagged entry");
+
+        entry.id = id;
+        entry.tags.clear();
+        entry.timestamp = 200;
+        repo.save_with_conn(
+            &conn.lock().expect("lock clipboard repository test db"),
+            &entry,
+            None,
+        )
+        .expect("update existing entry without tags");
+
+        let guard = conn.lock().expect("lock clipboard repository test db");
+        let tags_json: String = guard
+            .query_row(
+                "SELECT tags FROM clipboard_history WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("read preserved tags");
+        let normalized_tags: Vec<String> = guard
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = ?1 ORDER BY tag")
+            .expect("prepare normalized tag query")
+            .query_map([id], |row| row.get(0))
+            .expect("query normalized tags")
+            .collect::<Result<_, _>>()
+            .expect("read normalized tags");
+        assert_eq!(tags_json, "[\"work\"]");
+        assert_eq!(normalized_tags, vec!["work"]);
     }
 
     #[test]

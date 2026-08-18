@@ -278,7 +278,7 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
     };
 
     const renderHotkeyCaps = (hotkey: string) => {
-        const tokens = getHotkeyDisplayTokens(hotkey, { preferMacSymbols: true });
+        const tokens = getHotkeyDisplayTokens(hotkey);
         if (tokens.length === 0) {
             return <div className="key-cap" style={{ width: '8em', opacity: 0.5 }}>{props.t('not_set')}</div>;
         }

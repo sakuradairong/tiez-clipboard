@@ -4,6 +4,10 @@
 
 TieZ is a community-maintained Tauri 2 clipboard manager. The maintenance policy favors reproducible builds, release reliability, focused bug fixes, and small reviewable diffs before broad feature work. Read `CONTRIBUTING.md` before changing contributor or release behavior; update `CHANGELOG.md` for changes visible to users or contributors.
 
+## Platform focus
+
+Active development, bug fixes, and release validation currently target **Windows only**. Linux and macOS paths may still compile through stubs or legacy implementations, but they are not validated for releases in this maintenance phase. Prioritize Windows behavior when implementing or reviewing changes; call out unavoidable cross-platform impact in pull requests and changelog entries.
+
 ## Essential commands
 
 Run commands from the repository root unless noted otherwise.

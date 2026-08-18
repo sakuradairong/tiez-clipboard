@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { previewSoundEffect } from "../../../../shared/lib/soundEffects";
 
 const isMacPlatform =
     /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent) || /Mac/i.test(navigator.platform);
@@ -208,8 +209,18 @@ const GeneralSettingsGroup = ({
                 )}
                 {soundEnabled && (
                     <div className="setting-item column" style={{ marginLeft: '18px', borderBottom: 'none' }}>
-                        <div className="item-label-group">
+                        <div className="item-label-group" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                             <span className="item-label">{t('sound_volume') || "Sound Volume"} ({Math.round(soundVolume * 100)}%)</span>
+                            <button
+                                type="button"
+                                className="btn-secondary"
+                                style={{ padding: '2px 10px', fontSize: '12px', flexShrink: 0 }}
+                                onClick={() => {
+                                    void previewSoundEffect("copy", soundVolume);
+                                }}
+                            >
+                                {t('sound_preview') || "Preview"}
+                            </button>
                         </div>
                         <div style={{ padding: '0 4px', width: '100%' }}>
                             <input

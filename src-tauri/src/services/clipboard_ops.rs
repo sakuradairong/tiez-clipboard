@@ -766,15 +766,22 @@ async fn copy_content_to_system_clipboard(
                             clean_html.as_str()
                         };
                         let cf_html = generate_cf_html(html_for_paste);
+                        let has_pasteable_rich_text =
+                            !html_for_paste.trim().is_empty() || !content.trim().is_empty();
 
-                        let rich_image_bytes = fallback_image_data_url
-                            .as_deref()
-                            .and_then(resolve_rich_image_fallback_bytes)
-                            .or_else(|| {
-                                extract_first_image_data_url_from_html(html_for_paste).and_then(
-                                    |data_url| resolve_rich_image_fallback_bytes(&data_url),
-                                )
-                            });
+                        // Preview-only image fallbacks must not dominate paste when HTML exists.
+                        let rich_image_bytes = if has_pasteable_rich_text {
+                            None
+                        } else {
+                            fallback_image_data_url
+                                .as_deref()
+                                .and_then(resolve_rich_image_fallback_bytes)
+                                .or_else(|| {
+                                    extract_first_image_data_url_from_html(html_for_paste).and_then(
+                                        |data_url| resolve_rich_image_fallback_bytes(&data_url),
+                                    )
+                                })
+                        };
 
                         if let Some(bytes) = rich_image_bytes {
                             let (primary_hash, secondary_hash, visual_hash) =

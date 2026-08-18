@@ -516,8 +516,10 @@ fn setup_main_window(app: &App, s: &StartupSettings) {
     let args: Vec<String> = std::env::args().collect();
     let is_autostart =
         args.contains(&"--autostart".to_string()) || args.contains(&"--minimized".to_string());
-    if !is_autostart && !s.silent_start {
-        if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window("main") {
+        if s.silent_start || is_autostart {
+            let _ = window.hide();
+        } else {
             let _ = window.show();
         }
     }
