@@ -33,7 +33,7 @@ Expected baseline behavior:
 ## Release and packaging workflow
 
 - `.github/workflows/build-platforms.yml` is manual-only. It builds unsigned Windows x64 NSIS, Linux x64 DEB, and macOS ARM/Intel app bundles. It uses `.github/tauri-build-test.conf.json` to disable updater artifacts during build validation.
-- `.github/workflows/release.yml` runs for `v*` tags or manual dispatch. It builds Windows NSIS, Linux DEB/AppImage, and macOS app/DMG bundles and creates a draft GitHub release.
+- `.github/workflows/release.yml` runs for `v*` tags or manual dispatch. It currently builds Windows NSIS and MSI bundles only while maintenance is Windows-focused. Linux DEB/AppImage and macOS app/DMG jobs are paused until those platforms are validated again.
 - Release builds enable the updater and require `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Do not enable production updating until the endpoint, public key, and signing infrastructure are controlled by this fork; `.env.example` intentionally defaults `VITE_ENABLE_UPDATER=false`.
 - The application version is duplicated in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Keep all four synchronized.
 - The README still describes Linux as upcoming, while current build and release workflows produce Linux artifacts. Treat workflow configuration as the packaging implementation and update documentation deliberately if platform support changes.
