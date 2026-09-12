@@ -22,6 +22,9 @@ interface UseKeyboardNavigationOptions {
   searchInputRef: RefObject<HTMLInputElement | null>;
   copyToClipboard: (id: number, content: string, contentType: string, pasteWithFormat?: boolean) => Promise<void>;
   setSearch: (val: string) => void;
+  // Lowest selectable index in filteredHistory; pinned items hidden by the
+  // collapsed pinned section are skipped below this index.
+  selectionBaseIndex: number;
 }
 
 export const useKeyboardNavigation = ({
@@ -38,7 +41,8 @@ export const useKeyboardNavigation = ({
   richPasteHotkey,
   searchInputRef,
   copyToClipboard,
-  setSearch
+  setSearch,
+  selectionBaseIndex
 }: UseKeyboardNavigationOptions) => {
   const filteredHistoryRef = useRef(filteredHistory);
   const selectedIndexRef = useRef(selectedIndex);
@@ -51,6 +55,7 @@ export const useKeyboardNavigation = ({
   const arrowKeySelectionRef = useRef(arrowKeySelection);
   const copyToClipboardRef = useRef(copyToClipboard);
   const richPasteHotkeyRef = useRef(richPasteHotkey);
+  const selectionBaseIndexRef = useRef(selectionBaseIndex);
 
   useEffect(() => { filteredHistoryRef.current = filteredHistory; }, [filteredHistory]);
   useEffect(() => { selectedIndexRef.current = selectedIndex; }, [selectedIndex]);
@@ -62,6 +67,29 @@ export const useKeyboardNavigation = ({
   useEffect(() => { arrowKeySelectionRef.current = arrowKeySelection; }, [arrowKeySelection]);
   useEffect(() => { copyToClipboardRef.current = copyToClipboard; }, [copyToClipboard]);
   useEffect(() => { richPasteHotkeyRef.current = richPasteHotkey; }, [richPasteHotkey]);
+  useEffect(() => { selectionBaseIndexRef.current = selectionBaseIndex; }, [selectionBaseIndex]);
+
+  // With selectionBaseIndex 0 these mirror the previous Math.min/Math.max clamps;
+  // a collapsed pinned section raises the floor above the hidden indices.
+  const moveSelectionDown = (s: number) => {
+    const maxIndex = filteredHistoryRef.current.length - 1;
+    if (maxIndex < 0) return s;
+    const floor = Math.min(selectionBaseIndexRef.current, maxIndex);
+    if (s < floor) return floor;
+    return Math.min(s + 1, maxIndex);
+  };
+
+  const moveSelectionUp = (s: number) => {
+    const maxIndex = filteredHistoryRef.current.length - 1;
+    if (maxIndex < 0) return s;
+    return Math.max(s - 1, Math.min(selectionBaseIndexRef.current, maxIndex));
+  };
+
+  const selectionEntryIndex = () => {
+    const maxIndex = Math.max(filteredHistoryRef.current.length - 1, 0);
+    return Math.min(selectionBaseIndexRef.current, maxIndex);
+  };
+
   useEffect(() => {
     invoke("set_navigation_mode", { active: isKeyboardMode }).catch(console.error);
   }, [isKeyboardMode]);
@@ -93,19 +121,19 @@ export const useKeyboardNavigation = ({
       const isEditable = isAnyInput || target.isContentEditable === true;
 
       if (e.key === "Escape") {
-          e.preventDefault();
-          if (isEditable) {
-              searchInputRef.current?.blur();
+        e.preventDefault();
+        if (isEditable) {
+          searchInputRef.current?.blur();
+        } else {
+          const isClipboardAtTop = !isKeyboardModeRef.current || selectedIndexRef.current <= selectionBaseIndexRef.current;
+          if (isClipboardAtTop) {
+            invoke("hide_window_cmd");
           } else {
-              const isClipboardAtTop = !isKeyboardModeRef.current || selectedIndexRef.current <= 0;
-              if (isClipboardAtTop) {
-                invoke("hide_window_cmd");
-              } else {
-                setIsKeyboardMode(true);
-                setSelectedIndex(0);
-              }
+            setIsKeyboardMode(true);
+            setSelectedIndex(selectionEntryIndex());
           }
-          return;
+        }
+        return;
       }
 
       if (isEditable) {
@@ -123,14 +151,14 @@ export const useKeyboardNavigation = ({
 
         setIsKeyboardMode((prev) => {
           if (!prev) {
-            setSelectedIndex(0);
+            setSelectedIndex(selectionEntryIndex());
             return true;
           }
 
           if (e.key === "ArrowDown") {
-            setSelectedIndex((s) => Math.min(s + 1, filteredHistoryRef.current.length - 1));
+            setSelectedIndex((s) => moveSelectionDown(s));
           } else {
-            setSelectedIndex((s) => Math.max(s - 1, 0));
+            setSelectedIndex((s) => moveSelectionUp(s));
           }
           return true;
         });
@@ -207,16 +235,16 @@ export const useKeyboardNavigation = ({
       if (action === "up") {
         if (!isNavMode) {
           setIsKeyboardMode(true);
-          setSelectedIndex(0);
+          setSelectedIndex(selectionEntryIndex());
         } else {
-          setSelectedIndex((prev) => Math.max(prev - 1, 0));
+          setSelectedIndex((prev) => moveSelectionUp(prev));
         }
       } else if (action === "down") {
         if (!isNavMode) {
           setIsKeyboardMode(true);
-          setSelectedIndex(0);
+          setSelectedIndex(selectionEntryIndex());
         } else {
-          setSelectedIndex((prev) => Math.min(prev + 1, history.length - 1));
+          setSelectedIndex((prev) => moveSelectionDown(prev));
         }
       } else if (action === "enter") {
         if (!isNavMode) return;

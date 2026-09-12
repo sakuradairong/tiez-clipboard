@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, RefObject, ReactNode } from "react";
 import { motion, Reorder, useDragControls } from "framer-motion";
 import type { DragControls } from "framer-motion";
-import { ArrowUp, Clipboard } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronRight, Clipboard } from "lucide-react";
 import FileTransferChatView from "../../file-transfer/components/FileTransferChatView";
 import SettingsPanel from "../../settings/components/SettingsPanel";
 import TagManager from "../../tag/components/TagManager";
@@ -39,6 +39,8 @@ interface AppMainContentProps {
   search: string;
   pinnedItems: ClipboardEntry[];
   unpinnedItems: ClipboardEntry[];
+  pinnedCollapsed: boolean;
+  onTogglePinnedCollapsed: () => void;
   compactMode: boolean;
   selectedIndex: number;
   isKeyboardMode: boolean;
@@ -112,6 +114,8 @@ const AppMainContent = ({
   search,
   pinnedItems,
   unpinnedItems,
+  pinnedCollapsed,
+  onTogglePinnedCollapsed,
   compactMode,
   selectedIndex,
   isKeyboardMode,
@@ -188,6 +192,13 @@ const AppMainContent = ({
     }
     handlePinnedReorder(finalIds);
   }, [handlePinnedReorder, pinnedItems]);
+
+  const handleTogglePinnedSection = useCallback(() => {
+    // Reset the dragging flag so the order-sync effect above is not frozen
+    // if the section is collapsed mid-drag.
+    setIsDraggingPinned(false);
+    onTogglePinnedCollapsed();
+  }, [onTogglePinnedCollapsed]);
 
   if (showTagManager && tagManagerEnabled) {
     return (
@@ -290,31 +301,43 @@ const AppMainContent = ({
             isKeyboardMode={isKeyboardMode}
             header={
               pinnedItems.length > 0 ? (
-                <Reorder.Group
-                  axis="y"
-                  values={orderedPinnedIds}
-                  onReorder={handlePinnedIdsReorder}
-                  className={isDraggingPinned ? "pinned-reorder dragging" : "pinned-reorder"}
-                  style={{ listStyle: "none", padding: 0 }}
-                >
-                  {orderedPinnedItems.map((item, index) => (
-                    <SortableItem
-                      key={item.id}
-                      item={item}
-                      index={index}
-                      renderItem={renderItemContent}
-                      isFirst={index === 0}
-                      compactMode={compactMode}
-                      onDragStart={handlePinnedDragStart}
-                      onDragEnd={handlePinnedDragEnd}
-                    />
-                  ))}
-                </Reorder.Group>
+                <>
+                  <div
+                    className={`pinned-section-header${compactMode ? " compact" : ""}`}
+                    onClick={handleTogglePinnedSection}
+                  >
+                    {pinnedCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                    <span className="pinned-section-title">{t("pinned_section")}</span>
+                    <span className="pinned-section-count">{pinnedItems.length}</span>
+                  </div>
+                  {!pinnedCollapsed && (
+                    <Reorder.Group
+                      axis="y"
+                      values={orderedPinnedIds}
+                      onReorder={handlePinnedIdsReorder}
+                      className={isDraggingPinned ? "pinned-reorder dragging" : "pinned-reorder"}
+                      style={{ listStyle: "none", padding: 0 }}
+                    >
+                      {orderedPinnedItems.map((item, index) => (
+                        <SortableItem
+                          key={item.id}
+                          item={item}
+                          index={index}
+                          renderItem={renderItemContent}
+                          isFirst={index === 0}
+                          compactMode={compactMode}
+                          onDragStart={handlePinnedDragStart}
+                          onDragEnd={handlePinnedDragEnd}
+                        />
+                      ))}
+                    </Reorder.Group>
+                  )}
+                </>
               ) : null
             }
             renderItem={(item, index, isFirst?: boolean) => {
               const el = renderItemContent(item, pinnedItems.length + index, undefined, true);
-              if (isFirst && pinnedItems.length === 0) {
+              if (isFirst && (pinnedItems.length === 0 || pinnedCollapsed)) {
                 return (
                   <div className="first-virtual-item" style={{ height: "100%", paddingTop: "4px" }}>
                     {el}

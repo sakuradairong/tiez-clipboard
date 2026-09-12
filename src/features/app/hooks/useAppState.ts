@@ -98,6 +98,7 @@ export const useAppState = (): AppState => {
   const [theme, setTheme] = useState(DEFAULT_THEME);
   const [colorMode, setColorMode] = useState("system");
   const [showSourceAppIcon, setShowSourceAppIcon] = useState(true);
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
 
   const [compactMode, setCompactMode] = useState(false);
   const [clipboardItemFontSize, setClipboardItemFontSize] = useState(13);
@@ -322,6 +323,8 @@ export const useAppState = (): AppState => {
     setColorMode,
     showSourceAppIcon,
     setShowSourceAppIcon,
+    pinnedCollapsed,
+    setPinnedCollapsed,
 
     compactMode,
     setCompactMode,

@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- Collapsible pinned section in the clipboard history: a header with item count toggles the pinned block, the collapsed state persists across restarts (`app.pinned_collapsed`), and keyboard navigation skips hidden pinned items while collapsed.
+
 ### Fixed
 
 - Turning off “Show Source App Icon” now hides the source app name in clipboard items and the compact preview header, not just the icon.

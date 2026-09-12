@@ -250,6 +250,8 @@ const App = () => {
     setColorMode,
     showSourceAppIcon,
     setShowSourceAppIcon,
+    pinnedCollapsed,
+    setPinnedCollapsed,
 
     compactMode,
     setCompactMode,
@@ -615,6 +617,7 @@ const App = () => {
     setRegistryWinVEnabled,
     setPasteMethod,
     setShowSourceAppIcon,
+    setPinnedCollapsed,
 
     setDeleteAfterPaste,
     setMoveToTopAfterPaste,
@@ -1035,7 +1038,17 @@ const App = () => {
     setHistory
   });
 
-  useListSelectionReset({ filteredHistory, setSelectedIndex });
+  // Pinned items hidden by the collapsed pinned section stay at the head of
+  // filteredHistory; keyboard selection starts above them instead.
+  const pinnedSelectionBase = pinnedCollapsed ? pinnedItems.length : 0;
+
+  const handleTogglePinnedCollapsed = useCallback(() => {
+    const next = !pinnedCollapsed;
+    setPinnedCollapsed(next);
+    saveAppSetting("pinned_collapsed", String(next));
+  }, [pinnedCollapsed, setPinnedCollapsed, saveAppSetting]);
+
+  useListSelectionReset({ filteredHistory, setSelectedIndex, resetIndex: pinnedSelectionBase });
 
   useSearchFetchTrigger({ debouncedSearch, isComposing, typeFilter, fetchHistory });
 
@@ -1061,7 +1074,8 @@ const App = () => {
     richPasteHotkey,
     searchInputRef,
     copyToClipboard,
-    setSearch
+    setSearch,
+    selectionBaseIndex: pinnedSelectionBase
   });
 
 
@@ -1199,6 +1213,8 @@ const App = () => {
           search={search}
           pinnedItems={pinnedItems}
           unpinnedItems={unpinnedItems}
+          pinnedCollapsed={pinnedCollapsed}
+          onTogglePinnedCollapsed={handleTogglePinnedCollapsed}
           compactMode={compactMode}
           selectedIndex={selectedIndex}
           isKeyboardMode={isKeyboardMode}

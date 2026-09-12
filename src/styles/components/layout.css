@@ -252,6 +252,45 @@ select.search-input option {
   transition: none;
 }
 
+.pinned-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 2px 8px;
+  padding: 3px 8px;
+  border-radius: var(--panel-radius);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pinned-section-header:hover {
+  color: var(--text-primary);
+  background: rgba(var(--accent-color-rgb), 0.06);
+}
+
+.pinned-section-header .pinned-section-count {
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: rgba(var(--accent-color-rgb), 0.08);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.pinned-section-header.compact {
+  padding: 1px 8px;
+  margin-bottom: 1px;
+}
+
 .drag-handle {
   display: flex !important;
   align-items: center;

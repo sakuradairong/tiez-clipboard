@@ -156,6 +156,8 @@ export interface AppState {
   setColorMode: StateSetter<string>;
   showSourceAppIcon: boolean;
   setShowSourceAppIcon: StateSetter<boolean>;
+  pinnedCollapsed: boolean;
+  setPinnedCollapsed: StateSetter<boolean>;
 
   compactMode: boolean;
   setCompactMode: StateSetter<boolean>;

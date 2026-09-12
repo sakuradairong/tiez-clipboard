@@ -191,6 +191,7 @@ export const translations = {
         mode_dark: "深色",
         compact_mode: "紧凑模式",
         compact_mode_hint: "开启后剪贴板列表显示更密集，可容纳更多条目，鼠标悬停可预览",
+        pinned_section: "置顶",
 
         emoji_panel_enabled: "表情包开关",
         emoji_panel_enabled_hint: "关闭后隐藏表情包入口",
@@ -745,6 +746,7 @@ export const translations = {
         mode_dark: "Dark",
         compact_mode: "Compact Mode",
         compact_mode_hint: "When enabled, clipboard list displays more densely with more entries visible. Hover to preview.",
+        pinned_section: "Pinned",
 
         emoji_panel_enabled: "Stickers Toggle",
         emoji_panel_enabled_hint: "Hide the stickers entry when disabled.",
@@ -1283,6 +1285,7 @@ export const translations = {
         mode_dark: "深色",
         compact_mode: "緊湊模式",
         compact_mode_hint: "啟用後剪貼簿列表顯示更密集，可容納更多條目，滑鼠懸停可預覽",
+        pinned_section: "置頂",
 
         emoji_panel_enabled: "表情包開關",
         emoji_panel_enabled_hint: "關閉後隱藏表情包入口",
