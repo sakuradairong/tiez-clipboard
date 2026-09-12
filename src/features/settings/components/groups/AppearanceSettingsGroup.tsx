@@ -191,7 +191,7 @@ const AppearanceSettingsGroup = ({
                 <div className="setting-item">
                     <LabelWithHint
                         label={t('show_source_app_icon') || '显示来源应用图标'}
-                        hint={t('show_source_app_icon_hint') || '关闭后不显示来源应用图标，改为显示剪贴板条目类型图标'}
+                        hint={t('show_source_app_icon_hint') || '关闭后不显示来源应用图标和名称，改为显示剪贴板条目类型图标'}
                         hintKey="show_source_app_icon"
                     />
                     <label className="switch">

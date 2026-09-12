@@ -1144,6 +1144,7 @@ const ClipboardItem = ({
                 preview: item.preview,
                 htmlContent: item.html_content,
                 sourceApp: item.source_app,
+                showSourceAppIcon,
                 timestamp: item.timestamp,
                 language,
                 theme,
@@ -1195,6 +1196,7 @@ const ClipboardItem = ({
                         preview: item.preview,
                         htmlContent: item.html_content,
                         sourceApp: item.source_app,
+                        showSourceAppIcon,
                         timestamp: item.timestamp,
                         language,
                         theme,
@@ -1705,7 +1707,7 @@ const ClipboardItem = ({
                         {showSourceAppIcon
                             ? renderSourceAppIcon(sourceAppIcon, item.content_type, item.source_app)
                             : getIcon(item.content_type)}
-                        <span>{item.source_app}</span>
+                        {showSourceAppIcon && <span>{item.source_app}</span>}
                     </div>
                 </div>
 

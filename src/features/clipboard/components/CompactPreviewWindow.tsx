@@ -28,6 +28,7 @@ type PreviewPayload = {
     preview?: string;
     htmlContent?: string;
     sourceApp?: string;
+    showSourceAppIcon?: boolean;
     timestamp?: number;
     language?: Locale;
     theme?: string;
@@ -589,11 +590,15 @@ const CompactPreviewWindow = () => {
                         {getIcon(payload?.contentType || "text")}
                         <span>{payload?.contentType || "text"}</span>
                     </div>
-                    <div className="meta-dot">•</div>
-                    <div className="meta-row">
-                        <AppWindow size={14} />
-                        <span>{payload?.sourceApp || "Unknown"}</span>
-                    </div>
+                    {payload?.showSourceAppIcon !== false && (
+                        <>
+                            <div className="meta-dot">•</div>
+                            <div className="meta-row">
+                                <AppWindow size={14} />
+                                <span>{payload?.sourceApp || "Unknown"}</span>
+                            </div>
+                        </>
+                    )}
                     <div className="meta-dot">•</div>
                     <div className="meta-row">
                         <Clock size={14} />

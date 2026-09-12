@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Turning off “Show Source App Icon” now hides the source app name in clipboard items and the compact preview header, not just the icon.
+
 ## [0.3.9] - 2026-08-18
 
 ### Added
