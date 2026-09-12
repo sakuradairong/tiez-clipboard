@@ -42,5 +42,8 @@ git_graph.txt
 git_log_out.txt
 .omo/
 
+# Agent session artifacts
+.zcode/
+
 # Sub-projects
 mobile-app/
