@@ -69,25 +69,26 @@ export const useKeyboardNavigation = ({
   useEffect(() => { richPasteHotkeyRef.current = richPasteHotkey; }, [richPasteHotkey]);
   useEffect(() => { selectionBaseIndexRef.current = selectionBaseIndex; }, [selectionBaseIndex]);
 
-  // With selectionBaseIndex 0 these mirror the previous Math.min/Math.max clamps;
-  // a collapsed pinned section raises the floor above the hidden indices.
+  // A collapsed pinned section raises the floor above hidden indices.
+  // Keep -1 (no selection) when there are no visible entries.
   const moveSelectionDown = (s: number) => {
     const maxIndex = filteredHistoryRef.current.length - 1;
-    if (maxIndex < 0) return s;
-    const floor = Math.min(selectionBaseIndexRef.current, maxIndex);
+    const floor = selectionBaseIndexRef.current;
+    if (maxIndex < floor) return -1;
     if (s < floor) return floor;
     return Math.min(s + 1, maxIndex);
   };
 
   const moveSelectionUp = (s: number) => {
     const maxIndex = filteredHistoryRef.current.length - 1;
-    if (maxIndex < 0) return s;
-    return Math.max(s - 1, Math.min(selectionBaseIndexRef.current, maxIndex));
+    const floor = selectionBaseIndexRef.current;
+    if (maxIndex < floor) return -1;
+    return Math.min(maxIndex, Math.max(s - 1, floor));
   };
 
   const selectionEntryIndex = () => {
-    const maxIndex = Math.max(filteredHistoryRef.current.length - 1, 0);
-    return Math.min(selectionBaseIndexRef.current, maxIndex);
+    const floor = selectionBaseIndexRef.current;
+    return floor < filteredHistoryRef.current.length ? floor : -1;
   };
 
   useEffect(() => {
@@ -175,12 +176,12 @@ export const useKeyboardNavigation = ({
         const currentIndex = selectedIndexRef.current;
         const currentHistory = filteredHistoryRef.current;
 
-        if (currentIndex >= 0 && currentIndex < currentHistory.length) {
+        if (currentIndex >= selectionBaseIndexRef.current && currentIndex < currentHistory.length) {
           isPastingLocal = true;
           const item = currentHistory[currentIndex];
 
           setIsKeyboardMode(false);
-          setSelectedIndex(0);
+          setSelectedIndex(selectionEntryIndex());
 
           if (copyToClipboardRef.current) {
             await copyToClipboardRef.current(
@@ -248,7 +249,7 @@ export const useKeyboardNavigation = ({
         }
       } else if (action === "enter") {
         if (!isNavMode) return;
-        if (currentIndex >= 0 && currentIndex < history.length) {
+        if (currentIndex >= selectionBaseIndexRef.current && currentIndex < history.length) {
           const item = history[currentIndex];
           copyToClipboard(item.id, item.content, item.content_type, false);
         }
@@ -271,5 +272,4 @@ export const useKeyboardNavigation = ({
     showTagManager
   ]);
 };
-
 

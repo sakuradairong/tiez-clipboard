@@ -12,6 +12,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- Keyboard navigation no longer selects or pastes hidden pinned entries when the pinned section is collapsed and no visible history entries remain.
 - Turning off “Show Source App Icon” now hides the source app name in clipboard items and the compact preview header, not just the icon.
 
 ## [0.3.9] - 2026-08-18
