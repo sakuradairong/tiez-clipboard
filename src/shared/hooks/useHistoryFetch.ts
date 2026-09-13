@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { Dispatch, SetStateAction } from "react";
 import type { ClipboardEntry } from "../types";
 
@@ -45,6 +46,7 @@ export const useHistoryFetch = ({
   // clipboard event.
   const fetchAttemptsRef = useRef(0);
   const fetchFnRef = useRef<((reset?: boolean) => Promise<void>) | null>(null);
+  const readyPollRef = useRef<number | null>(null);
 
   useEffect(() => {
     currentOffsetRef.current = currentOffset;
@@ -132,6 +134,10 @@ export const useHistoryFetch = ({
           }
         }
         fetchAttemptsRef.current = 0;
+        if (readyPollRef.current !== null) {
+          window.clearInterval(readyPollRef.current);
+          readyPollRef.current = null;
+        }
       } catch (err) {
         console.error("无法获取历史记录", err);
         if (seq !== fetchSeqRef.current) return;
@@ -146,6 +152,23 @@ export const useHistoryFetch = ({
               void fetchFnRef.current?.(reset);
             }
           }, delay);
+        } else if (readyPollRef.current === null) {
+          // Retries exhausted: fall back to polling `is_app_ready`. This also
+          // recovers when `app-ready` fired before the listener attached.
+          readyPollRef.current = window.setInterval(() => {
+            invoke<boolean>("is_app_ready")
+              .then((ready) => {
+                if (!ready) return;
+                if (readyPollRef.current !== null) {
+                  window.clearInterval(readyPollRef.current);
+                  readyPollRef.current = null;
+                }
+                void fetchFnRef.current?.(true);
+              })
+              .catch(() => {
+                // Backend state not managed yet; keep polling.
+              });
+          }, 2000);
         }
       }
     },
@@ -162,6 +185,22 @@ export const useHistoryFetch = ({
   );
 
   fetchFnRef.current = fetchHistory;
+
+  useEffect(() => {
+    // Rust setup emits `app-ready` once all backend state is managed; refetch
+    // so a slow boot still shows history even after fetch retries were spent.
+    const unlistenPromise = listen("app-ready", () => {
+      void fetchFnRef.current?.(true);
+    });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+      if (readyPollRef.current !== null) {
+        window.clearInterval(readyPollRef.current);
+        readyPollRef.current = null;
+      }
+    };
+  }, []);
 
   const loadMoreHistory = useCallback(async () => {
     if (loadingRef.current || isLoadingMore || !hasMore) return;

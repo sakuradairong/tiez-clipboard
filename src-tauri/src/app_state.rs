@@ -53,4 +53,9 @@ pub struct SessionHistory(pub Mutex<VecDeque<ClipboardEntry>>);
 
 pub struct AppDataDir(pub Mutex<std::path::PathBuf>);
 
+/// Startup readiness: false until `app::setup::init` finishes managing all
+/// backend state; flips to true together with the `app-ready` event.
+#[derive(Default)]
+pub struct AppReady(pub AtomicBool);
+
 pub struct EncryptionQueueState(pub EncryptionQueue);

@@ -118,6 +118,7 @@ fn main() {
             app::commands::set_tray_visible,
             app::commands::set_edge_docking,
             app::commands::set_follow_mouse,
+            app::commands::is_app_ready,
             app::commands::get_data_path,
             app::commands::open_folder,
             app::commands::open_data_folder,

@@ -1,9 +1,14 @@
-use crate::app_state::AppDataDir;
+use crate::app_state::{AppDataDir, AppReady};
 use crate::database::ENCRYPT_PREFIX;
 use crate::error::{AppError, AppResult};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
 use tauri::{AppHandle, Manager, State};
+
+#[tauri::command]
+pub fn is_app_ready(state: State<'_, AppReady>) -> AppResult<bool> {
+    Ok(state.0.load(std::sync::atomic::Ordering::SeqCst))
+}
 
 #[tauri::command]
 pub fn get_data_path(state: State<'_, AppDataDir>) -> AppResult<String> {

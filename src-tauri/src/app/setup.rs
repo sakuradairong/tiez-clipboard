@@ -4,7 +4,7 @@ use crate::app::hooks::{keyboard_proc, mouse_proc};
 use crate::app::system::tray_subclass_proc;
 use crate::app::window_manager::{release_win_keys, restore_last_focus, toggle_window};
 use crate::app_state::{
-    AppDataDir, EncryptionQueueState, PasteQueue, SessionHistory, SettingsState,
+    AppDataDir, AppReady, EncryptionQueueState, PasteQueue, SessionHistory, SettingsState,
 };
 use crate::database::{self, DbState};
 use crate::global_state::*;
@@ -51,6 +51,10 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize GLOBAL_APP_HANDLE for Win32 hooks
     let _ = GLOBAL_APP_HANDLE.set(app_handle.clone());
+
+    // Managed first so `is_app_ready` stays invokable during the whole setup
+    // window while reporting false.
+    app.manage(AppReady::default());
 
     // 1. Data Directory & Migration
     let app_dir = resolve_data_dir(app)?;
@@ -142,6 +146,9 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     // 12. Notify the frontend that backend state is ready. The config-created
     // main window loads before this setup runs, so early invokes can race
     // state management; the frontend waits for this event on first load.
+    if let Some(ready) = app.try_state::<AppReady>() {
+        ready.0.store(true, Ordering::SeqCst);
+    }
     let _ = app.emit("app-ready", ());
 
     Ok(())
