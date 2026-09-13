@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Startup race where the history list could appear empty after a reboot: the main window can load before Rust setup finishes managing the database state, causing the initial history fetch to fail with no retry. The frontend now retries failed history fetches with backoff, and setup emits `app-ready` when backend state is ready.
+
 ## [0.3.10] - 2026-09-12
 
 ### Added

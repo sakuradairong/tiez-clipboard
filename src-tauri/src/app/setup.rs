@@ -139,6 +139,11 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     setup_taskbar_listener(app);
 
+    // 12. Notify the frontend that backend state is ready. The config-created
+    // main window loads before this setup runs, so early invokes can race
+    // state management; the frontend waits for this event on first load.
+    let _ = app.emit("app-ready", ());
+
     Ok(())
 }
 

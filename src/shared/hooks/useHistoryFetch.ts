@@ -39,6 +39,12 @@ export const useHistoryFetch = ({
   const lastRequestedOffsetRef = useRef<number | null>(null);
   const currentOffsetRef = useRef(currentOffset);
   const historyLengthRef = useRef(historyLength);
+  // The config-created window can load before Rust setup finishes managing
+  // DbState (likely right after boot), so the first invoke may fail. Retry
+  // with backoff instead of leaving the history list empty until the next
+  // clipboard event.
+  const fetchAttemptsRef = useRef(0);
+  const fetchFnRef = useRef<((reset?: boolean) => Promise<void>) | null>(null);
 
   useEffect(() => {
     currentOffsetRef.current = currentOffset;
@@ -125,9 +131,22 @@ export const useHistoryFetch = ({
             setHasMore(hasMoreNow);
           }
         }
+        fetchAttemptsRef.current = 0;
       } catch (err) {
         console.error("无法获取历史记录", err);
+        if (seq !== fetchSeqRef.current) return;
         setHasMore(false);
+
+        const attempt = ++fetchAttemptsRef.current;
+        if (attempt <= 5) {
+          const delay = Math.min(300 * 2 ** (attempt - 1), 5000);
+          window.setTimeout(() => {
+            // Only retry if no newer fetch has started since the schedule.
+            if (seq === fetchSeqRef.current) {
+              void fetchFnRef.current?.(reset);
+            }
+          }, delay);
+        }
       }
     },
     [
@@ -141,6 +160,8 @@ export const useHistoryFetch = ({
       setHistory
     ]
   );
+
+  fetchFnRef.current = fetchHistory;
 
   const loadMoreHistory = useCallback(async () => {
     if (loadingRef.current || isLoadingMore || !hasMore) return;
