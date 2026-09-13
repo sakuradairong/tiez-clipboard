@@ -530,8 +530,18 @@ fn dir_contains_user_data(dir: &Path) -> bool {
         || dir.join("attachments").is_dir()
 }
 
-/// `child` 是否位于 `ancestor` 内（含相等）。Windows 上按大小写不敏感的
-/// 路径分量比较，避免注册表/环境变量的大小写差异漏判。
+/// 解析为可比较的真实绝对路径：消除 8.3 短路径名、`..`、`\\?\` 扩展
+/// 前缀、符号链接与目录联接等 Windows 路径别名。
+/// 解析失败（不存在、访问失败、循环链接等）返回 `None`；调用方必须
+/// 跳过删除，不得回退到不可靠的字符串比较。
+#[cfg(windows)]
+fn canonicalize_for_compare(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
+/// `child` 是否位于 `ancestor` 内（含相等）。输入必须是
+/// `canonicalize_for_compare` 解析后的真实路径；仍按大小写不敏感比较，
+/// 以容忍不同来源的大小写拼写。
 #[cfg(windows)]
 fn path_is_within_ci(child: &Path, ancestor: &Path) -> bool {
     let normalize = |p: &Path| -> Vec<String> {
@@ -545,65 +555,156 @@ fn path_is_within_ci(child: &Path, ancestor: &Path) -> bool {
         && child_parts[..ancestor_parts.len()] == ancestor_parts[..]
 }
 
+/// 清理前置护栏：预先解析受保护目录与运行程序目录为真实路径。
+#[cfg(windows)]
+struct CleanupGuard {
+    resolved_protected: Vec<PathBuf>,
+    resolved_exe_dir: PathBuf,
+}
+
+/// 构建清理护栏。返回 `None` 表示无法确认安全，调用方必须放弃目录清理：
+/// - `exe_dir` 为 `None`（运行程序目录不可得）；
+/// - 运行程序目录无法解析；
+/// - 受保护目录**存在性无法判定**（权限不足、元数据错误等——注意不能用
+///   `exists()`，它把这类错误当作不存在而丢弃保护）；
+/// - 受保护目录存在但无法解析为真实路径。
+///
+/// 只有 `try_exists()` 明确返回不存在时才忽略该受保护目录。
+#[cfg(windows)]
+fn prepare_cleanup_guard(protected_dirs: &[PathBuf], exe_dir: Option<&Path>) -> Option<CleanupGuard> {
+    let exe_dir = exe_dir?;
+    let resolved_exe_dir = canonicalize_for_compare(exe_dir)?;
+    let mut resolved_protected = Vec::new();
+    for protected in protected_dirs {
+        match protected.try_exists() {
+            // 明确不存在：不会因删除候选而丢失。
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(error) => {
+                println!(
+                    ">>> [CLEANUP] Existence of protected dir {:?} could not be determined ({}); skipping install folder cleanup entirely.",
+                    protected, error
+                );
+                return None;
+            }
+        }
+        match canonicalize_for_compare(protected) {
+            Some(resolved) => resolved_protected.push(resolved),
+            None => {
+                println!(
+                    ">>> [CLEANUP] Protected dir {:?} could not be resolved; skipping install folder cleanup entirely.",
+                    protected
+                );
+                return None;
+            }
+        }
+    }
+    Some(CleanupGuard {
+        resolved_protected,
+        resolved_exe_dir,
+    })
+}
+
 /// 删除候选的旧安装目录，带数据安全护栏：
-/// - 目录本身或其 `data/` 子目录（便携模式）含用户数据时跳过；
+/// - 候选与受保护目录均先解析为真实路径（消除短路径、`..`、扩展前缀、
+///   目录联接等别名）后比较；任何一方无法解析即跳过（fail closed）；
+/// - 候选本身是重解析点（符号链接/目录联接）时跳过，避免删除语义差异
+///   波及链接目标；
 /// - 受保护目录（当前数据目录、显式重定向目标、便携目录）本身或其任何
-///   祖先目录一律跳过——无法确认安全时不清理。
+///   祖先目录、运行中程序目录及其祖先一律跳过；运行程序目录不可得、
+///   受保护目录存在性无法判定时整体放弃清理；
+/// - 目录本身或其 `data/` 子目录（便携模式）含用户数据时跳过。
 #[cfg(windows)]
 fn cleanup_install_folders_at(possible_paths: Vec<Option<PathBuf>>, protected_dirs: &[PathBuf]) {
+    // 运行程序目录不可得（current_exe 失败或无父目录）时无法确认任何
+    // 候选的安全性，整体放弃目录清理。
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()));
+    let Some(exe_dir) = exe_dir else {
+        println!(
+            ">>> [CLEANUP] Running program directory unavailable; skipping install folder cleanup entirely."
+        );
+        return;
+    };
+    let Some(guard) = prepare_cleanup_guard(protected_dirs, Some(&exe_dir)) else {
+        return;
+    };
+
     for path_opt in possible_paths.iter() {
-        if let Some(path) = path_opt {
-            println!(">>> [CLEANUP] Checking installation path: {:?}", path);
-            if path.exists() && path.is_dir() {
-                // Safety check: Don't delete if it's the current running dir (unlikely due to rename, but good practice)
-                if let Ok(current_exe) = std::env::current_exe() {
-                    if let Some(current_dir) = current_exe.parent() {
-                        if path == current_dir {
-                            println!(
-                                ">>> [CLEANUP] Skipping current directory safety check: {:?}",
-                                path
-                            );
-                            continue;
-                        }
-                    }
-                }
+        let Some(path) = path_opt else {
+            continue;
+        };
+        println!(">>> [CLEANUP] Checking installation path: {:?}", path);
+        if !(path.exists() && path.is_dir()) {
+            continue;
+        }
 
-                // Safety check: never delete a directory that is (an ancestor
-                // of) a protected data directory.
-                if protected_dirs
-                    .iter()
-                    .any(|protected| path_is_within_ci(protected, path))
-                {
-                    println!(
-                        ">>> [CLEANUP] Skipping {:?}: it is or contains a protected data directory.",
-                        path
-                    );
-                    continue;
-                }
+        // 重解析点（符号链接/目录联接）不作为删除目标：不同实现的删除
+        // 语义不一致，且元数据不可用时同样无法确认安全。
+        let is_reparse_point = fs::symlink_metadata(path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(true);
+        if is_reparse_point {
+            println!(
+                ">>> [CLEANUP] Skipping {:?}: it is a symlink/junction or its metadata is unavailable.",
+                path
+            );
+            continue;
+        }
 
-                // Safety check: never treat a directory holding user data
-                // (including portable data/ inside it) as an installation
-                // leftover, even if the registry pointed here.
-                if dir_contains_user_data(path) || dir_contains_user_data(&path.join("data")) {
-                    println!(
-                        ">>> [CLEANUP] Skipping {:?}: contains user data (database, redirect, attachments, or portable data).",
-                        path
-                    );
-                    continue;
-                }
+        // 解析候选真实路径；失败即跳过，不回退字符串比较。
+        let Some(resolved_path) = canonicalize_for_compare(path) else {
+            println!(
+                ">>> [CLEANUP] Skipping {:?}: could not resolve the real path.",
+                path
+            );
+            continue;
+        };
 
-                println!(">>> [CLEANUP] Found old installation folder: {:?}", path);
-                // Try to delete - this might fail if files are in use
-                match fs::remove_dir_all(path) {
-                    Ok(_) => {
-                        println!(">>> [CLEANUP] Successfully deleted old installation folder")
-                    }
-                    Err(e) => println!(
-                        ">>> [CLEANUP] Could not delete old installation folder: {}",
-                        e
-                    ),
-                }
-            }
+        // Safety check: never delete the running program's directory or any
+        // of its ancestors.
+        if path_is_within_ci(&guard.resolved_exe_dir, &resolved_path) {
+            println!(
+                ">>> [CLEANUP] Skipping {:?}: it is or contains the running program directory.",
+                path
+            );
+            continue;
+        }
+
+        // Safety check: never delete a directory that is (an ancestor
+        // of) a protected data directory.
+        if guard
+            .resolved_protected
+            .iter()
+            .any(|protected| path_is_within_ci(protected, &resolved_path))
+        {
+            println!(
+                ">>> [CLEANUP] Skipping {:?}: it is or contains a protected data directory.",
+                path
+            );
+            continue;
+        }
+
+        // Safety check: never treat a directory holding user data
+        // (including portable data/ inside it) as an installation
+        // leftover, even if the registry pointed here.
+        if dir_contains_user_data(path) || dir_contains_user_data(&path.join("data")) {
+            println!(
+                ">>> [CLEANUP] Skipping {:?}: contains user data (database, redirect, attachments, or portable data).",
+                path
+            );
+            continue;
+        }
+
+        println!(">>> [CLEANUP] Found old installation folder: {:?}", path);
+        // Try to delete - this might fail if files are in use
+        match fs::remove_dir_all(path) {
+            Ok(_) => println!(">>> [CLEANUP] Successfully deleted old installation folder"),
+            Err(e) => println!(
+                ">>> [CLEANUP] Could not delete old installation folder: {}",
+                e
+            ),
         }
     }
 }
@@ -1324,6 +1425,289 @@ mod tests {
         });
         assert!(resolution.protected_dirs.contains(&default));
         assert!(resolution.protected_dirs.contains(&legacy));
+    }
+
+    /// 将路径转换为 8.3 短路径形式；卷不支持或 API 失败时返回 None。
+    #[cfg(windows)]
+    fn to_short_path(path: &Path) -> Option<PathBuf> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let len = unsafe { GetShortPathNameW(PCWSTR::from_raw(wide.as_ptr()), None) };
+        if len == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; len as usize];
+        let written =
+            unsafe { GetShortPathNameW(PCWSTR::from_raw(wide.as_ptr()), Some(&mut buffer)) };
+        if written == 0 {
+            return None;
+        }
+        Some(PathBuf::from(String::from_utf16_lossy(
+            &buffer[..written as usize],
+        )))
+    }
+
+    /// 用 cmd 内建 mklink /J 创建目录联接（无需管理员权限）。
+    #[cfg(windows)]
+    fn make_junction(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link.as_os_str())
+            .arg(target.as_os_str())
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    /// 构造“安装目录内的自定义历史目录”布局，返回 (install, history)，
+    /// history 含数据库、WAL 和附件。
+    #[cfg(windows)]
+    fn install_with_history(tag: &str) -> (PathBuf, PathBuf) {
+        let parent = temp_dir(tag);
+        let install = parent.join("Program Files").join("TieZ");
+        let history = install.join("custom-history");
+        std::fs::create_dir_all(history.join("attachments")).unwrap();
+        std::fs::write(history.join("clipboard.db"), b"DB").unwrap();
+        std::fs::write(history.join("clipboard.db-wal"), b"WAL").unwrap();
+        std::fs::write(history.join("attachments").join("img.png"), b"IMG").unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(install.join("TieZ.exe"), b"EXE").unwrap();
+        (install, history)
+    }
+
+    /// 路径别名（..、扩展前缀、大小写、8.3 短名）不得绕过受保护目录护栏：
+    /// 任何别名形式下，候选目录内的历史数据库、WAL、附件都必须原样保留。
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_resolves_windows_path_aliases() {
+        let (install, history) = install_with_history("cleanup_alias");
+
+        let mut candidates: Vec<PathBuf> = vec![
+            // `..` 拼写别名
+            install.join("..").join("TieZ"),
+            // 扩展路径前缀
+            PathBuf::from(format!("\\\\?\\{}", install.to_string_lossy())),
+            // 大小写拼写差异
+            install
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("PROGRAM FILES")
+                .join("tiez"),
+        ];
+        // 8.3 短路径别名：卷不支持短名或 API 不可用时明确报告跳过。
+        match to_short_path(&install) {
+            Some(short) if short != install => candidates.push(short),
+            Some(_) => eprintln!(
+                "[test] 8.3 short names unavailable on this volume; short-path alias variant skipped"
+            ),
+            None => eprintln!(
+                "[test] GetShortPathNameW failed; short-path alias variant skipped"
+            ),
+        }
+
+        assert!(candidates.len() >= 3);
+        for candidate in &candidates {
+            cleanup_install_folders_at(vec![Some(candidate.clone())], &[history.clone()]);
+            assert!(
+                history.join("clipboard.db").is_file(),
+                "history db lost for candidate {candidate:?}"
+            );
+            assert_eq!(
+                std::fs::read(history.join("clipboard.db-wal")).unwrap(),
+                b"WAL".to_vec(),
+                "history WAL altered for candidate {candidate:?}"
+            );
+            assert!(
+                history.join("attachments").join("img.png").is_file(),
+                "attachment lost for candidate {candidate:?}"
+            );
+            assert!(install.join("TieZ.exe").is_file());
+        }
+    }
+
+    /// 候选安装目录内含指向真实数据的目录联接：候选可被删除，但联接
+    /// 目标的数据（数据库、WAL、附件）必须原样保留。
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_junction_inside_install_does_not_wipe_target() {
+        let parent = temp_dir("cleanup_junction_child");
+        let install = parent.join("install");
+        let data = parent.join("real-data");
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(data.join("attachments")).unwrap();
+        std::fs::write(data.join("clipboard.db"), b"DB").unwrap();
+        std::fs::write(data.join("clipboard.db-wal"), b"WAL").unwrap();
+        std::fs::write(data.join("attachments").join("img.png"), b"IMG").unwrap();
+        std::fs::write(install.join("TieZ.exe"), b"EXE").unwrap();
+
+        if !make_junction(&install.join("history"), &data) {
+            eprintln!("[test] junction creation unavailable; junction-child test skipped");
+            return;
+        }
+
+        cleanup_install_folders_at(vec![Some(install.clone())], &[data.clone()]);
+        assert!(data.join("clipboard.db").is_file());
+        assert_eq!(
+            std::fs::read(data.join("clipboard.db-wal")).unwrap(),
+            b"WAL".to_vec()
+        );
+        assert!(data.join("attachments").join("img.png").is_file());
+        assert!(!install.exists());
+    }
+
+    /// 候选本身是目录联接时不删除：链接保留，目标数据原样。
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_skips_junction_candidate_pointing_at_data() {
+        let parent = temp_dir("cleanup_junction_self");
+        let holder = parent.join("holder");
+        let data = holder.join("real-data");
+        let link = parent.join("tiezhi_link");
+        std::fs::create_dir_all(data.join("attachments")).unwrap();
+        std::fs::write(data.join("clipboard.db"), b"DB").unwrap();
+        std::fs::write(data.join("attachments").join("img.png"), b"IMG").unwrap();
+
+        if !make_junction(&link, &holder) {
+            eprintln!("[test] junction creation unavailable; junction-candidate test skipped");
+            return;
+        }
+
+        cleanup_install_folders_at(vec![Some(link.clone())], &[data.clone()]);
+        assert!(link.exists(), "junction itself must not be deleted");
+        assert!(data.join("clipboard.db").is_file());
+        assert!(data.join("attachments").join("img.png").is_file());
+    }
+
+    /// 解析失败必须返回 None（fail closed 的基础），不存在路径无法解析。
+    #[cfg(windows)]
+    #[test]
+    fn canonicalize_failure_returns_none() {
+        let missing = temp_dir("cleanup_noresolve").join("missing");
+        assert!(canonicalize_for_compare(&missing).is_none());
+    }
+
+    /// 无数据、无保护关系的普通安装残留仍会被清理。
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_still_removes_plain_residue() {
+        let parent = temp_dir("cleanup_plain");
+        let residue = parent.join("tiezhi_install");
+        std::fs::create_dir_all(residue.join("bin")).unwrap();
+        std::fs::write(residue.join("bin").join("TieZ.exe"), b"EXE").unwrap();
+
+        cleanup_install_folders_at(vec![Some(residue.clone())], &[]);
+        assert!(!residue.exists());
+    }
+
+    /// 构造“存在性无法判定”的受保护路径（故障注入）。优先用非法路径
+    /// 字符（Windows ERROR_INVALID_NAME），不可用时用 icacls 拒绝读取
+    /// 构造真实访问失败；两者都不可用返回 None（调用方明确报告跳过）。
+    #[cfg(windows)]
+    fn make_indeterminate_protected(parent: &Path) -> Option<(PathBuf, Option<String>)> {
+        // 注入方式 1：非法字符路径 → 元数据错误而非“不存在”。
+        let invalid = parent.join("bad<name>?dir");
+        if matches!(invalid.try_exists(), Err(_)) {
+            return Some((invalid, None));
+        }
+        // 注入方式 2：icacls 拒绝当前用户读取 → 访问被拒。
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        if !user.is_empty() {
+            let denied = parent.join("denied_dir");
+            if std::fs::create_dir_all(&denied).is_ok() {
+                let ok = std::process::Command::new("icacls")
+                    .arg(&denied)
+                    .args(["/deny", &format!("{user}:(R)")])
+                    .output()
+                    .map(|out| out.status.success())
+                    .unwrap_or(false);
+                if ok && matches!(denied.try_exists(), Err(_)) {
+                    return Some((denied, Some(user)));
+                }
+            }
+        }
+        None
+    }
+
+    /// 恢复 icacls 注入的拒绝 ACE，便于临时目录清理。
+    #[cfg(windows)]
+    fn restore_acl(dir: &Path, user: &str) {
+        let _ = std::process::Command::new("icacls")
+            .arg(dir)
+            .args(["/remove:d", user])
+            .output();
+    }
+
+    /// 受保护目录存在性不可判定（故障注入）：护栏构建失败，且端到端
+    /// 清理整体放弃——普通残留也不删除。
+    #[cfg(windows)]
+    #[test]
+    fn guard_aborts_when_protected_existence_unknown() {
+        let parent = temp_dir("guard_unknown");
+        let Some((indeterminate, denied_user)) = make_indeterminate_protected(&parent) else {
+            eprintln!(
+                "[test] no fault-injection method available (invalid-name and icacls both unusable); test skipped"
+            );
+            return;
+        };
+
+        let real_exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(prepare_cleanup_guard(&[indeterminate.clone()], Some(&real_exe_dir)).is_none());
+
+        // 端到端：受保护目录存在性未知时整体放弃清理，普通残留保留。
+        let residue = parent.join("tiezhi_install");
+        std::fs::create_dir_all(&residue).unwrap();
+        std::fs::write(residue.join("TieZ.exe"), b"EXE").unwrap();
+        cleanup_install_folders_at(vec![Some(residue.clone())], &[indeterminate.clone()]);
+        assert!(residue.exists(), "cleanup must abort entirely");
+
+        if let Some(user) = denied_user {
+            restore_acl(&indeterminate, &user);
+        }
+    }
+
+    /// 运行程序目录不可得或无法解析时，护栏构建失败（fail closed）。
+    #[cfg(windows)]
+    #[test]
+    fn guard_aborts_when_exe_dir_unavailable() {
+        assert!(prepare_cleanup_guard(&[], None).is_none());
+
+        let parent = temp_dir("guard_noexe");
+        let missing_exe_dir = parent.join("missing");
+        assert!(prepare_cleanup_guard(&[], Some(&missing_exe_dir)).is_none());
+
+        // 正常传入真实程序目录时护栏可用。
+        let real_exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(prepare_cleanup_guard(&[], Some(&real_exe_dir)).is_some());
+    }
+
+    /// 明确不存在的受保护目录被忽略，不阻断清理。
+    #[cfg(windows)]
+    #[test]
+    fn guard_ignores_definitively_missing_protected_dir() {
+        let parent = temp_dir("guard_missing_ok");
+        let missing = parent.join("absent");
+        let real_exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(prepare_cleanup_guard(&[missing], Some(&real_exe_dir)).is_some());
     }
 
     #[cfg(windows)]
