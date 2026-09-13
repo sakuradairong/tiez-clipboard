@@ -11,6 +11,11 @@ pub mod windows_ext {
     impl WindowExt {
         /// 弹出错误消息框
         pub fn show_error_box(_title: &str, _msg: &str) {}
+
+        /// 弹出“是/否”确认消息框；非 Windows 保持默认选择（false）。
+        pub fn show_confirm_box(_title: &str, _msg: &str) -> bool {
+            false
+        }
     }
 }
 

@@ -9,6 +9,14 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Fixed
 
 - Startup race where the history list could appear empty after a reboot: the main window can load before Rust setup finishes managing the database state, causing the initial history fetch to fail with no retry. The frontend now retries failed history fetches with backoff, refreshes on the `app-ready` event emitted when backend setup completes, and polls the new `is_app_ready` command as a fallback once retries are exhausted.
+- 修复升级后读取错误数据目录、旧历史看似丢失的问题。历史提交 972cb86 将应用标识从 `com.tiez.app` 改为 `com.tiez`，默认数据目录随之从 `%APPDATA%\com.tiez.app` 变为 `%APPDATA%\com.tiez`，旧目录中的历史记录不再被使用。现在启动时会按以下非破坏性规则兼容旧标识目录（`src-tauri/src/migration.rs`、`src-tauri/src/app/setup.rs`）：
+  - 显式配置优先：启动先读取当前 `datapath.txt` 重定向（含无效内容）与可执行文件旁的 `data/` 便携目录再执行迁移，优先级保持便携 > 重定向 > 默认；存在任一显式配置时，所有数据迁移整体跳过，**绝不覆盖已有重定向**（重复启动同样安全）。
+  - 旧标识目录自身的 `datapath.txt` 按旧版运行时语义解析：重定向有效时实际数据目录是重定向目标（即使 `com.tiez.app` 目录里已没有数据库），无效/为空时回落到旧目录本身；解析出的数据目录没有数据库则视为无数据。
+  - 仅旧数据目录有数据库（新目录未初始化）：自动写入 `datapath.txt` 指向旧目录，**原地采用**——不复制、不移动、不删除任何文件，WAL/SHM、附件及数据库内的绝对路径全部保持一致。
+  - 两边都有数据库：不按体积或修改时间静默覆盖、合并或删除；弹出“是/否”对话框让用户明确选择（“是”写入重定向采用旧数据，“否”保持当前目录），不选择则双方数据原样保留。
+  - v0.2.8 的“贴汁”目录迁移移除了按文件大小替换数据库并递归删除旧目录的逻辑：默认目录不存在时仍整目录重命名；否则同样以原地重定向采用或保留双方数据。旧安装目录清理增加护栏：目录本身或其 `data/` 子目录（便携模式）含 `clipboard.db`、`datapath.txt` 或 `attachments` 时一律跳过；当前数据目录、显式重定向目标、便携目录及其任何祖先目录也不会被当作安装残留删除（大小写不敏感比较），无法确认安全时不清理。
+  - **手动恢复指引**：若升级后历史“消失”，旧数据通常仍在 `%APPDATA%\com.tiez.app`。在本机 `%APPDATA%\com.tiez\datapath.txt` 写入旧数据目录绝对路径（单行、无引号）即可切回旧数据；也可在 设置 → 数据目录 中切换（该流程会完整迁移数据库、WAL/SHM、附件并重写库内绝对路径）。升级前请自行备份两个数据目录。
+
 ## [0.3.10] - 2026-09-12
 
 ### Added

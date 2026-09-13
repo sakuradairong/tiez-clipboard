@@ -7,8 +7,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic,
     IsWindowVisible, MessageBoxW, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST,
-    MB_ICONERROR, MB_OK, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
-    SW_SHOWNA,
+    IDYES, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWNA,
 };
 
 /// 安全封装的窗口辅助工具
@@ -142,6 +142,23 @@ impl WindowExt {
                 PCWSTR(title_w.as_ptr()),
                 MB_ICONERROR | MB_OK,
             );
+        }
+    }
+
+    /// 弹出“是/否”确认消息框；返回是否选择了“是”。
+    /// 非 Windows 平台的存根实现返回 false（保持默认选择）。
+    pub fn show_confirm_box(title: &str, msg: &str) -> bool {
+        use windows::core::PCWSTR;
+        let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let msg_w: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            MessageBoxW(
+                None,
+                PCWSTR(msg_w.as_ptr()),
+                PCWSTR(title_w.as_ptr()),
+                MB_ICONWARNING | MB_YESNO,
+            ) == IDYES
         }
     }
 

@@ -157,9 +157,6 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 fn resolve_data_dir(app: &App) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     let default_app_dir = app.path().app_data_dir()?;
 
-    // Perform migration if needed
-    crate::migration::perform_migration_v028(&default_app_dir);
-
     // Cleanup temp files
     std::thread::spawn(|| {
         let temp_dir = std::env::temp_dir();
@@ -174,34 +171,42 @@ fn resolve_data_dir(app: &App) -> Result<std::path::PathBuf, Box<dyn std::error:
         }
     });
 
-    let redirect_file = default_app_dir.join("datapath.txt");
-    let mut app_dir = if redirect_file.exists() {
-        if let Ok(content) = std::fs::read_to_string(&redirect_file) {
-            let custom_path = content.trim();
-            if !custom_path.is_empty() && std::path::Path::new(custom_path).exists() {
-                std::path::PathBuf::from(custom_path)
-            } else {
-                default_app_dir.clone()
-            }
-        } else {
-            default_app_dir.clone()
-        }
-    } else {
-        default_app_dir.clone()
-    };
-
     // Portable mode check
+    let mut portable_data = None;
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let portable_data = exe_dir.join("data");
-            if portable_data.exists() && portable_data.is_dir() {
-                app_dir = portable_data;
+            let candidate = exe_dir.join("data");
+            if candidate.exists() && candidate.is_dir() {
+                portable_data = Some(candidate);
             }
         }
     }
 
-    std::fs::create_dir_all(&app_dir)?;
-    Ok(app_dir)
+    // 完整启动编排（读取显式配置 → 贴汁迁移 → 重定向重读 → 目录选择 →
+    // 旧标识目录兼容）见 migration::resolve_startup_data_dir；两份数据并存
+    // 时弹“是/否”对话框由用户决定，绝不静默覆盖、合并或删除。
+    let tiezhi_dirs = crate::migration::discover_old_tiezhi_dirs(&default_app_dir);
+    let resolution = crate::migration::resolve_startup_data_dir(
+        &default_app_dir,
+        portable_data.as_deref(),
+        &tiezhi_dirs,
+        &|legacy_dir, default_dir| {
+            WindowExt::show_confirm_box(
+                "TieZ 检测到两份历史数据",
+                &format!(
+                    "发现旧版数据目录：\n{}\n\n当前数据目录：\n{}\n\n两个目录都含有剪贴板数据库，无法自动判断应使用哪一份（不会移动、覆盖或删除任何数据）。\n\n选择“是”继续使用旧版数据（写入 datapath.txt 重定向到旧目录）；选择“否”保持使用当前目录（之后可在 设置 → 数据目录 中手动切换）。",
+                    legacy_dir.display(),
+                    default_dir.display()
+                ),
+            )
+        },
+    );
+
+    // 清理旧“贴汁”安装残留；数据目录及其祖先在受保护列表中，不会被删除。
+    crate::migration::cleanup_old_install_residues(&resolution.protected_dirs);
+
+    std::fs::create_dir_all(&resolution.dir)?;
+    Ok(resolution.dir)
 }
 
 fn apply_startup_resets(repo: &impl SettingsRepository) {
