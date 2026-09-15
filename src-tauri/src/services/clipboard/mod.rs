@@ -20,6 +20,21 @@ const RICH_TEXT_RETRY_DELAYS_MS: [u64; 7] = [0, 40, 80, 140, 220, 360, 560];
 const PRESERVED_NAMED_FORMAT_MAX_COUNT: usize = 12;
 const PRESERVED_NAMED_FORMAT_MAX_BYTES: usize = 1_500_000;
 const PRESERVED_NAMED_FORMAT_TOTAL_BYTES: usize = 4_000_000;
+const GIF_SOURCE_FORMAT_NAMES: [&str; 13] = [
+    "GIF",
+    "Animated GIF",
+    "gif",
+    "image/gif",
+    "Graphics Interchange Format",
+    "image/x-gif",
+    "PNG",
+    "image/png",
+    "JFIF",
+    "JPEG",
+    "image/jpeg",
+    "image/webp",
+    "WebP",
+];
 
 fn clear_recent_image_echo_state() {
     crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
@@ -47,6 +62,19 @@ fn should_ignore_recent_image_echo(raw_hash: u64, visual_hash: u64) -> bool {
 
 fn should_capture_file_entries(capture_files_enabled: bool) -> bool {
     capture_files_enabled
+}
+
+fn is_gif_payload(data: &[u8]) -> bool {
+    data.len() > 6 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"))
+}
+
+fn clipboard_gif_payload() -> Option<Vec<u8>> {
+    GIF_SOURCE_FORMAT_NAMES.iter().find_map(|name| {
+        let data = unsafe {
+            crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(name)
+        }?;
+        is_gif_payload(&data).then_some(data)
+    })
 }
 
 fn is_snipping_tool_source(
@@ -289,6 +317,14 @@ fn has_rich_text_candidate_format() -> bool {
     }
 }
 
+fn clipboard_html_animated_image_data_url() -> Option<String> {
+    unsafe {
+        crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format("HTML Format")
+    }
+    .and_then(|raw| parse_cf_html(&raw))
+    .and_then(|html| extract_animated_image_data_url_from_html(&html))
+}
+
 fn probe_rich_text_payload(
     source_snapshot: &crate::infrastructure::windows_api::window_tracker::ActiveAppInfo,
     initial_text: Option<String>,
@@ -383,18 +419,9 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
     for _ in 0..3 {
         unsafe {
             // 1. Try GIF first to preserve animation
-            for name in ["GIF", "Animated GIF", "image/gif"] {
-                if let Some(raw) =
-                    crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(
-                        name,
-                    )
-                {
-                    // Basic check to ensure it's a GIF
-                    if raw.len() > 6 && (raw.starts_with(b"GIF87a") || raw.starts_with(b"GIF89a")) {
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
-                        return Some(format!("data:image/gif;base64,{}", b64));
-                    }
-                }
+            if let Some(raw) = clipboard_gif_payload() {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+                return Some(format!("data:image/gif;base64,{}", b64));
             }
 
             // 2. Some sources (e.g. Office apps) may provide PNG/JPEG custom formats.
@@ -413,6 +440,10 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
                         name,
                     )
                 {
+                    if is_gif_payload(&raw) {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+                        return Some(format!("data:image/gif;base64,{}", b64));
+                    }
                     // Fast path: if the raw bytes are already valid PNG/JPEG, skip
                     // image::load_from_memory + re-encode (saves ~200-800ms).
                     if raw.len() > 8 && raw[..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
@@ -666,6 +697,12 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
             }
         }
 
+        let clipboard_gif_data = if handled {
+            None
+        } else {
+            clipboard_gif_payload()
+        };
+
         if !handled {
             let settings = app.state::<SettingsState>();
             let rich_text_enabled = settings.capture_rich_text.load(Ordering::Relaxed);
@@ -677,16 +714,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
             // process it directly.  Previously GIFs went through rich text
             // probing → clipboard_image_fallback_data_url → only to be discarded
             // by `prefer_image`, wasting 0.5–2 s.
-            let clipboard_has_gif = unsafe {
-                ["GIF", "Animated GIF", "gif", "image/gif"]
-                    .iter()
-                    .any(|name| {
-                        crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(
-                            name,
-                        )
-                        .is_some()
-                    })
-            };
+            let clipboard_has_gif = clipboard_gif_data.is_some();
 
             // When there's no text and the source isn't a dedicated rich text
             // application, this is almost certainly a pure image copy (e.g.
@@ -764,16 +792,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                                 attach_rich_named_formats(&html_to_store, &preserved_named_formats);
                         }
 
-                        let has_gif = unsafe {
-                            let mut found = false;
-                            for name in ["GIF", "Animated GIF", "gif", "image/gif"] {
-                                if crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(name).is_some() {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            found
-                        };
+                        let has_gif = clipboard_gif_data.is_some();
 
                         // If the derived text is empty (or this is a pure image copy from browser),
                         // we prefer the image handler unless this is a dedicated rich text source.
@@ -818,28 +837,13 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
         // 3. Check Image
         if !handled {
             unsafe {
-                let mut gif_data_opt = None;
-                for name in [
-                    "GIF",
-                    "Animated GIF",
-                    "gif",
-                    "image/gif",
-                    "Graphics Interchange Format",
-                    "image/x-gif",
-                ] {
-                    if let Some(data) =
-                        crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(
-                            name,
-                        )
-                    {
-                        gif_data_opt = Some(data);
-                        break;
-                    }
-                }
+                let gif_data_opt = clipboard_gif_data;
 
-                let text_animated_gif_fallback = if gif_data_opt.is_none() {
-                    read_clipboard_text_fresh()
-                        .and_then(|text| extract_animated_image_data_url_from_text(&text))
+                let animated_image_fallback = if gif_data_opt.is_none() {
+                    clipboard_html_animated_image_data_url().or_else(|| {
+                        read_clipboard_text_fresh()
+                            .and_then(|text| extract_animated_image_data_url_from_text(&text))
+                    })
                 } else {
                     None
                 };
@@ -870,7 +874,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                         }
                         monitor_state.last_image_hash = hash;
                     }
-                } else if let Some(data_url) = text_animated_gif_fallback {
+                } else if let Some(data_url) = animated_image_fallback {
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                     use std::hash::{Hash, Hasher};
                     data_url.hash(&mut hasher);
@@ -1292,7 +1296,9 @@ pub fn process_new_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_snipping_tool_source, is_wps_writer_source, should_capture_file_entries};
+    use super::{
+        is_gif_payload, is_snipping_tool_source, is_wps_writer_source, should_capture_file_entries,
+    };
     use crate::infrastructure::windows_api::window_tracker::ActiveAppInfo;
 
     #[test]
@@ -1338,6 +1344,14 @@ mod tests {
     #[test]
     fn file_capture_follows_setting_when_enabled() {
         assert!(should_capture_file_entries(true));
+    }
+
+    #[test]
+    fn gif_payload_requires_a_real_gif_signature() {
+        assert!(is_gif_payload(b"GIF89a\x01"));
+        assert!(is_gif_payload(b"GIF87a\x01"));
+        assert!(!is_gif_payload(b"https://example.test/image.gif"));
+        assert!(!is_gif_payload(b"GIF89a"));
     }
 
     #[test]

@@ -150,6 +150,37 @@ pub fn init_db(path: &str) -> Result<Connection> {
 
 // save_entry removed (migrated to repository)
 
+fn stored_image_extension(data_url: &str, bytes: &[u8]) -> &'static str {
+    let detected = image::guess_format(bytes)
+        .ok()
+        .and_then(|format| match format {
+            image::ImageFormat::Png => Some("png"),
+            image::ImageFormat::Jpeg => Some("jpg"),
+            image::ImageFormat::Gif => Some("gif"),
+            image::ImageFormat::WebP => Some("webp"),
+            image::ImageFormat::Bmp => Some("bmp"),
+            _ => None,
+        });
+
+    detected.unwrap_or_else(|| {
+        let media_type = data_url
+            .strip_prefix("data:")
+            .and_then(|value| value.split_once(',').map(|(header, _)| header))
+            .and_then(|header| header.split(';').next())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        match media_type.as_str() {
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/bmp" => "bmp",
+            _ => "png",
+        }
+    })
+}
+
 pub fn save_image_to_file(data_url: &str, data_dir: &std::path::Path) -> Option<String> {
     use std::io::Write;
     let parts: Vec<&str> = data_url.splitn(2, ',').collect();
@@ -171,7 +202,11 @@ pub fn save_image_to_file(data_url: &str, data_dir: &std::path::Path) -> Option<
     decoded.hash(&mut hasher);
     let hash = hasher.finish();
 
-    let file_name = format!("img_{:x}.png", hash);
+    // The clipboard MIME or URL can lie about the payload (for example, an
+    // animated GIF served as image/jpeg). Prefer the byte signature so the
+    // asset protocol returns a MIME type that the WebView can actually decode.
+    let extension = stored_image_extension(data_url, &decoded);
+    let file_name = format!("img_{:x}.{}", hash, extension);
     let file_path = attachments_dir.join(&file_name);
 
     if !file_path.exists() {
@@ -613,6 +648,64 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    fn unique_test_data_dir(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "tiez_database_{label}_{}_{}",
+            std::process::id(),
+            unique
+        ))
+    }
+
+    #[test]
+    fn save_image_to_file_uses_gif_extension_for_mislabeled_payload() {
+        let data_dir = unique_test_data_dir("gif_extension");
+        let gif_bytes = base64::engine::general_purpose::STANDARD
+            .decode("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==")
+            .unwrap();
+        let data_url = format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&gif_bytes)
+        );
+
+        let stored = save_image_to_file(&data_url, &data_dir).unwrap();
+        let stored_path = std::path::PathBuf::from(stored);
+
+        assert_eq!(
+            stored_path.extension().and_then(|value| value.to_str()),
+            Some("gif")
+        );
+        assert_eq!(std::fs::read(&stored_path).unwrap(), gif_bytes);
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn save_image_to_file_keeps_png_extension_for_png_payload() {
+        let data_dir = unique_test_data_dir("png_extension");
+        let png_bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==")
+            .unwrap();
+        let data_url = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png_bytes)
+        );
+
+        let stored = save_image_to_file(&data_url, &data_dir).unwrap();
+        let stored_path = std::path::PathBuf::from(stored);
+
+        assert_eq!(
+            stored_path.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        assert_eq!(std::fs::read(&stored_path).unwrap(), png_bytes);
+
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 
     #[test]

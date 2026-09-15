@@ -20,7 +20,7 @@ pub const RICH_IMAGE_FALLBACK_PREFIX: &str = "<!--TIEZ_RICH_IMAGE:";
 pub const RICH_IMAGE_FALLBACK_SUFFIX: &str = "-->";
 pub const RICH_NAMED_FORMATS_PREFIX: &str = "<!--TIEZ_RICH_FORMATS:";
 pub const RICH_NAMED_FORMATS_SUFFIX: &str = "-->";
-const REMOTE_IMAGE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const REMOTE_IMAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const REMOTE_IMAGE_TIMEOUT_SECS: u64 = 4;
 
 #[derive(Serialize, Deserialize)]
@@ -135,9 +135,12 @@ fn fetch_remote_image(url: &str) -> Option<(Vec<u8>, &'static str)> {
         return None;
     }
 
-    let ext = image_ext_from_mime(&mime)
-        .or_else(|| image_ext_from_url(url))
-        .or_else(|| image_ext_from_bytes(&bytes))?;
+    // Response headers and file extensions are only hints. Some animated GIFs
+    // are deliberately served as image/jpeg with a .jpg URL, so sniff bytes
+    // first or the animation will be flattened by later JPEG/bitmap fallbacks.
+    let ext = image_ext_from_bytes(&bytes)
+        .or_else(|| image_ext_from_mime(&mime))
+        .or_else(|| image_ext_from_url(url))?;
 
     Some((bytes, ext))
 }
@@ -267,26 +270,41 @@ fn resolve_image_src_to_data_url(src: &str) -> Option<String> {
     None
 }
 
-fn resolve_animated_image_src_to_data_url(src: &str) -> Option<String> {
+fn resolve_animated_image_src_to_data_url(
+    src: &str,
+    allow_unhinted_image_source: bool,
+) -> Option<String> {
     let value = src.trim();
     if value.starts_with("data:image/gif") {
         return Some(value.to_string());
     }
 
-    if !looks_like_gif_image_src(value) {
-        return None;
+    if value.starts_with("data:image/") {
+        let (header, payload) = value.split_once(',')?;
+        if header.to_ascii_lowercase().contains(";base64") {
+            let bytes = general_purpose::STANDARD.decode(payload).ok()?;
+            return gif_data_url_from_bytes(&bytes);
+        }
     }
 
+    let has_gif_hint = looks_like_gif_image_src(value);
+
     if let Some(path) = resolve_local_image_src_path(value) {
+        if !has_gif_hint && !allow_unhinted_image_source {
+            return None;
+        }
         let bytes = std::fs::read(&path).ok()?;
         return gif_data_url_from_bytes(&bytes);
     }
 
     if let Some(remote_url) = normalize_remote_img_url(value) {
-        let (bytes, ext) = fetch_remote_image(&remote_url)?;
-        if ext == "gif" {
-            return gif_data_url_from_bytes(&bytes);
+        // Probe ordinary image URLs too: a .jpg URL can contain GIF89a bytes.
+        // Avoid fetching arbitrary links that do not look like image sources.
+        if !has_gif_hint && !allow_unhinted_image_source {
+            return None;
         }
+        let (bytes, _) = fetch_remote_image(&remote_url)?;
+        return gif_data_url_from_bytes(&bytes);
     }
 
     None
@@ -316,7 +334,7 @@ pub fn extract_animated_image_data_url_from_html(html: &str) -> Option<String> {
             let Some(candidate) = normalize_html_image_src_candidate(raw_src) else {
                 continue;
             };
-            if let Some(data_url) = resolve_animated_image_src_to_data_url(&candidate) {
+            if let Some(data_url) = resolve_animated_image_src_to_data_url(&candidate, true) {
                 return Some(data_url);
             }
         }
@@ -360,7 +378,7 @@ pub fn extract_first_image_data_url_from_html(html: &str) -> Option<String> {
 
 pub fn extract_animated_image_data_url_from_text(text: &str) -> Option<String> {
     let candidate = normalize_html_image_src_candidate(text)?;
-    resolve_animated_image_src_to_data_url(&candidate)
+    resolve_animated_image_src_to_data_url(&candidate, false)
 }
 
 fn save_image_bytes_to_attachments(
@@ -1331,11 +1349,15 @@ mod tests {
         normalize_clipboard_plain_text, parse_app_cleanup_policies, parse_cf_html,
         parse_cleanup_rules, split_rich_html_and_image_fallback, split_rich_html_and_named_formats,
         truncate_html_for_preview, AppCleanupPolicy, HTML_TRUNCATION_SUFFIX,
+        REMOTE_IMAGE_MAX_BYTES,
     };
     use base64::Engine;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn create_test_png_file(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1366,6 +1388,45 @@ mod tests {
         } else {
             format!("file:///{}", raw)
         }
+    }
+
+    fn serve_image_once(
+        path: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let content_type = content_type.to_string();
+        let handle = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0u8; 2048];
+                        let _ = stream.read(&mut request);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            content_type,
+                            bytes.len()
+                        );
+                        stream.write_all(response.as_bytes()).unwrap();
+                        stream.write_all(&bytes).unwrap();
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("test image server failed: {error}"),
+                }
+            }
+        });
+
+        (format!("http://{address}/{path}"), handle)
     }
 
     #[test]
@@ -1731,10 +1792,61 @@ mod tests {
     }
 
     #[test]
+    fn extract_animated_image_data_url_from_html_sniffs_mislabeled_data_url() {
+        let gif_payload = "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
+        let html = format!(r#"<img src="data:image/jpeg;base64,{gif_payload}" />"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html).unwrap();
+
+        assert_eq!(extracted, format!("data:image/gif;base64,{gif_payload}"));
+    }
+
+    #[test]
     fn extract_animated_image_data_url_from_html_ignores_static_png() {
         let html = r#"<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA" /></div>"#;
 
         let extracted = extract_animated_image_data_url_from_html(html);
+
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn extract_animated_image_data_url_from_html_sniffs_gif_served_as_jpeg() {
+        let gif_bytes = base64::engine::general_purpose::STANDARD
+            .decode("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==")
+            .unwrap();
+        let (url, server) = serve_image_once("animated.jpg", "image/jpeg", gif_bytes.clone());
+        let html = format!(r#"<div><img src="{url}" alt="animated jpg" /></div>"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html).unwrap();
+        server.join().unwrap();
+
+        assert!(extracted.starts_with("data:image/gif;base64,"));
+        let encoded = extracted.split_once(',').unwrap().1;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+            gif_bytes
+        );
+    }
+
+    #[test]
+    fn remote_image_limit_covers_reported_gif_fixture() {
+        const REPORTED_GIF_BYTES: usize = 10_111_081;
+        assert!(REMOTE_IMAGE_MAX_BYTES >= REPORTED_GIF_BYTES);
+    }
+
+    #[test]
+    fn extract_animated_image_data_url_from_html_rejects_static_bytes_with_jpeg_hints() {
+        let png_bytes = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==")
+            .unwrap();
+        let (url, server) = serve_image_once("static.jpg", "image/jpeg", png_bytes);
+        let html = format!(r#"<div><img src="{url}" alt="static jpg" /></div>"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html);
+        server.join().unwrap();
 
         assert!(extracted.is_none());
     }
