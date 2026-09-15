@@ -547,6 +547,12 @@ pub fn set_data_path(app_handle: AppHandle, new_path: String) -> AppResult<()> {
     let redirect_file = config_dir.join("datapath.txt");
     std::fs::write(&redirect_file, &clean_path).map_err(AppError::from)?;
 
+    // 3. Keep the runtime asset protocol scope in sync: grant the new data
+    // directory's image folders and retire the old grant until the pending
+    // relaunch rebuilds the scope from scratch.
+    crate::app::asset_scope::authorize_data_asset_scope(&app_handle, new_data_path);
+    crate::app::asset_scope::retire_data_asset_scope(&app_handle, &old_path_buf);
+
     Ok(())
 }
 

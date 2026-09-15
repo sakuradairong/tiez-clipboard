@@ -68,6 +68,13 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     crate::logger::init(app_dir.join("tiez.log"));
     info!(">>> [STARTUP] TieZ starting up...");
 
+    // 2.1 Asset Protocol Authorization
+    // The static asset scope in tauri.conf.json only covers user-profile
+    // directories; a redirected/portable data directory elsewhere (e.g. the
+    // install directory) must be authorized explicitly or every externalized
+    // image preview fails to load after a history reload.
+    crate::app::asset_scope::authorize_data_asset_scope(&app_handle, &app_dir);
+
     // 3. Database Initialization
     let db_path = app_dir.join("clipboard.db");
     let db_path_str = db_path.to_string_lossy();
@@ -111,6 +118,18 @@ pub fn init(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     apply_startup_resets(&settings_repo);
 
     let settings = load_settings(&settings_repo);
+
+    // 4.1 Custom Background Asset Authorization
+    // The file picker's grant dies with the process; a background outside the
+    // static asset scope would 403 after restart (#5).
+    if let Err(error) = crate::app::asset_scope::authorize_custom_background_file(
+        &app_handle,
+        &settings.custom_background,
+    ) {
+        // A missing image must not abort startup. The frontend falls back to
+        // the normal theme because the path is never added to the asset scope.
+        info!(">>> [ASSET SCOPE] Custom background was not authorized: {error}");
+    }
 
     // 5. App State Management
     setup_state(app, conn_arc.clone(), &settings, app_dir.clone());
@@ -253,6 +272,7 @@ pub struct StartupSettings {
     pub main_hotkey: String,
     pub arrow_key_selection: bool,
     pub auto_close_server: bool,
+    pub custom_background: String,
 }
 
 fn load_settings(repo: &impl SettingsRepository) -> StartupSettings {
@@ -404,6 +424,10 @@ fn load_settings(repo: &impl SettingsRepository) -> StartupSettings {
             .unwrap_or(Some("false".to_string()))
             .map(|v| v == "true")
             .unwrap_or(false),
+        custom_background: repo
+            .get("app.custom_background")
+            .unwrap_or(Some(String::new()))
+            .unwrap_or_default(),
     }
 }
 

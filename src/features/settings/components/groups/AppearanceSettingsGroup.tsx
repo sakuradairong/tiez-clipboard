@@ -94,6 +94,20 @@ const AppearanceSettingsGroup = ({
     const showCustomBackgroundControls = supportsCustomBackground(theme);
     const showSurfaceOpacityControls = supportsSurfaceOpacity(theme);
 
+    const persistCustomBackground = async (value: string) => {
+        try {
+            await invoke('save_setting', { key: 'app.custom_background', value });
+            setCustomBackground(value);
+        } catch (error) {
+            console.error('保存自定义背景失败', error);
+            const detail = error instanceof Error ? error.message : String(error);
+            void message(`${t('background_save_error')}\n\n${detail}`, {
+                title: t('error') || '错误',
+                kind: 'error'
+            }).catch(console.error);
+        }
+    };
+
     return (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
         <div className="group-header" onClick={onToggle}>
@@ -312,8 +326,7 @@ const AppearanceSettingsGroup = ({
                                                         return;
                                                     }
                                                 } catch (e) { console.warn(e); }
-                                                setCustomBackground(selected);
-                                                saveAppSetting('custom_background', selected);
+                                                await persistCustomBackground(selected);
                                             }
                                         } catch (err) { console.error(err); }
                                     }}
@@ -324,10 +337,7 @@ const AppearanceSettingsGroup = ({
                                 </button>
                                 {customBackground && (
                                     <button
-                                        onClick={() => {
-                                            setCustomBackground('');
-                                            saveAppSetting('custom_background', '');
-                                        }}
+                                        onClick={() => void persistCustomBackground('')}
                                         className="btn-icon"
                                         style={{ height: '36px', fontSize: '12px', fontWeight: 'bold', padding: '0 12px' }}
                                         title={t('clear_background') || '清除背景'}

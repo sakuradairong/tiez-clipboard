@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { message } from "@tauri-apps/plugin-dialog";
 import type { MutableRefObject } from "react";
 import type { AiProfile, AppCleanupPolicy } from "../../features/settings/types";
 import type { QuickPasteModifier, CloudSyncContentPrefs } from "../../features/app/types";
@@ -214,6 +215,8 @@ export const useSettingsPostInit = ({
   setEmojiPanelTab,
   setEmojiFavorites
 }: UseSettingsPostInitOptions) => {
+  const lastBackgroundErrorRef = useRef("");
+
   useEffect(() => {
     if (!settings) return;
 
@@ -228,8 +231,23 @@ export const useSettingsPostInit = ({
       }
     }
 
-    // Theme application is centralized in the theme effect below
-    if (settings["app.custom_background"]) setCustomBackground(settings["app.custom_background"]);
+    // Theme application is centralized in the theme effect below. The backend
+    // returns an empty value when the saved file is missing or cannot be added
+    // to the asset scope, so all webviews fall back without a broken URL.
+    setCustomBackground(settings["app.custom_background"] || "");
+    const backgroundError = settings["runtime.custom_background_error"] || "";
+    const isAdvancedSettingsWindow =
+      new URLSearchParams(window.location.search).get("window") === "advanced-settings";
+    if (
+      backgroundError &&
+      !isAdvancedSettingsWindow &&
+      backgroundError !== lastBackgroundErrorRef.current
+    ) {
+      lastBackgroundErrorRef.current = backgroundError;
+      void message(backgroundError, { title: "TieZ", kind: "error" }).catch(console.error);
+    } else if (!backgroundError) {
+      lastBackgroundErrorRef.current = "";
+    }
     if (settings["app.custom_background_opacity"]) {
       setCustomBackgroundOpacity(parseInt(settings["app.custom_background_opacity"]));
     }

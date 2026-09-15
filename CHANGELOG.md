@@ -8,6 +8,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 修复 Windows 上使用自定义/便携数据目录时，已外置保存的图片在重启、切换分类或重新加载历史后因 Tauri 资源协议权限不足而消失的问题；运行时权限仅覆盖 `attachments` 与 `emoji_favorites` 图片目录。
+- 修复富文本复制后粘贴会在相邻块元素之间重复插入空行的问题；优先保留来源提供的有效纯文本及其首尾空白，并为 HTML-only 内容按块边界生成纯文本。
+- 修复位于用户目录外的自定义背景在重启后消失、必须调整透明度才看似恢复的问题；启动时重新授权已保存图片，保存时限制为受支持的实际图片文件，缺失/不可读时安全回退并反馈，主窗口与高级设置窗口同步更新。
 - Startup race where the history list could appear empty after a reboot: the main window can load before Rust setup finishes managing the database state, causing the initial history fetch to fail with no retry. The frontend now retries failed history fetches with backoff, refreshes on the `app-ready` event emitted when backend setup completes, and polls the new `is_app_ready` command as a fallback once retries are exhausted.
 - 修复升级后读取错误数据目录、旧历史看似丢失的问题。历史提交 972cb86 将应用标识从 `com.tiez.app` 改为 `com.tiez`，默认数据目录随之从 `%APPDATA%\com.tiez.app` 变为 `%APPDATA%\com.tiez`，旧目录中的历史记录不再被使用。现在启动时会按以下非破坏性规则兼容旧标识目录（`src-tauri/src/migration.rs`、`src-tauri/src/app/setup.rs`）：
   - 显式配置优先：启动先读取当前 `datapath.txt` 重定向（含无效内容）与可执行文件旁的 `data/` 便携目录再执行迁移，优先级保持便携 > 重定向 > 默认；存在任一显式配置时，所有数据迁移整体跳过，**绝不覆盖已有重定向**（重复启动同样安全）。

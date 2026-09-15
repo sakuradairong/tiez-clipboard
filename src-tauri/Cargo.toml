@@ -72,6 +72,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 windows-version = "0.1.1"
 dotenvy = "0.15"
 
+[dev-dependencies]
+tauri = { version = "2.10", features = ["test"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
 objc2-foundation = { version = "0.3.2", features = ["NSData", "NSDictionary", "NSObject", "NSString", "NSArray", "NSURL"] }

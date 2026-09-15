@@ -687,26 +687,116 @@ fn sanitize_rich_text_plain_text(text: &str) -> String {
     }
 }
 
-fn extract_plain_text_from_htmlish(text: &str) -> String {
-    static BREAK_TAG_RE: OnceLock<Regex> = OnceLock::new();
+fn collapse_inline_tags(text: &str) -> String {
     static TAG_RE: OnceLock<Regex> = OnceLock::new();
+    TAG_RE
+        .get_or_init(|| Regex::new(r"(?is)<[^>]+>").unwrap())
+        .replace_all(text, " ")
+        .into_owned()
+}
 
+// Converts HTML to plain text with block-boundary awareness: adjacent
+// open/close block tags (e.g. `</div><div>`) must yield a single newline, an
+// explicit empty block (`<p></p>`) or a doubled `<br>` keeps one blank line,
+// and inline tags never break lines.
+fn extract_block_aware_plain_text(html: &str) -> String {
+    static BLOCK_TAG_RE: OnceLock<Regex> = OnceLock::new();
+
+    let block_tag_re = BLOCK_TAG_RE.get_or_init(|| {
+        Regex::new(
+            r"(?is)<\s*(/?)\s*(br|p|div|li|tr|td|th|table|h[1-6]|section|article|ul|ol)\b[^>]*>",
+        )
+        .unwrap()
+    });
+
+    let mut out = String::new();
+    // Newlines owed before the next non-whitespace text run.
+    let mut pending_newlines: usize = 0;
+    // Per currently-open block: (has text, has a nested block/break). Tracking
+    // nested structure prevents an empty child and all its wrappers from each
+    // adding another blank line.
+    let mut block_stack: Vec<(bool, bool)> = Vec::new();
+
+    let emit_text = |out: &mut String,
+                     pending_newlines: &mut usize,
+                     block_stack: &mut Vec<(bool, bool)>,
+                     raw: &str| {
+        let text = decode_basic_html_entities(&collapse_inline_tags(raw));
+        if text.chars().any(|c| !c.is_whitespace()) {
+            if !out.is_empty() {
+                for _ in 0..*pending_newlines {
+                    out.push('\n');
+                }
+            }
+            out.push_str(&text);
+            // Any enclosing block now contains text and must not count as an
+            // empty paragraph when its close tag arrives.
+            for (has_text, _) in block_stack.iter_mut() {
+                *has_text = true;
+            }
+            *pending_newlines = 0;
+        } else if *pending_newlines == 0 && !out.is_empty() {
+            // Whitespace between inline markup still separates words
+            // (`Alpha<b> </b>Beta` must not glue into `AlphaBeta`).
+            out.push(' ');
+        }
+    };
+
+    let mut last = 0;
+    for tag in block_tag_re.captures_iter(html) {
+        let whole = tag.get(0).expect("capture group 0 always matches");
+        emit_text(
+            &mut out,
+            &mut pending_newlines,
+            &mut block_stack,
+            &html[last..whole.start()],
+        );
+        last = whole.end();
+
+        let is_close = tag.get(1).map(|m| !m.as_str().is_empty()).unwrap_or(false);
+        let tag_name = tag
+            .get(2)
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        let is_br = tag_name == "br";
+
+        if is_br {
+            for (_, has_nested_boundary) in block_stack.iter_mut() {
+                *has_nested_boundary = true;
+            }
+            pending_newlines = pending_newlines.saturating_add(1);
+        } else if is_close {
+            pending_newlines = pending_newlines.max(1);
+            if let Some((block_had_text, block_had_nested_boundary)) = block_stack.pop() {
+                if !block_had_text && !block_had_nested_boundary {
+                    // An empty block (e.g. `<p></p>`) is an explicit blank line.
+                    pending_newlines = pending_newlines.saturating_add(1);
+                }
+            }
+        } else {
+            pending_newlines = pending_newlines.max(1);
+            if let Some((_, has_nested_block)) = block_stack.last_mut() {
+                *has_nested_block = true;
+            }
+            block_stack.push((false, false));
+        }
+    }
+    emit_text(
+        &mut out,
+        &mut pending_newlines,
+        &mut block_stack,
+        &html[last..],
+    );
+
+    out
+}
+
+fn extract_plain_text_from_htmlish(text: &str) -> String {
     let repaired = strip_office_preview_noise(text);
     if repaired.is_empty() {
         return String::new();
     }
-    let with_breaks = BREAK_TAG_RE
-        .get_or_init(|| {
-            Regex::new(
-                r"(?is)</?(?:br|p|div|li|tr|td|th|table|h[1-6]|section|article|ul|ol)\b[^>]*>",
-            )
-            .unwrap()
-        })
-        .replace_all(&repaired, "\n");
-    let without_tags = TAG_RE
-        .get_or_init(|| Regex::new(r"(?is)<[^>]+>").unwrap())
-        .replace_all(with_breaks.as_ref(), " ");
-    let collapsed = normalize_plain_text_layout(&decode_basic_html_entities(without_tags.as_ref()));
+    let collapsed = normalize_plain_text_layout(&extract_block_aware_plain_text(&repaired));
     let cleaned = strip_leading_office_metadata_text(&collapsed);
     if cleaned.is_empty() {
         return String::new();
@@ -892,15 +982,28 @@ pub fn infer_rich_html_from_plain_text(
 }
 
 pub fn derive_rich_text_content(content: &str, html_content: Option<&str>) -> String {
+    let normalized_source = normalize_clipboard_plain_text(content);
     let sanitized_plain = sanitize_rich_text_plain_text(content);
     if looks_like_obsidian_callout_markdown(&sanitized_plain) {
-        return sanitized_plain;
+        return normalized_source;
     }
 
     let html_text = html_content
         .map(extract_plain_text_from_htmlish)
         .filter(|text| !text.is_empty());
     if let Some(text) = html_text {
+        // The source app's own plain text is exactly what a direct paste would
+        // produce, so it wins whenever it is real copied text. HTML extraction
+        // is a fallback for Office metadata noise and leaked markup, where the
+        // plain text is unreadable (see the WPS regressions below).
+        let html_echoes_source =
+            collapse_preview_whitespace(&text) == collapse_preview_whitespace(&normalized_source);
+        if !sanitized_plain.trim().is_empty()
+            && !plain_text_has_rich_html_signals(content)
+            && (!looks_like_html_fragment(content) || html_echoes_source)
+        {
+            return normalized_source;
+        }
         return text;
     }
 
@@ -911,7 +1014,11 @@ pub fn derive_rich_text_content(content: &str, html_content: Option<&str>) -> St
         }
     }
 
-    sanitized_plain
+    if !sanitized_plain.trim().is_empty() && !plain_text_has_rich_html_signals(content) {
+        normalized_source
+    } else {
+        sanitized_plain
+    }
 }
 
 pub fn build_entry_preview(
@@ -1259,6 +1366,156 @@ mod tests {
         } else {
             format!("file:///{}", raw)
         }
+    }
+
+    #[test]
+    fn rich_text_extraction_adjacent_divs_single_newline() {
+        let text = super::extract_plain_text_from_htmlish("<div>第一行</div><div>第二行</div>");
+        assert_eq!(text, "第一行\n第二行");
+    }
+
+    #[test]
+    fn rich_text_extraction_adjacent_paragraphs_single_newline() {
+        let text = super::extract_plain_text_from_htmlish("<p>Alpha</p><p>Beta</p>");
+        assert_eq!(text, "Alpha\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_explicit_empty_paragraph_keeps_blank_line() {
+        let text = super::extract_plain_text_from_htmlish("<p>Alpha</p><p></p><p>Beta</p>");
+        assert_eq!(text, "Alpha\n\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_explicit_empty_paragraph_with_padding_keeps_blank_line() {
+        let text = super::extract_plain_text_from_htmlish("<p>Alpha</p><p> </p><p>Beta</p>");
+        assert_eq!(text, "Alpha\n\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_nbsp_empty_paragraph_keeps_blank_line() {
+        let text = super::extract_plain_text_from_htmlish("<p>Alpha</p><p>&nbsp;</p><p>Beta</p>");
+        assert_eq!(text, "Alpha\n\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_nested_empty_block_counts_one_blank_line() {
+        let text = super::extract_plain_text_from_htmlish(
+            "<div>Alpha</div><div><p></p></div><div>Beta</div>",
+        );
+        assert_eq!(text, "Alpha\n\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_single_br_single_newline() {
+        let text = super::extract_plain_text_from_htmlish("Alpha<br>Beta");
+        assert_eq!(text, "Alpha\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_double_br_keeps_blank_line() {
+        let text = super::extract_plain_text_from_htmlish("<div>Alpha<br><br>Beta</div>");
+        assert_eq!(text, "Alpha\n\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_list_items_single_newline() {
+        let text = super::extract_plain_text_from_htmlish("<ul><li>Alpha</li><li>Beta</li></ul>");
+        assert_eq!(text, "Alpha\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_nested_block_wrappers_no_extra_blank_line() {
+        let text =
+            super::extract_plain_text_from_htmlish("<div><p>Alpha</p></div><div><p>Beta</p></div>");
+        assert_eq!(text, "Alpha\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_table_cells_and_rows() {
+        let text = super::extract_plain_text_from_htmlish(
+            "<table><tr><td>Alpha</td><td>Beta</td></tr><tr><td>Gamma</td></tr></table>",
+        );
+        assert_eq!(text, "Alpha\nBeta\nGamma");
+    }
+
+    #[test]
+    fn rich_text_extraction_preserves_pre_line_breaks() {
+        // Per-line leading whitespace is collapsed by the pre-existing
+        // normalize_plain_text_layout contract; this test protects the
+        // internal line breaks of <pre> content.
+        let text = super::extract_plain_text_from_htmlish("<div><pre>Alpha\n  Beta</pre></div>");
+        assert_eq!(text, "Alpha\nBeta");
+    }
+
+    #[test]
+    fn rich_text_extraction_inline_tags_do_not_break_lines() {
+        let text = super::extract_plain_text_from_htmlish("<p>Alpha <b>Bold</b> Tail</p>");
+        assert_eq!(text, "Alpha Bold Tail");
+    }
+
+    #[test]
+    fn rich_text_content_prefers_original_plain_text_over_html_extraction() {
+        let text = "第一行\n第二行";
+        let html = "<div>第一行</div><div>第二行</div>";
+
+        let content = derive_rich_text_content(text, Some(html));
+
+        assert_eq!(content, "第一行\n第二行");
+    }
+
+    #[test]
+    fn rich_text_content_preserves_source_whitespace_and_normalizes_line_endings() {
+        let text = "  第一行  \r\t第二行 😀  \r\n第三行\n第四行  ";
+        let html = "<pre><code>  第一行  \n\t第二行 😀  \n第三行\n第四行  </code></pre>";
+
+        let content = derive_rich_text_content(text, Some(html));
+
+        assert_eq!(content, "  第一行  \n\t第二行 😀  \n第三行\n第四行  ");
+    }
+
+    #[test]
+    fn rich_text_content_preserves_html_source_code_when_html_echoes_it() {
+        let text = "<div class=\"note\">\r\n  hello\r\n</div>";
+        let html =
+            "<pre><code>&lt;div class=&quot;note&quot;&gt;\n  hello\n&lt;/div&gt;</code></pre>";
+
+        let content = derive_rich_text_content(text, Some(html));
+
+        assert_eq!(content, "<div class=\"note\">\n  hello\n</div>");
+    }
+
+    #[test]
+    fn rich_text_content_without_html_preserves_source_whitespace() {
+        let content = derive_rich_text_content("  indented\rline  ", None);
+        assert_eq!(content, "  indented\nline  ");
+    }
+
+    #[test]
+    fn rich_text_content_keeps_plain_text_blank_lines_from_source() {
+        let text = "第一段\n\n第二段";
+        let html = "<div>第一段</div><div>第二段</div>";
+
+        let content = derive_rich_text_content(text, Some(html));
+
+        assert_eq!(content, "第一段\n\n第二段");
+    }
+
+    #[test]
+    fn rich_text_content_uses_html_extraction_for_markup_leaked_plain_text() {
+        let text =
+            "table border=0 cellpadding=0 cellspacing=0><tr><td>学院意见</td><td>通过</td></tr>";
+        let html = "<table><tr><td>学院意见</td><td>通过</td></tr></table>";
+
+        let content = derive_rich_text_content(text, Some(html));
+
+        assert_eq!(content, "学院意见\n通过");
+    }
+
+    #[test]
+    fn rich_text_content_html_only_falls_back_to_extraction() {
+        let content = derive_rich_text_content("", Some("<p>Only Html</p>"));
+        assert_eq!(content, "Only Html");
     }
 
     #[test]

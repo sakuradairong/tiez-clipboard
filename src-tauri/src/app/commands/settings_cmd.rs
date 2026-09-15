@@ -3,7 +3,7 @@ use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 fn normalize_quick_paste_modifier(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
@@ -195,6 +195,7 @@ pub fn set_deduplication(
 
 #[tauri::command]
 pub fn save_setting(
+    app_handle: AppHandle,
     db_state: State<'_, DbState>,
     settings_state: State<'_, crate::app_state::SettingsState>,
     key: String,
@@ -204,6 +205,11 @@ pub fn save_setting(
         return Err(AppError::Validation(
             "接力共享密钥只能通过系统安全密钥库配置".to_string(),
         ));
+    }
+    if key == "app.custom_background" {
+        // The picker only authorizes the file for this process; keep the
+        // asset protocol grant alive for the current session too (#5).
+        crate::app::asset_scope::authorize_custom_background_file(&app_handle, &value)?;
     }
     match key.as_str() {
         "app.arrow_key_selection" => {
@@ -288,7 +294,15 @@ pub fn save_setting(
     db_state
         .settings_repo
         .set(&key, &value)
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+
+    if key == "app.custom_background" {
+        // Keep the main and advanced-settings webviews in sync, but only
+        // after both authorization and persistence have succeeded.
+        let _ = app_handle.emit("settings-changed", ());
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -327,10 +341,27 @@ pub fn set_window_pinned(app_handle: AppHandle, state: State<'_, DbState>, pinne
 
 #[tauri::command]
 pub fn get_settings(
+    app_handle: AppHandle,
     state: State<'_, DbState>,
 ) -> AppResult<std::collections::HashMap<String, String>> {
     let mut settings = state.settings_repo.get_all().map_err(AppError::from)?;
     settings.remove("clipboard_relay_shared_key");
+    settings.remove("runtime.custom_background_error");
+
+    if let Some(background) = settings.get("app.custom_background").cloned() {
+        if let Err(error) =
+            crate::app::asset_scope::authorize_custom_background_file(&app_handle, &background)
+        {
+            // Preserve the saved path in SQLite so a temporarily unavailable
+            // drive can recover later, but keep this webview on the safe
+            // default background and surface the reason to the user.
+            settings.insert("app.custom_background".to_string(), String::new());
+            settings.insert(
+                "runtime.custom_background_error".to_string(),
+                error.to_string(),
+            );
+        }
+    }
     Ok(settings)
 }
 
