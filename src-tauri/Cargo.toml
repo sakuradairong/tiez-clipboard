@@ -1,6 +1,6 @@
 [package]
 name = "tiez-app"
-version = "0.3.10.1"
+version = "0.3.11"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
