@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.10.1] - 2026-09-16
+
 ### Fixed
 
 - 修复 Windows 从浏览器复制动态图片时 GIF 不显示、伪装为 `.jpg`/`image/jpeg` 的 GIF 被降级为静态图的问题；现在会从 CF_HTML 恢复原始动画，并按实际字节签名持久化附件格式。
