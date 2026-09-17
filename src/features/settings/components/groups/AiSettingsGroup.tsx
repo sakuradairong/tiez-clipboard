@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight, Edit2, RotateCcw, Trash2 } from "lucide-react";
+import { Edit2, RotateCcw, Trash2 } from "lucide-react";
 import type { AiProfile, AiProfileStatusMap, EditableAiProfile } from "../../types";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface AiSettingsGroupProps {
     t: (key: string) => string;
@@ -52,12 +53,11 @@ const AiSettingsGroup = ({
     theme
 }: AiSettingsGroupProps) => (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-        <div className="group-header" onClick={onToggle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ margin: 0 }}>{t('ai_settings')}</h3>
-            </div>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </div>
+        <SettingsGroupHeader
+            title={t('ai_settings')}
+            collapsed={collapsed}
+            onToggle={onToggle}
+        />
         {!collapsed && (
             <div className="group-content">
                 <div className="setting-item">

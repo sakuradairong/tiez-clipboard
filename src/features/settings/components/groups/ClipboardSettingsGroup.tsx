@@ -7,6 +7,7 @@ import { getHotkeyDisplayTokens } from "../../../../shared/lib/hotkeyDisplay";
 import { isMacPlatform, isWindowsPlatform } from "../../../../shared/lib/platform";
 import type { QuickPasteModifier } from "../../../app/types";
 import type { HotkeyMode } from "../../../../shared/hooks/useHotkeyConfig";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface LabelWithHintProps {
     label: string;
@@ -290,10 +291,12 @@ const ClipboardSettingsGroup = (props: ClipboardSettingsGroupProps) => {
 
     return (
         <div className={`settings-group ${props.collapsed ? 'collapsed' : ''}`}>
-            <div className="group-header" onClick={props.onToggle}>
-                <h3 style={{ margin: 0 }}>{props.t('clipboard_settings')}</h3>
-                {props.collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </div>
+            <SettingsGroupHeader
+                title={props.t('clipboard_settings')}
+                collapsed={props.collapsed}
+                onToggle={props.onToggle}
+                description={props.t('clipboard_settings_desc')}
+            />
             {!props.collapsed && (
                 <div className="group-content">
                     <div className="setting-item">

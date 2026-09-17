@@ -1573,6 +1573,7 @@ const ClipboardItem = ({
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.1 }}
             className={`history-item ${isSelected ? "selected" : ""} ${compactMode ? "compact" : ""} ${item.is_pinned ? "pinned" : ""} ${className || ''}`}
+            aria-label={t('item_paste_hint')}
             onMouseDown={(e) => {
                 const target = e.target as HTMLElement;
                 if (e.button !== 0) return;
@@ -1752,7 +1753,7 @@ const ClipboardItem = ({
                         <button
                             className={`btn-icon ${item.tags && item.tags.length > 0 ? "active" : ""}`}
                             onClick={onToggleTagEditor}
-                            title="Tags"
+                            title={t('tag_manager') || t('tags') || '标签'}
                         >
                             <Tag size={12} />
                         </button>
@@ -1857,7 +1858,7 @@ const ClipboardItem = ({
                         )}
                         {isSensitiveHidden && (
                             <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', fontWeight: 'bold', opacity: 0.5, fontSize: '10px' }}>
-                                SENSITIVE
+                                {t('sensitive_label') || 'SENSITIVE'}
                             </div>
                         )}
                     </div>

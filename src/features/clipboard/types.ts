@@ -70,6 +70,8 @@ export interface VirtualClipboardListProps {
   onScroll?: (offset: number) => void;
   compactMode: boolean;
   header?: ReactNode;
+  loadingLabel?: string;
+  loadMoreLabel?: string;
 }
 
 export interface VirtualClipboardListHandle {

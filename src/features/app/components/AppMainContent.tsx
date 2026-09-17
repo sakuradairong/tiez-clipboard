@@ -283,6 +283,7 @@ const AppMainContent = ({
               {t("empty_title")}
             </p>
             <p style={{ fontSize: "12px", opacity: 0.6 }}>{t("empty_desc")}</p>
+            <p style={{ fontSize: "11px", opacity: 0.5, marginTop: "8px" }}>{t("empty_paste_hint")}</p>
           </>
         )}
       </div>
@@ -350,6 +351,8 @@ const AppMainContent = ({
             onScroll={handleListScroll}
             hasMore={hasMore}
             isLoading={isLoadingMore}
+            loadingLabel={t("loading")}
+            loadMoreLabel={t("load_more")}
           />
           {showScrollTop && (
             <button

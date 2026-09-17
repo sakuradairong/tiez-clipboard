@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import type { CloudSyncContentPrefs } from "../../../app/types";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 export interface CloudSyncStatusPayload {
     state: string;
@@ -173,35 +173,40 @@ const CloudSyncSettingsGroup = ({
 
     return (
         <div className={`settings-group ${collapsed ? "collapsed" : ""}`}>
-            <div className="group-header" onClick={onToggle}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <h3 style={{ margin: 0 }}>{t("cloud_sync_settings")}</h3>
-                    <span
-                        style={{
-                            fontSize: "11px",
-                            fontWeight: 600,
-                            color: "var(--text-secondary)",
-                            opacity: 0.75,
-                            letterSpacing: "0.2px"
-                        }}
-                    >
-                        Beta
-                    </span>
-                    {cloudSyncEnabled && (
+            <SettingsGroupHeader
+                title={t("cloud_sync_settings")}
+                collapsed={collapsed}
+                onToggle={onToggle}
+                titleExtra={
+                    <>
                         <span
                             style={{
-                                width: "8px",
-                                height: "8px",
-                                borderRadius: "50%",
-                                backgroundColor: statusColor(status.state),
-                                display: "inline-block"
+                                fontSize: "11px",
+                                fontWeight: 600,
+                                color: "var(--text-secondary)",
+                                opacity: 0.75,
+                                letterSpacing: "0.2px"
                             }}
-                            title={statusLabel(t, status.state)}
-                        />
-                    )}
-                </div>
-                {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </div>
+                        >
+                            Beta
+                        </span>
+                        {cloudSyncEnabled ? (
+                            <span
+                                aria-hidden="true"
+                                style={{
+                                    width: "8px",
+                                    height: "8px",
+                                    borderRadius: "50%",
+                                    backgroundColor: statusColor(status.state),
+                                    display: "inline-block",
+                                    flexShrink: 0
+                                }}
+                                title={statusLabel(t, status.state)}
+                            />
+                        ) : null}
+                    </>
+                }
+            />
             {!collapsed && (
                 <div className="group-content">
                     <div

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 import type { DefaultAppsMap, InstalledAppOption } from "../../../app/types";
 
 interface DefaultAppsSettingsGroupProps {
@@ -36,10 +36,11 @@ const DefaultAppsSettingsGroup = ({
 
     return (
         <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-            <div className="group-header" onClick={onToggle}>
-                <h3 style={{ margin: 0 }}>{t('default_apps')}</h3>
-                {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-            </div>
+            <SettingsGroupHeader
+                title={t('default_apps')}
+                collapsed={collapsed}
+                onToggle={onToggle}
+            />
             {!collapsed && (
                 <div className="group-content">
                     {APP_TYPES.map((type, idx, arr) => (

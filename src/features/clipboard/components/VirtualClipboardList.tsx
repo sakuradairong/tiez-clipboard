@@ -8,6 +8,8 @@ type VirtuosoListContext = {
     header?: React.ReactNode;
     hasMore: boolean;
     isLoading: boolean;
+    loadingLabel: string;
+    loadMoreLabel: string;
 };
 
 const ListHeader = ({ context }: { context?: VirtuosoListContext }) => {
@@ -17,7 +19,7 @@ const ListHeader = ({ context }: { context?: VirtuosoListContext }) => {
 
 const ListFooter = ({ context }: { context?: VirtuosoListContext }) => {
     if (!context) return null;
-    const { isLoading, hasMore } = context;
+    const { isLoading, hasMore, loadingLabel, loadMoreLabel } = context;
     if (!isLoading && !hasMore) return null;
 
     return (
@@ -28,7 +30,7 @@ const ListFooter = ({ context }: { context?: VirtuosoListContext }) => {
             fontSize: '12px',
             color: 'var(--text-secondary)'
         }}>
-            {isLoading ? '加载中...' : '加载更多...'}
+            {isLoading ? loadingLabel : loadMoreLabel}
         </div>
     );
 };
@@ -45,7 +47,9 @@ const VirtualClipboardList = React.forwardRef<VirtualClipboardListHandle, Virtua
             isKeyboardMode,
             onScroll,
             compactMode,
-            header
+            header,
+            loadingLabel = '加载中...',
+            loadMoreLabel = '加载更多...'
         } = props;
 
         const virtuosoRef = useRef<VirtuosoHandle>(null);
@@ -137,8 +141,10 @@ const VirtualClipboardList = React.forwardRef<VirtualClipboardListHandle, Virtua
         const context = useMemo(() => ({
             header,
             hasMore,
-            isLoading
-        }), [header, hasMore, isLoading]);
+            isLoading,
+            loadingLabel,
+            loadMoreLabel
+        }), [header, hasMore, isLoading, loadingLabel, loadMoreLabel]);
 
         return (
             <div className="virtual-list-wrapper" style={{ height: '100%', width: '100%' }}>

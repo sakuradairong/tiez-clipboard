@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { DEFAULT_COLLAPSED_GROUPS } from "../../features/settings/defaultCollapsedGroups";
 
 interface UseSettingsPanelResetOptions {
   showSettings: boolean;
@@ -14,17 +15,7 @@ export const useSettingsPanelReset = ({
   useEffect(() => {
     if (showSettings) {
       setSettingsSubpage("home");
-      setCollapsedGroups({
-        general: true,
-        clipboard: true,
-        appearance: true,
-        sync: true,
-        cloud_sync: true,
-        ai: true,
-        file_transfer: true,
-        default_apps: true,
-        data: true
-      });
+      setCollapsedGroups({ ...DEFAULT_COLLAPSED_GROUPS });
     }
   }, [showSettings, setCollapsedGroups, setSettingsSubpage]);
 };

@@ -32,6 +32,7 @@ export const translations = {
         // Settings - Headers
         general_settings: "常规设置",
         clipboard_settings: "剪贴板设置",
+        clipboard_settings_desc: "热键、捕获、隐私与粘贴行为。清理/忽略规则见下方「高级设置」。",
         sync_settings: "验证码同步（MQTT）",
         cloud_sync_settings: "云端同步",
         default_apps: "默认打开程序",
@@ -331,6 +332,11 @@ export const translations = {
         no_records: "未找到相关记录",
         empty_title: "剪贴板已准备就绪",
         empty_desc: "复制一点内容，记录就会出现在这里",
+        empty_paste_hint: "单击粘贴纯文本，右键粘贴带格式",
+        item_paste_hint: "单击粘贴纯文本，右键粘贴带格式",
+        sensitive_label: "敏感",
+        load_more: "加载更多...",
+        paste_formatted_text: "粘贴带格式",
 
         // Item Actions
         copy: "拷贝",
@@ -580,6 +586,7 @@ export const translations = {
         // Settings - Headers
         general_settings: "General Settings",
         clipboard_settings: "Clipboard",
+        clipboard_settings_desc: "Hotkeys, capture, privacy, and paste behavior. Cleanup/ignore rules are under Advanced Settings below.",
         sync_settings: "Verification Code Sync (MQTT)",
         cloud_sync_settings: "Cloud Sync",
         default_apps: "Default Applications",
@@ -887,6 +894,11 @@ export const translations = {
         no_records: "No records found",
         empty_title: "Clipboard is ready",
         empty_desc: "Copy something and it will appear here",
+        empty_paste_hint: "Click to paste plain text, right-click for formatted paste",
+        item_paste_hint: "Click to paste plain text, right-click for formatted paste",
+        sensitive_label: "SENSITIVE",
+        load_more: "Load more...",
+        paste_formatted_text: "Paste formatted",
 
         // Item Actions
         copy: "Copy",
@@ -1128,6 +1140,7 @@ export const translations = {
         // Settings - Headers
         general_settings: "常規設定",
         clipboard_settings: "剪貼簿設定",
+        clipboard_settings_desc: "快速鍵、擷取、隱私與貼上行為。清理／忽略規則見下方「高級設置」。",
         sync_settings: "驗證碼同步 (MQTT)",
         cloud_sync_settings: "雲端同步",
         default_apps: "預設開啟程式",
@@ -1426,6 +1439,11 @@ export const translations = {
         no_records: "未找到相關紀錄",
         empty_title: "剪貼簿已準備就緒",
         empty_desc: "複製一些內容，記錄就會出現在這裡",
+        empty_paste_hint: "單擊貼上純文字，右鍵貼上帶格式",
+        item_paste_hint: "單擊貼上純文字，右鍵貼上帶格式",
+        sensitive_label: "敏感",
+        load_more: "載入更多...",
+        paste_formatted_text: "貼上帶格式",
 
         // Item Actions
         copy: "複製",

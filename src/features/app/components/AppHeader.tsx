@@ -155,7 +155,7 @@ const AppHeader = ({
         {fileServerEnabled && (
           <button
             className={`btn-icon header-chat-btn ${chatMode && showSettings ? 'active' : ''}`}
-            title="Chat"
+            title={t('file_transfer_title') || t('file_transfer') || '文件传输'}
             onClick={onToggleChat}
           >
             <MessageSquare size={16} />
