@@ -8,7 +8,9 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 修复 QQ 通过文件剪贴板提供 `.jpg` 后缀、实际为多帧 GIF 的缓存图片时变成静态 PNG 的问题：在 Windows 文件采集入口优先检查真实文件签名，无论“捕获文件”是否开启，都按 GIF 原始字节保存；非 GIF 和多文件复制保持原有行为。
 - 修复 Windows 上 GIF 复制进历史后粘贴仍变成 PNG 的问题：粘贴 GIF 时不再附带 PNG 剪贴板格式（避免目标应用优先取静态 PNG）；从 CF_HTML 恢复的动画 GIF 改为按图片条目保存；关闭“捕获文件”时仍会从 CF_HDROP 保留单个 GIF。
+- 修复 GIF 采集判定引入的回归：保留包含正文或多张图片的富文本，避免在 Office/WPS 分支提前读取位图，并复用本次采集已恢复的 GIF，防止重复下载失败后降级为静态图片。
 
 ## [0.3.11] - 2026-09-16
 

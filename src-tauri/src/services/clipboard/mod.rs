@@ -82,32 +82,68 @@ fn clipboard_gif_payload() -> Option<Vec<u8>> {
 /// emit HTML/static previews instead of GIF clipboard formats.
 fn should_prefer_image_over_rich_text(
     text: &str,
+    html: &str,
     has_native_gif: bool,
     has_html_animated_gif: bool,
     is_rich_text_source: bool,
-    has_raster_image: bool,
+    has_raster_image: impl FnOnce() -> bool,
 ) -> bool {
     if is_rich_text_source {
         return false;
     }
-    let has_animated_gif = has_native_gif || has_html_animated_gif;
-    (text.trim().is_empty() || has_animated_gif) && (has_raster_image || has_animated_gif)
+    if has_html_animated_gif {
+        return is_standalone_image_html(text, html);
+    }
+    // Keep the bitmap probe lazy: Office/WPS can crash while rendering CF_DIB.
+    text.trim().is_empty() && (has_native_gif || has_raster_image())
+}
+
+fn resolve_animated_image_fallback(
+    cached_html_image: Option<Option<String>>,
+    read_html_image: impl FnOnce() -> Option<String>,
+    read_text_image: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    // Some(None) means HTML was already probed unsuccessfully in this event.
+    cached_html_image
+        .unwrap_or_else(read_html_image)
+        .or_else(read_text_image)
 }
 
 fn single_gif_file_data_url(files: &[String]) -> Option<String> {
+    use std::io::Read;
+
     if files.len() != 1 {
         return None;
     }
     let path = files[0].trim();
-    if path.is_empty() || !path.to_ascii_lowercase().ends_with(".gif") {
+    if path.is_empty() || !std::fs::metadata(path).ok()?.is_file() {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
-    if !is_gif_payload(&bytes) {
+    // QQ supplies animated GIFs through CF_HDROP with a .jpg cache filename.
+    // Inspect bytes, not the extension. Read only a header for non-GIF files
+    // so copying a large document/video does not load it into memory.
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0; 7];
+    file.read_exact(&mut header).ok()?;
+    if !is_gif_payload(&header) {
         return None;
     }
+    let mut bytes = header.to_vec();
+    file.read_to_end(&mut bytes).ok()?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
     Some(format!("data:image/gif;base64,{}", b64))
+}
+
+fn file_clipboard_data(files: Vec<String>, capture_files_enabled: bool) -> Option<ClipboardData> {
+    // Normalize real GIFs before either capture-files branch. Otherwise the
+    // file pipeline decodes a .jpg GIF as a still image and re-encodes it as PNG.
+    if let Some(data_url) = single_gif_file_data_url(&files) {
+        Some(ClipboardData::Image { data_url })
+    } else if should_capture_file_entries(capture_files_enabled) {
+        Some(ClipboardData::Files(files))
+    } else {
+        None
+    }
 }
 
 fn is_snipping_tool_source(
@@ -616,6 +652,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
         let mut cached_image: Option<
             Option<crate::infrastructure::windows_api::win_clipboard::ImageData>,
         > = None;
+        let mut cached_html_animated_image: Option<Option<String>> = None;
 
         // 3. Content-based deduplication with time window (for Chrome address bar, etc.)
         // Some apps trigger multiple clipboard updates with different sequence numbers
@@ -713,22 +750,13 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                             monitor_state.last_text = content.clone();
 
                             let settings = app.state::<SettingsState>();
-                            if should_capture_file_entries(
+                            if let Some(data) = file_clipboard_data(
+                                files,
                                 settings.capture_files.load(Ordering::Relaxed),
                             ) {
                                 process_new_entry(
                                     &app,
-                                    ClipboardData::Files(files.clone()),
-                                    None,
-                                    Some(source_snapshot.clone()),
-                                );
-                            } else if let Some(data_url) = single_gif_file_data_url(&files) {
-                                // File capture may be off, but CF_HDROP still carries the
-                                // original GIF (WeChat/QQ/Explorer). Capture it as an image
-                                // so paste can restore GIF formats instead of a DIB/PNG frame.
-                                process_new_entry(
-                                    &app,
-                                    ClipboardData::Image { data_url },
+                                    data,
                                     None,
                                     Some(source_snapshot.clone()),
                                 );
@@ -804,6 +832,14 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                     } else {
                         let html_animated_gif_fallback =
                             extract_animated_image_data_url_from_html(&html);
+                        let prefer_image = should_prefer_image_over_rich_text(
+                            &text,
+                            &html,
+                            clipboard_gif_data.is_some(),
+                            html_animated_gif_fallback.is_some(),
+                            is_likely_rich_text_source(&source_snapshot),
+                            || read_clipboard_image_once(&mut cached_image).is_some(),
+                        );
                         let mut html_to_store = html;
 
                         // When the HTML already has <img> tags with local/renderable
@@ -835,20 +871,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                                 attach_rich_named_formats(&html_to_store, &preserved_named_formats);
                         }
 
-                        let has_gif = clipboard_gif_data.is_some();
-                        let has_html_animated_gif = html_animated_gif_fallback.is_some();
-
-                        // If the derived text is empty (or this is a pure image / animated
-                        // GIF copy from a browser), prefer the image handler unless this is
-                        // a dedicated rich text source. Capturing animated GIFs as rich text
-                        // makes paste emit HTML/static previews instead of GIF formats.
-                        let prefer_image = should_prefer_image_over_rich_text(
-                            &text,
-                            has_gif,
-                            has_html_animated_gif,
-                            is_likely_rich_text_source(&source_snapshot),
-                            read_clipboard_image_once(&mut cached_image).is_some(),
-                        );
+                        cached_html_animated_image = Some(html_animated_gif_fallback);
 
                         if !prefer_image {
                             monitor_state.last_text = normalized_text.clone();
@@ -887,10 +910,14 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                 let gif_data_opt = clipboard_gif_data;
 
                 let animated_image_fallback = if gif_data_opt.is_none() {
-                    clipboard_html_animated_image_data_url().or_else(|| {
-                        read_clipboard_text_fresh()
-                            .and_then(|text| extract_animated_image_data_url_from_text(&text))
-                    })
+                    resolve_animated_image_fallback(
+                        cached_html_animated_image,
+                        clipboard_html_animated_image_data_url,
+                        || {
+                            read_clipboard_text_fresh()
+                                .and_then(|text| extract_animated_image_data_url_from_text(&text))
+                        },
+                    )
                 } else {
                     None
                 };
@@ -1344,8 +1371,9 @@ pub fn process_new_entry(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_gif_payload, is_snipping_tool_source, is_wps_writer_source, should_capture_file_entries,
-        should_prefer_image_over_rich_text, single_gif_file_data_url,
+        file_clipboard_data, is_gif_payload, is_snipping_tool_source, is_wps_writer_source,
+        resolve_animated_image_fallback, should_capture_file_entries,
+        should_prefer_image_over_rich_text, single_gif_file_data_url, ClipboardData,
     };
     use crate::infrastructure::windows_api::window_tracker::ActiveAppInfo;
 
@@ -1404,33 +1432,169 @@ mod tests {
 
     #[test]
     fn prefers_image_when_html_contains_animated_gif() {
+        let html = r#"<div><img src="https://cdn.example/a.gif"></div>"#;
         assert!(should_prefer_image_over_rich_text(
             "https://cdn.example/a.gif",
+            html,
             false,
             true,
             false,
-            false,
+            || panic!("an existing GIF must not trigger bitmap rendering"),
         ));
-        assert!(should_prefer_image_over_rich_text("", false, true, false, false));
+        assert!(should_prefer_image_over_rich_text(
+            "",
+            html,
+            false,
+            true,
+            false,
+            || panic!("an existing GIF must not trigger bitmap rendering"),
+        ));
     }
 
     #[test]
     fn keeps_rich_text_for_office_sources_even_with_gif_fallback() {
-        assert!(!should_prefer_image_over_rich_text(
-            "caption",
-            false,
-            true,
-            true,
-            true,
-        ));
+        for has_gif in [false, true] {
+            for text in ["", "caption"] {
+                assert!(!should_prefer_image_over_rich_text(
+                    text,
+                    r#"<img src="a.gif">"#,
+                    false,
+                    has_gif,
+                    true,
+                    || panic!("Office/WPS must not be asked to render a bitmap"),
+                ));
+            }
+        }
     }
 
     #[test]
     fn prefers_image_for_empty_text_raster_copies() {
-        assert!(should_prefer_image_over_rich_text("", false, false, false, true));
-        assert!(!should_prefer_image_over_rich_text(
-            "hello", false, false, false, true
+        let reads = std::cell::Cell::new(0);
+        assert!(should_prefer_image_over_rich_text(
+            "", "", false, false, false,
+            || {
+                reads.set(reads.get() + 1);
+                true
+            },
         ));
+        assert_eq!(reads.get(), 1);
+        assert!(!should_prefer_image_over_rich_text(
+            "hello",
+            "<p>hello</p>",
+            false,
+            false,
+            false,
+            || panic!("plain text must not require a bitmap probe"),
+        ));
+    }
+
+    #[test]
+    fn keeps_mixed_html_even_when_it_contains_a_gif() {
+        for (text, html) in [
+            ("正文", r#"<p>正文</p><img src="a.gif">"#),
+            ("", r#"<p>正文</p><img src="a.gif">"#),
+            ("", r#"<img src="a.gif"><img src="b.png">"#),
+            (
+                "链接",
+                r#"<a href="https://example.test">链接</a><img src="a.gif">"#,
+            ),
+            ("caption", r#"<img src="a.gif">"#),
+            (
+                "https://example.test/other",
+                r#"<img src="https://cdn.example/a.gif">"#,
+            ),
+        ] {
+            assert!(
+                !should_prefer_image_over_rich_text(text, html, false, true, false, || {
+                    panic!("mixed content must not require a bitmap probe")
+                }),
+                "must preserve text={text:?}, html={html}",
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_image_allows_escaped_url_metadata() {
+        assert!(should_prefer_image_over_rich_text(
+            "https://cdn.example/a.gif?x=1&y=2",
+            r#"<div><IMG SRC="https://cdn.example/a.gif?x=1&amp;y=2"></div>"#,
+            false,
+            true,
+            false,
+            || panic!("GIF already available"),
+        ));
+    }
+
+    #[test]
+    fn animated_image_fallback_reuses_all_frames_without_refetching() {
+        use base64::Engine;
+        use image::{AnimationDecoder, Frame, Rgba, RgbaImage};
+
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                encoder
+                    .encode_frame(Frame::new(RgbaImage::from_pixel(2, 2, Rgba(color))))
+                    .unwrap();
+            }
+        }
+        let data_url = format!(
+            "data:image/gif;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        );
+        let html = format!(r#"<img src="{data_url}">"#);
+        let recovered = super::extract_animated_image_data_url_from_html(&html).unwrap();
+        let resolved = resolve_animated_image_fallback(
+            Some(Some(recovered)),
+            || panic!("already recovered HTML must not be fetched again"),
+            || panic!("already recovered GIF must not probe text"),
+        )
+        .unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(resolved.split_once(',').unwrap().1)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+        let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(decoded))
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_ne!(frames[0].buffer(), frames[1].buffer());
+    }
+
+    #[test]
+    fn animated_image_fallback_does_not_repeat_a_failed_html_probe() {
+        assert_eq!(
+            resolve_animated_image_fallback(
+                Some(None),
+                || panic!("a failed HTML probe is cached too"),
+                || Some("text fallback".to_string()),
+            )
+            .as_deref(),
+            Some("text fallback"),
+        );
+    }
+
+    #[test]
+    fn animated_image_fallback_probes_html_only_when_not_cached() {
+        let html_reads = std::cell::Cell::new(0);
+        let text_reads = std::cell::Cell::new(0);
+        let resolved = resolve_animated_image_fallback(
+            None,
+            || {
+                html_reads.set(html_reads.get() + 1);
+                None
+            },
+            || {
+                text_reads.set(text_reads.get() + 1);
+                None
+            },
+        );
+        assert!(resolved.is_none());
+        assert_eq!(html_reads.get(), 1);
+        assert_eq!(text_reads.get(), 1);
     }
 
     #[test]
@@ -1453,6 +1617,100 @@ mod tests {
         assert!(single_gif_file_data_url(&[path.to_string_lossy().into_owned(), "x".into()]).is_none());
         assert!(single_gif_file_data_url(&[dir.join("nope.png").to_string_lossy().into_owned()]).is_none());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn qq_mislabeled_gif_preserves_all_frames_with_file_capture_on_and_off() {
+        use base64::Engine;
+        use image::{AnimationDecoder, Frame, Rgba, RgbaImage};
+
+        let dir = std::env::temp_dir().join(format!(
+            "tiez_qq_gif_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut gif_bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif_bytes);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Infinite)
+                .unwrap();
+            for color in [
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [0, 0, 255, 255],
+                [255, 255, 0, 255],
+            ] {
+                encoder
+                    .encode_frame(Frame::new(RgbaImage::from_pixel(2, 2, Rgba(color))))
+                    .unwrap();
+            }
+        }
+
+        for name in ["qq-cache.jpg", "qq-cache.png", "sample.GIF", "no-extension"] {
+            let source = dir.join(name);
+            std::fs::write(&source, &gif_bytes).unwrap();
+            for capture_files in [false, true] {
+                let data = file_clipboard_data(
+                    vec![source.to_string_lossy().into_owned()],
+                    capture_files,
+                )
+                .unwrap();
+                let ClipboardData::Image { data_url } = data else {
+                    panic!("GIF must bypass still-image conversion: {name}, {capture_files}");
+                };
+                assert!(data_url.starts_with("data:image/gif;base64,"));
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(data_url.split_once(',').unwrap().1)
+                    .unwrap();
+                assert_eq!(decoded, gif_bytes);
+                let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(decoded))
+                    .unwrap()
+                    .into_frames()
+                    .collect_frames()
+                    .unwrap();
+                assert_eq!(frames.len(), 4);
+                assert_ne!(frames[0].buffer(), frames[1].buffer());
+
+                let stored = crate::database::save_image_to_file(&data_url, &dir).unwrap();
+                assert_eq!(std::path::Path::new(&stored).extension().unwrap(), "gif");
+                assert_eq!(std::fs::read(stored).unwrap(), gif_bytes);
+            }
+        }
+
+        // Ordinary files, including files merely named .gif, must still obey
+        // capture-files. A multi-file selection must not lose its other files.
+        let png = dir.join("still.png");
+        RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 255]))
+            .save(&png)
+            .unwrap();
+        let fake_gif = dir.join("fake.gif");
+        std::fs::copy(&png, &fake_gif).unwrap();
+        let short = dir.join("short.gif");
+        std::fs::write(&short, b"GIF89a").unwrap();
+        for files in [
+            vec![png.to_string_lossy().into_owned()],
+            vec![fake_gif.to_string_lossy().into_owned()],
+            vec![short.to_string_lossy().into_owned()],
+            vec![dir.join("missing.gif").to_string_lossy().into_owned()],
+            vec![dir.to_string_lossy().into_owned()],
+            vec![
+                dir.join("qq-cache.jpg").to_string_lossy().into_owned(),
+                png.to_string_lossy().into_owned(),
+            ],
+        ] {
+            assert!(file_clipboard_data(files.clone(), false).is_none());
+            let Some(ClipboardData::Files(preserved)) = file_clipboard_data(files.clone(), true)
+            else {
+                panic!("ordinary files must retain the existing file pipeline");
+            };
+            assert_eq!(preserved, files);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

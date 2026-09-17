@@ -310,6 +310,40 @@ fn resolve_animated_image_src_to_data_url(
     None
 }
 
+/// Only discard HTML when it represents a single image, not a copied selection.
+pub(super) fn is_standalone_image_html(text: &str, html: &str) -> bool {
+    if !derive_rich_text_content("", Some(html)).trim().is_empty() {
+        return false;
+    }
+
+    static IMG_TAG_RE: OnceLock<Regex> = OnceLock::new();
+    static SRC_ATTR_RE: OnceLock<Regex> = OnceLock::new();
+    let img_tag_re = IMG_TAG_RE.get_or_init(|| Regex::new(r"(?is)<img\b[^>]*>").unwrap());
+    let mut images = img_tag_re.find_iter(html);
+    let Some(image) = images.next() else {
+        return false;
+    };
+    if images.next().is_some() {
+        return false;
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    // Browsers can supply the image URL as plain text alongside an image-only
+    // HTML fragment. Do not treat arbitrary text (even another URL) as metadata.
+    let src_attr_re = SRC_ATTR_RE.get_or_init(|| {
+        Regex::new(r#"(?is)\s(?:src|data-src|data-original|data-actualsrc)\s*=\s*["']([^"']+)["']"#)
+            .unwrap()
+    });
+    src_attr_re.captures_iter(image.as_str()).any(|caps| {
+        caps.get(1)
+            .map(|src| decode_basic_html_entities(src.as_str()).trim() == text)
+            .unwrap_or(false)
+    })
+}
+
 pub fn extract_animated_image_data_url_from_html(html: &str) -> Option<String> {
     if html.trim().is_empty() {
         return None;
