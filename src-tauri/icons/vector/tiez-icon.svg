@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>TieZ 主图标 · 方案 A「Z-折角」</title>
+  <desc>网格 512×512 · 圆角 112（21.9%）· 安全边距 48 · 渐变 #3E82FF → #2F6FED → #1D53D8（135°）· 折角 #1D53D8</desc>
+  <defs>
+    <linearGradient id="gMain" x1="80" y1="48" x2="440" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3E82FF"/>
+      <stop offset="0.52" stop-color="#2F6FED"/>
+      <stop offset="1" stop-color="#1D53D8"/>
+    </linearGradient>
+  </defs>
+  <!-- squircle 底板 -->
+  <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#gMain)"/>
+  <!-- 内描边，提亮边缘 -->
+  <rect x="22" y="22" width="468" height="468" rx="100" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="3"/>
+  <!-- 几何 Z -->
+  <path d="M116 128 L352 128 L396 172 L396 196 L248 324 L396 324 L396 384 L116 384 L116 324 L264 196 L116 196 Z" fill="#FFFFFF"/>
+  <!-- 折角镂空 -->
+  <path d="M352 128 L396 172 L352 172 Z" fill="#1D53D8"/>
+</svg>
