@@ -77,6 +77,39 @@ fn clipboard_gif_payload() -> Option<Vec<u8>> {
     })
 }
 
+/// Prefer the image pipeline over rich-text when the clipboard is effectively a
+/// (possibly HTML-wrapped) animated GIF. Storing as rich text causes paste to
+/// emit HTML/static previews instead of GIF clipboard formats.
+fn should_prefer_image_over_rich_text(
+    text: &str,
+    has_native_gif: bool,
+    has_html_animated_gif: bool,
+    is_rich_text_source: bool,
+    has_raster_image: bool,
+) -> bool {
+    if is_rich_text_source {
+        return false;
+    }
+    let has_animated_gif = has_native_gif || has_html_animated_gif;
+    (text.trim().is_empty() || has_animated_gif) && (has_raster_image || has_animated_gif)
+}
+
+fn single_gif_file_data_url(files: &[String]) -> Option<String> {
+    if files.len() != 1 {
+        return None;
+    }
+    let path = files[0].trim();
+    if path.is_empty() || !path.to_ascii_lowercase().ends_with(".gif") {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if !is_gif_payload(&bytes) {
+        return None;
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:image/gif;base64,{}", b64))
+}
+
 fn is_snipping_tool_source(
     source_snapshot: &crate::infrastructure::windows_api::window_tracker::ActiveAppInfo,
 ) -> bool {
@@ -685,7 +718,17 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                             ) {
                                 process_new_entry(
                                     &app,
-                                    ClipboardData::Files(files),
+                                    ClipboardData::Files(files.clone()),
+                                    None,
+                                    Some(source_snapshot.clone()),
+                                );
+                            } else if let Some(data_url) = single_gif_file_data_url(&files) {
+                                // File capture may be off, but CF_HDROP still carries the
+                                // original GIF (WeChat/QQ/Explorer). Capture it as an image
+                                // so paste can restore GIF formats instead of a DIB/PNG frame.
+                                process_new_entry(
+                                    &app,
+                                    ClipboardData::Image { data_url },
                                     None,
                                     Some(source_snapshot.clone()),
                                 );
@@ -793,15 +836,19 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                         }
 
                         let has_gif = clipboard_gif_data.is_some();
+                        let has_html_animated_gif = html_animated_gif_fallback.is_some();
 
-                        // If the derived text is empty (or this is a pure image copy from browser),
-                        // we prefer the image handler unless this is a dedicated rich text source.
-                        // For GIFs, we are especially aggressive because capturing as rich text
-                        // results in a static preview snapshot, killing the animation.
-                        let prefer_image = (text.trim().is_empty() || has_gif)
-                            && !is_likely_rich_text_source(&source_snapshot)
-                            && html_animated_gif_fallback.is_none()
-                            && (read_clipboard_image_once(&mut cached_image).is_some() || has_gif);
+                        // If the derived text is empty (or this is a pure image / animated
+                        // GIF copy from a browser), prefer the image handler unless this is
+                        // a dedicated rich text source. Capturing animated GIFs as rich text
+                        // makes paste emit HTML/static previews instead of GIF formats.
+                        let prefer_image = should_prefer_image_over_rich_text(
+                            &text,
+                            has_gif,
+                            has_html_animated_gif,
+                            is_likely_rich_text_source(&source_snapshot),
+                            read_clipboard_image_once(&mut cached_image).is_some(),
+                        );
 
                         if !prefer_image {
                             monitor_state.last_text = normalized_text.clone();
@@ -1298,6 +1345,7 @@ pub fn process_new_entry(
 mod tests {
     use super::{
         is_gif_payload, is_snipping_tool_source, is_wps_writer_source, should_capture_file_entries,
+        should_prefer_image_over_rich_text, single_gif_file_data_url,
     };
     use crate::infrastructure::windows_api::window_tracker::ActiveAppInfo;
 
@@ -1352,6 +1400,60 @@ mod tests {
         assert!(is_gif_payload(b"GIF87a\x01"));
         assert!(!is_gif_payload(b"https://example.test/image.gif"));
         assert!(!is_gif_payload(b"GIF89a"));
+    }
+
+    #[test]
+    fn prefers_image_when_html_contains_animated_gif() {
+        assert!(should_prefer_image_over_rich_text(
+            "https://cdn.example/a.gif",
+            false,
+            true,
+            false,
+            false,
+        ));
+        assert!(should_prefer_image_over_rich_text("", false, true, false, false));
+    }
+
+    #[test]
+    fn keeps_rich_text_for_office_sources_even_with_gif_fallback() {
+        assert!(!should_prefer_image_over_rich_text(
+            "caption",
+            false,
+            true,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn prefers_image_for_empty_text_raster_copies() {
+        assert!(should_prefer_image_over_rich_text("", false, false, false, true));
+        assert!(!should_prefer_image_over_rich_text(
+            "hello", false, false, false, true
+        ));
+    }
+
+    #[test]
+    fn single_gif_file_data_url_reads_gif_bytes() {
+        let dir = std::env::temp_dir().join(format!(
+            "tiez_gif_hdrop_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.gif");
+        // Minimal GIF89a header + one extra byte so the signature check passes.
+        let gif_bytes = b"GIF89a\x01";
+        std::fs::write(&path, gif_bytes).unwrap();
+
+        let data_url = single_gif_file_data_url(&[path.to_string_lossy().into_owned()]).unwrap();
+        assert!(data_url.starts_with("data:image/gif;base64,"));
+        assert!(single_gif_file_data_url(&[path.to_string_lossy().into_owned(), "x".into()]).is_none());
+        assert!(single_gif_file_data_url(&[dir.join("nope.png").to_string_lossy().into_owned()]).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -934,9 +934,21 @@ fn generate_cf_html(html: &str) -> String {
     );
     format!("{}{}", header, html_content)
 }
+fn is_gif_image_bytes(bytes: &[u8]) -> bool {
+    bytes.len() > 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
+}
+
+/// Decide whether the PNG clipboard format should accompany an image paste.
+///
+/// Many Windows apps prefer `PNG` / `image/png` over GIF named formats and
+/// CF_HDROP. Attaching a first-frame PNG beside a GIF therefore makes paste
+/// targets materialize a static PNG even when the history entry is still GIF.
+fn should_attach_png_clipboard_format(is_gif: bool) -> bool {
+    !is_gif
+}
+
 fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult<(u64, u64, u64)> {
-    // Check if it's a GIF by magic number
-    let is_gif = bytes.len() > 3 && &bytes[0..3] == b"GIF";
+    let is_gif = is_gif_image_bytes(&bytes);
 
     let (width, height, raw_bytes) = {
         let img = image::load_from_memory(&bytes)
@@ -964,20 +976,28 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
         None
     };
 
-    // Prepare PNG data for better compatibility
+    // PNG is a compatibility format for still images. Never attach it for GIF
+    // pastes — see should_attach_png_clipboard_format.
     let mut png_buf: Vec<u8> = Vec::new();
-    let img = image::load_from_memory(&bytes)
-        .map_err(|e| AppError::Internal(format!("加载图像失败: {}", e)))?;
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png_buf),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| AppError::Internal(format!("编码 PNG 失败: {}", e)))?;
+    let png_payload = if should_attach_png_clipboard_format(is_gif) {
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| AppError::Internal(format!("加载图像失败: {}", e)))?;
+        img.write_to(
+            &mut std::io::Cursor::new(&mut png_buf),
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| AppError::Internal(format!("编码 PNG 失败: {}", e)))?;
+        Some(png_buf.as_slice())
+    } else {
+        None
+    };
 
-    let png_hash = {
+    let png_hash = if let Some(png_bytes) = png_payload {
         let mut hasher = DefaultHasher::new();
-        png_buf.hash(&mut hasher);
+        png_bytes.hash(&mut hasher);
         hasher.finish()
+    } else {
+        0
     };
 
     #[cfg(target_os = "windows")]
@@ -989,7 +1009,7 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
                 bytes: raw_bytes,
             },
             if is_gif { Some(&bytes) } else { None },
-            Some(&png_buf),
+            png_payload,
         )
         .map_err(AppError::from)?
     };
@@ -1680,7 +1700,10 @@ pub fn paste_latest_plain(app_handle: tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_restore_direct_text_clipboard, ClipboardSnapshot};
+    use super::{
+        is_gif_image_bytes, should_attach_png_clipboard_format, should_restore_direct_text_clipboard,
+        ClipboardSnapshot,
+    };
 
     fn text_snapshot(value: &str) -> ClipboardSnapshot {
         ClipboardSnapshot::Text {
@@ -1704,5 +1727,20 @@ mod tests {
             &text_snapshot("changed by target"),
             &temporary,
         ));
+    }
+
+    #[test]
+    fn gif_image_bytes_require_full_signature() {
+        assert!(is_gif_image_bytes(b"GIF89a\x01"));
+        assert!(is_gif_image_bytes(b"GIF87a\x01"));
+        assert!(!is_gif_image_bytes(b"GIF89a"));
+        assert!(!is_gif_image_bytes(b"GIF"));
+        assert!(!is_gif_image_bytes(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn gif_paste_omits_png_clipboard_format() {
+        assert!(!should_attach_png_clipboard_format(true));
+        assert!(should_attach_png_clipboard_format(false));
     }
 }

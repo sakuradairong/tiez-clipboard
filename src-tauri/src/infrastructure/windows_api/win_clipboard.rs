@@ -868,7 +868,9 @@ pub unsafe fn set_clipboard_image_and_gif(
 
 /// Set image with multiple formats: GIF (optional), PNG (optional), and DIB
 /// This maximizes compatibility with different applications
-/// For GIF: Also sets CF_HDROP with temp file path (WeChat/QQ need this for animated GIFs)
+/// For GIF: Also sets CF_HDROP with temp file path (WeChat/QQ need this for animated GIFs).
+/// Callers should omit `png_data` when `gif_data` is set — many apps prefer PNG and would
+/// otherwise paste a static frame instead of the animated GIF.
 pub unsafe fn set_clipboard_image_with_formats(
     image: ImageData,
     gif_data: Option<&[u8]>,

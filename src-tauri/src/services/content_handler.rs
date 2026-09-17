@@ -216,10 +216,6 @@ fn create_temp_file(
 ) -> Result<std::path::PathBuf, AppError> {
     match content_type {
         "image" => {
-            let is_gif = content.contains("image/gif");
-            let extension = if is_gif { "gif" } else { "png" };
-            temp_path.push(format!("{}.{}", filename, extension));
-
             let b64_data = if content.starts_with("data:image") {
                 content.split(',').nth(1).unwrap_or(content)
             } else {
@@ -228,6 +224,12 @@ fn create_temp_file(
             let bytes = general_purpose::STANDARD
                 .decode(b64_data)
                 .map_err(|e| e.to_string())?;
+
+            let is_gif = content.contains("image/gif")
+                || (bytes.len() > 6
+                    && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")));
+            let extension = if is_gif { "gif" } else { "png" };
+            temp_path.push(format!("{}.{}", filename, extension));
 
             if is_gif {
                 // For GIFs, write raw bytes directly to preserve animation

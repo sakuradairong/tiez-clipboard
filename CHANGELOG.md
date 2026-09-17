@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 Windows 上 GIF 复制进历史后粘贴仍变成 PNG 的问题：粘贴 GIF 时不再附带 PNG 剪贴板格式（避免目标应用优先取静态 PNG）；从 CF_HTML 恢复的动画 GIF 改为按图片条目保存；关闭“捕获文件”时仍会从 CF_HDROP 保留单个 GIF。
+
 ## [0.3.11] - 2026-09-16
 
 ### Fixed
