@@ -220,7 +220,10 @@
     border-color: transparent;
 }
 
-.history-item.compact:hover .item-actions {
+/* Show actions on hover, keyboard selection, or when a child control is focused */
+.history-item.compact:hover .item-actions,
+.history-item.compact.selected .item-actions,
+.history-item.compact:focus-within .item-actions {
     opacity: 1;
     visibility: visible;
     transform: translateY(0);

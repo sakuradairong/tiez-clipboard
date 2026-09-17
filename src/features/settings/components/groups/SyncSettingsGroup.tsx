@@ -1,6 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface LabelWithHintProps {
     label: string;
@@ -62,24 +62,25 @@ const SyncSettingsGroup = ({
     setMqttNotificationEnabled
 }: SyncSettingsGroupProps) => (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-        <div className="group-header" onClick={onToggle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ margin: 0 }}>{t('sync_settings')}</h3>
-                {mqttEnabled && (
-                    <span
-                        style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            backgroundColor: mqttStatus === 'connected' ? '#4CAF50' : mqttStatus === 'connecting' ? '#FF9800' : '#F44336',
-                            display: 'inline-block'
-                        }}
-                        title={mqttStatus === 'connected' ? "Connected" : mqttStatus === 'connecting' ? "Connecting..." : "Disconnected"}
-                    />
-                )}
-            </div>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </div>
+        <SettingsGroupHeader
+            title={t('sync_settings')}
+            collapsed={collapsed}
+            onToggle={onToggle}
+            titleExtra={mqttEnabled ? (
+                <span
+                    aria-hidden="true"
+                    style={{
+                        width: '8px',
+                        height: '8px',
+                        borderRadius: '50%',
+                        backgroundColor: mqttStatus === 'connected' ? '#4CAF50' : mqttStatus === 'connecting' ? '#FF9800' : '#F44336',
+                        display: 'inline-block',
+                        flexShrink: 0
+                    }}
+                    title={mqttStatus === 'connected' ? "Connected" : mqttStatus === 'connecting' ? "Connecting..." : "Disconnected"}
+                />
+            ) : undefined}
+        />
         {!collapsed && (
             <div className="group-content">
                 <div style={{

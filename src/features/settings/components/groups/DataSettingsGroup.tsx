@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { open, save, ask, message } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { ArchiveRestore, ChevronDown, ChevronRight, Download, Loader2 } from "lucide-react";
+import { ArchiveRestore, Download, Loader2 } from "lucide-react";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface DataSettingsGroupProps {
     t: (key: string) => string;
@@ -110,10 +111,11 @@ const DataSettingsGroup = ({ t, collapsed, onToggle, dataPath }: DataSettingsGro
 
     return (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-        <div className="group-header" onClick={onToggle}>
-            <h3 style={{ margin: 0 }}>{t('data_management')}</h3>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </div>
+        <SettingsGroupHeader
+            title={t('data_management')}
+            collapsed={collapsed}
+            onToggle={onToggle}
+        />
         {!collapsed && (
             <div className="group-content">
                 <div className="setting-item column no-border">

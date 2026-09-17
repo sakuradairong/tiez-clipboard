@@ -813,12 +813,13 @@ const SettingsPanel = (props: SettingsPanelProps) => {
                     type="button"
                     className="group-header settings-nav-card"
                     onClick={openAdvancedSettingsWindow}
+                    aria-label={t("advanced_settings")}
                 >
-                    <div style={{ minWidth: 0, textAlign: "left" }}>
+                    <div className="group-header-text">
                         <h3 style={{ margin: 0 }}>{t("advanced_settings")}</h3>
                         <div className="settings-subpage-note">{t("advanced_settings_entry_desc")}</div>
                     </div>
-                    <ChevronRight size={16} />
+                    <ChevronRight size={16} aria-hidden="true" />
                 </button>
             </div>
 

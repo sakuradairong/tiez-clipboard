@@ -36,3 +36,12 @@
   border-color: var(--button-active-filled-border-color);
   box-shadow: var(--button-active-filled-shadow);
 }
+
+.btn-icon:focus {
+  outline: none;
+}
+
+.btn-icon:focus-visible {
+  outline: 2px solid var(--accent-color, #3b82f6);
+  outline-offset: 2px;
+}

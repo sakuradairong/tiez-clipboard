@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode, CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, message } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ChevronRight, X } from "lucide-react";
+import { X } from "lucide-react";
 import {
     THEMES,
     getThemeLabel,
@@ -11,6 +11,7 @@ import {
 import type { Locale } from "../../../../shared/types";
 import type { SettingsSubpage } from "../../../app/types";
 import { FORK_SERVICES } from "../../../../shared/config/fork";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface LabelWithHintProps {
     label: string;
@@ -110,17 +111,18 @@ const AppearanceSettingsGroup = ({
 
     return (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-        <div className="group-header" onClick={onToggle}>
-            <h3 style={{ margin: 0 }}>{t('appearance_settings')}</h3>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </div>
+        <SettingsGroupHeader
+            title={t('appearance_settings')}
+            collapsed={collapsed}
+            onToggle={onToggle}
+        />
         {!collapsed && (
             <div className="group-content">
                 <div className="setting-item column">
                     <div className="item-label-group" style={{ marginBottom: '8px' }}>
                         <span className="item-label">{t('visual_theme')}</span>
                     </div>
-                    <div className="settings-choice-grid theme-choice-grid">
+                    <div className="settings-choice-grid theme-choice-grid" role="radiogroup" aria-label={t('visual_theme')}>
                         {THEMES.map(themeItem => (
                             <button
                                 key={themeItem.id}
@@ -130,6 +132,9 @@ const AppearanceSettingsGroup = ({
                                 }}
                                 className={`btn-icon theme-choice-btn ${theme === themeItem.id ? 'active' : ''}`}
                                 type="button"
+                                role="radio"
+                                aria-checked={theme === themeItem.id}
+                                aria-pressed={theme === themeItem.id}
                             >
                                 <span className="theme-choice-title">
                                     {getThemeLabel(themeItem.id, language)}
@@ -155,7 +160,7 @@ const AppearanceSettingsGroup = ({
                     <div className="item-label-group" style={{ marginBottom: '8px' }}>
                         <span className="item-label">{t('color_mode')}</span>
                     </div>
-                    <div className="settings-inline-choice-row">
+                    <div className="settings-inline-choice-row" role="radiogroup" aria-label={t('color_mode')}>
                         {[
                             { id: 'system', name: t('mode_system') },
                             { id: 'light', name: t('mode_light') },
@@ -169,6 +174,10 @@ const AppearanceSettingsGroup = ({
                                     saveAppSetting('color_mode', modeItem.id);
                                 }}
                                 className={`btn-icon settings-inline-choice-btn ${colorMode === modeItem.id ? 'active' : ''}`}
+                                type="button"
+                                role="radio"
+                                aria-checked={colorMode === modeItem.id}
+                                aria-pressed={colorMode === modeItem.id}
                             >
                                 {modeItem.name}
                             </button>
@@ -180,7 +189,7 @@ const AppearanceSettingsGroup = ({
                     <div className="item-label-group" style={{ marginBottom: '8px' }}>
                         <span className="item-label">{t('language')}</span>
                     </div>
-                    <div className="settings-inline-choice-row">
+                    <div className="settings-inline-choice-row" role="radiogroup" aria-label={t('language')}>
                         {[
                             { id: 'zh', name: '简体' },
                             { id: 'tw', name: '繁體' },
@@ -193,6 +202,10 @@ const AppearanceSettingsGroup = ({
                                     saveAppSetting('language', lang.id);
                                 }}
                                 className={`btn-icon settings-inline-choice-btn ${language === lang.id ? 'active' : ''}`}
+                                type="button"
+                                role="radio"
+                                aria-checked={language === lang.id}
+                                aria-pressed={language === lang.id}
                             >
                                 {lang.name}
                             </button>

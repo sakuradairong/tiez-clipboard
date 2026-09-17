@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ChevronRight, HelpCircle } from "lucide-react";
+import { HelpCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { QRCodeCanvas } from "qrcode.react";
+import SettingsGroupHeader from "../SettingsGroupHeader";
 
 interface FileTransferSettingsGroupProps {
     t: (key: string) => string;
@@ -58,10 +59,11 @@ const FileTransferSettingsGroup = ({
     fetchEffectiveTransferPath
 }: FileTransferSettingsGroupProps) => (
     <div className={`settings-group ${collapsed ? 'collapsed' : ''}`}>
-        <div className="group-header" onClick={onToggle}>
-            <h3 style={{ margin: 0 }}>{t('file_transfer')}</h3>
-            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-        </div>
+        <SettingsGroupHeader
+            title={t('file_transfer')}
+            collapsed={collapsed}
+            onToggle={onToggle}
+        />
         {!collapsed && (
             <div className="group-content">
                 <div className="setting-item">
