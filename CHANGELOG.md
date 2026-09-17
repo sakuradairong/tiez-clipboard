@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-09-17
+
 ### Fixed
 
 - 修复 QQ 通过文件剪贴板提供 `.jpg` 后缀、实际为多帧 GIF 的缓存图片时变成静态 PNG 的问题：在 Windows 文件采集入口优先检查真实文件签名，无论“捕获文件”是否开启，都按 GIF 原始字节保存；非 GIF 和多文件复制保持原有行为。
