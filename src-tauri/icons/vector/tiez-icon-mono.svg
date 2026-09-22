@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>TieZ 单色版（水印 / 单色印刷 / 反白）</title>
+  <desc>fill=currentColor。evenodd：底板挖出 Z，折角三角回填。</desc>
+  <path fill-rule="evenodd" clip-rule="evenodd" fill="currentColor"
+    d="M120 8 H392 Q504 8 504 120 V392 Q504 504 392 504 H120 Q8 504 8 392 V120 Q8 8 120 8 Z
+       M116 128 L352 128 L396 172 L396 196 L248 324 L396 324 L396 384 L116 384 L116 324 L264 196 L116 196 Z
+       M352 128 L396 172 L352 172 Z"/>
+</svg>

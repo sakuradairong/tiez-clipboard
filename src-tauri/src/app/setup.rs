@@ -1173,6 +1173,63 @@ fn init_announcement_ping(app: &App, repo: &impl SettingsRepository) {
     }
 }
 
+/// Pick tray glyph bytes for the current system chrome (taskbar) theme.
+/// Light taskbar → ink-blue Z; dark taskbar → white Z.
+/// On high-DPI light taskbars, prefer the @2x ink-blue asset when available.
+fn tray_icon_bytes(is_dark_system: bool, prefer_2x: bool) -> &'static [u8] {
+    if is_dark_system {
+        include_bytes!("../../icons/tray-icon-light.png")
+    } else if prefer_2x {
+        include_bytes!("../../icons/tray-icon@2x.png")
+    } else {
+        include_bytes!("../../icons/tray-icon.png")
+    }
+}
+
+fn tray_prefer_2x(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.scale_factor().ok())
+        .map(|scale| scale >= 1.5)
+        .unwrap_or(false)
+}
+
+/// Windows taskbar follows `SystemUsesLightTheme` (not AppsUseLightTheme).
+#[cfg(target_os = "windows")]
+fn windows_system_uses_light_theme() -> Option<bool> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok()?;
+    let value: u32 = key.get_value("SystemUsesLightTheme").ok()?;
+    Some(value != 0)
+}
+
+fn system_tray_is_dark(app: &AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(is_light) = windows_system_uses_light_theme() {
+            return !is_light;
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        return window.theme().unwrap_or(tauri::Theme::Light) == tauri::Theme::Dark;
+    }
+    false
+}
+
+fn tray_icon_image(app: &AppHandle) -> tauri::image::Image<'static> {
+    let bytes = tray_icon_bytes(system_tray_is_dark(app), tray_prefer_2x(app));
+    tauri::image::Image::from_bytes(bytes).expect("tray icon bytes")
+}
+
+fn apply_tray_icon_for_system_theme(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id("main_tray") {
+        let _ = tray.set_icon(Some(tray_icon_image(app)));
+    }
+}
+
 fn setup_tray(app: &App, hide_tray: bool) {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
@@ -1180,8 +1237,7 @@ fn setup_tray(app: &App, hide_tray: bool) {
     let show_i = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>).unwrap();
     let quit_i = MenuItem::with_id(app, "quit", "退出 贴汁", true, None::<&str>).unwrap();
     let menu = Menu::with_items(app, &[&show_i, &quit_i]).unwrap();
-    let icon =
-        tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-icon.png")).unwrap();
+    let icon = tray_icon_image(app.handle());
 
     let tray = TrayIconBuilder::with_id("main_tray")
         .icon(icon)
@@ -1494,6 +1550,10 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             NAVIGATION_ENABLED.store(false, Ordering::SeqCst);
             NAVIGATION_MODE_ACTIVE.store(false, Ordering::SeqCst);
         }
+        tauri::WindowEvent::ThemeChanged(_) => {
+            // Tray glyphs follow system chrome (taskbar), not the in-app color mode.
+            apply_tray_icon_for_system_theme(window.app_handle());
+        }
         _ => {}
     }
 }
@@ -1605,4 +1665,30 @@ fn handle_blur(window: &tauri::Window) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tray_icon_theme_tests {
+    use super::tray_icon_bytes;
+
+    #[test]
+    fn light_taskbar_uses_ink_blue_glyph() {
+        let light = tray_icon_bytes(false, false);
+        let light_2x = tray_icon_bytes(false, true);
+        let dark = tray_icon_bytes(true, false);
+        assert_eq!(light, include_bytes!("../../icons/tray-icon.png"));
+        assert_eq!(light_2x, include_bytes!("../../icons/tray-icon@2x.png"));
+        assert_eq!(dark, include_bytes!("../../icons/tray-icon-light.png"));
+        assert_ne!(light, dark);
+        assert_ne!(light, light_2x);
+    }
+
+    #[test]
+    fn dark_taskbar_ignores_2x_flag_without_light_2x_asset() {
+        // No tray-icon-light@2x.png in the pack; dark always uses 32px white glyph.
+        assert_eq!(
+            tray_icon_bytes(true, true),
+            include_bytes!("../../icons/tray-icon-light.png")
+        );
+    }
 }

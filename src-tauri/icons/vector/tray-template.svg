@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>TieZ 托盘图标模板（单色）</title>
+  <desc>fill=currentColor。Windows 刷新托盘图标时会二次着色，故用纯黑占位；深色任务栏请改用 tray-icon-light.png。</desc>
+  <!-- 几何 Z -->
+  <path d="M116 128 L352 128 L396 172 L396 196 L248 324 L396 324 L396 384 L116 384 L116 324 L264 196 L116 196 Z" fill="currentColor"/>
+  <!-- 折角镂空（evenodd 保持透明） -->
+  <path d="M352 128 L396 172 L352 172 Z" fill="#000000" fill-opacity="0" fill-rule="evenodd"/>
+</svg>

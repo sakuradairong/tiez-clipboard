@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Changed
+
+- 更新应用图标为方案 A「Z-折角」v2（蓝渐变 + 白几何 Z）：Windows 安装器/磁贴、主窗口与文档用图同步替换；托盘改为透明底单色 Z，并按系统任务栏浅/深主题切换墨蓝 / 白色 glyph（含高分屏 `@2x` 墨蓝资源）。未覆盖未随包提供的 `ios/`、`android/` 移动端图标树。
+
 ## [0.3.12] - 2026-09-17
 
 ### Fixed

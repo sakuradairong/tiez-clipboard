@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/logo.png" alt="TieZ 标志" width="220" />
+  <img src="docs/images/icon-512x512.png" alt="TieZ 图标" width="128" />
   <h1>TieZ</h1>
   <p>面向 Windows、Linux 和 macOS 的快速、本地优先剪贴板管理器。</p>
   <p>
