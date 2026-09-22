@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/logo.png" alt="TieZ logo" width="220" />
+  <img src="docs/images/icon-512x512.png" alt="TieZ icon" width="128" />
   <h1>TieZ</h1>
   <p>A fast, local-first clipboard manager for Windows, Linux, and macOS.</p>
   <p>
