@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Install wizard window. No updater, no main-app filesystem scope.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-installer-context",
+    "allow-check-install-dir",
+    "allow-browse-install-dir",
+    "allow-install",
+    "allow-launch-installed",
+    "allow-reveal-setup",
+    "allow-close-wizard"
+  ]
+}

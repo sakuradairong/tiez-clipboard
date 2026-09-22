@@ -64,6 +64,7 @@ Download the latest build from the [Releases page](../../releases), then choose 
 - **macOS distribution:** Current builds are not signed or notarized with an Apple Developer certificate, so Gatekeeper may require manual approval on first launch.
 - **OCR:** System OCR uses Windows Runtime and is available on Windows only. QR-code recognition is cross-platform.
 - **Portable builds:** A portable ZIP is not currently published.
+- **Windows install wizard:** Releases may also include `TieZ-<version>-windows-x64-installer.exe`. It is an optional wizard that embeds the NSIS setup and runs it silently. The NSIS `-setup.exe` remains the primary download, and the in-app updater still uses that file.
 
 ## Development
 

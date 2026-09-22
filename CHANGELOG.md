@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- 新增可选的 Windows 安装向导 `TieZ-<version>-windows-x64-installer.exe`（`installer-bootstrap/`）。它是额外构建产物，不替换 Releases 里的 NSIS 主安装包，也不进入应用内更新。向导内嵌现有 NSIS setup，首次安装只以 `/S` 调用；只有用户改了安装路径时，才在参数最后追加不加引号的 `/D=`。装完可选启动，读取卸载项中的 `MainBinaryName`，不向 NSIS 传递 `/R`。
+
 ## [0.3.12] - 2026-09-17
 
 ### Fixed

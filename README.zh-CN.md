@@ -64,6 +64,7 @@ TieZ 将常用剪贴板内容保留在本地，不依赖托管服务存储历史
 - **macOS 分发：** 当前构建尚未使用 Apple Developer 证书签名或公证，首次启动时可能需要手动通过 Gatekeeper 检查。
 - **OCR：** 系统 OCR 基于 Windows Runtime，目前仅支持 Windows；二维码识别支持所有平台。
 - **便携版本：** 当前暂未发布便携版 ZIP。
+- **Windows 安装向导：** 发布页可能另外提供 `TieZ-<version>-windows-x64-installer.exe`。它是可选向导，会内嵌并静默运行 NSIS 安装包。NSIS 的 `-setup.exe` 仍是主下载，应用内更新也仍然使用这个文件。
 
 ## 本地开发
 

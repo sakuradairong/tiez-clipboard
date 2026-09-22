@@ -1,0 +1,20 @@
+[package]
+name = "tiez-installer"
+version = "0.3.12"
+description = "TieZ install wizard. Embeds the NSIS setup and runs it with /S."
+authors = ["TieZ contributors"]
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.10", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiez-installer-core = { path = "../core" }
+
+[target.'cfg(windows)'.dependencies]
+rfd = "0.15"
+winreg = "0.55"

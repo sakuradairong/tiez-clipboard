@@ -42,6 +42,32 @@ jobs:
           if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `v${pkg.version}`) {
             throw new Error(`Tag ${process.env.GITHUB_REF_NAME} does not match v${pkg.version}`);
           }
+          const bootPkg = JSON.parse(fs.readFileSync('installer-bootstrap/package.json', 'utf8'));
+          const bootLock = JSON.parse(fs.readFileSync('installer-bootstrap/package-lock.json', 'utf8'));
+          const bootTauri = JSON.parse(fs.readFileSync('installer-bootstrap/src-tauri/tauri.conf.json', 'utf8'));
+          const bootCargo = fs.readFileSync('installer-bootstrap/src-tauri/Cargo.toml', 'utf8');
+          const bootCore = fs.readFileSync('installer-bootstrap/core/Cargo.toml', 'utf8');
+          const bootCargoLock = fs.readFileSync('installer-bootstrap/Cargo.lock', 'utf8');
+          const bootCargoVersion = bootCargo.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)[1];
+          const bootCoreVersion = bootCore.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)[1];
+          function cargoLockVersion(name) {
+            const match = bootCargoLock.match(new RegExp(`\\[\\[package\\]\\]\\nname = "${name}"\\nversion = "([^"]+)"`));
+            if (!match) throw new Error(`installer-bootstrap Cargo.lock is missing ${name}`);
+            return match[1];
+          }
+          const bootVersions = [
+            bootPkg.version,
+            bootLock.version,
+            bootLock.packages[''].version,
+            bootTauri.version,
+            bootCargoVersion,
+            bootCoreVersion,
+            cargoLockVersion('tiez-installer'),
+            cargoLockVersion('tiez-installer-core'),
+          ];
+          if (!bootVersions.every(version => version === pkg.version)) {
+            throw new Error(`Bootstrapper versions do not match v${pkg.version}: ${bootVersions.join(', ')}`);
+          }
           console.log(`Validated TieZ v${pkg.version}`);
           NODE
 
@@ -124,3 +150,86 @@ jobs:
           prerelease: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+      - name: Upload inner NSIS setup for the install wizard
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tiez-inner-nsis
+          path: src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Assert latest.json points at the inner NSIS
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path src-tauri/target -Recurse -Filter latest.json -ErrorAction SilentlyContinue)
+          if ($files.Count -eq 0) { throw "latest.json was not produced; the updater manifest must keep pointing at the inner NSIS setup" }
+          foreach ($file in $files) {
+            $text = Get-Content -Raw $file.FullName
+            if ($text -match 'windows-x64-installer' -or $text -match 'tiez-installer') {
+              throw "latest.json must not reference the install wizard: $($file.FullName)"
+            }
+            if ($text -notmatch '-setup\.exe') {
+              throw "latest.json must reference the inner NSIS setup: $($file.FullName)"
+            }
+          }
+
+  publish-bootstrapper:
+    name: Windows install wizard
+    needs: publish-tauri
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: installer-bootstrap/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.88.0
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: installer-bootstrap -> target
+
+      - name: Download inner NSIS setup
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tiez-inner-nsis
+          path: bootstrapper-input
+
+      - name: Embed setup and build the wizard
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem bootstrapper-input -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup -or $setup.Length -eq 0) { throw "Inner NSIS setup.exe was not downloaded" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\installer-bootstrap\scripts\embed-and-build.ps1 -SetupPath $setup.FullName
+
+      - name: Upload wizard to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          ASSET="installer-bootstrap/dist-bootstrapper/TieZ-${VERSION}-windows-x64-installer.exe"
+          test -f "$ASSET"
+          gh release upload "v${VERSION}" "$ASSET" --clobber
+          gh release view "v${VERSION}" --json body --jq .body > "$RUNNER_TEMP/existing-notes.md"
+          STATUS="$(node installer-bootstrap/scripts/append-release-notes.mjs "$VERSION" "$RUNNER_TEMP/existing-notes.md" "$RUNNER_TEMP/release-notes.md")"
+          if [ "$STATUS" = "unchanged" ]; then
+            echo "Release notes already mention the wizard"
+            exit 0
+          fi
+          gh release edit "v${VERSION}" --notes-file "$RUNNER_TEMP/release-notes.md"

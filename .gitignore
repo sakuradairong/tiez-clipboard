@@ -9,6 +9,10 @@ dist/
 
 # Tauri / Rust build outputs
 src-tauri/target/
+installer-bootstrap/target/
+installer-bootstrap/src-tauri/target/
+installer-bootstrap/src-tauri/gen/
+installer-bootstrap/dist-bootstrapper/
 target-codex-*/
 
 # Tauri signer keys (PRIVATE)

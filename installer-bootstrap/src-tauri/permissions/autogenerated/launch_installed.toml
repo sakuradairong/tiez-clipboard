@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-launch-installed"
+description = "Enables the launch_installed command without any pre-configured scope."
+commands.allow = ["launch_installed"]
+
+[[permission]]
+identifier = "deny-launch-installed"
+description = "Denies the launch_installed command without any pre-configured scope."
+commands.deny = ["launch_installed"]

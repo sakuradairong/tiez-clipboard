@@ -36,6 +36,10 @@ npm run tauri:dev
 npm run build
 ```
 
+### Windows install wizard
+
+`installer-bootstrap/` is a separate Tauri app. It does not register commands on the main clipboard app. Linux can run its frontend build and `cargo test -p tiez-installer-core`. Producing `TieZ-<version>-windows-x64-installer.exe` requires Windows and an already built NSIS `*-setup.exe`; see `installer-bootstrap/README.md`. Do not point `latest.json` at the wizard.
+
 ## Pull request guidelines
 
 Please keep pull requests focused and easy to review.

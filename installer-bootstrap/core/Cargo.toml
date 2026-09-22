@@ -1,0 +1,8 @@
+[package]
+name = "tiez-installer-core"
+version = "0.3.12"
+edition = "2021"
+publish = false
+description = "Pure decisions for the TieZ Windows install wizard. No Tauri dependency."
+
+[dependencies]
