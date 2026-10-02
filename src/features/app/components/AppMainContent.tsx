@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps, RefObject, ReactNode } from "react";
-import { motion, Reorder, useDragControls } from "framer-motion";
+import { motion, Reorder, useDragControls, useReducedMotion } from "framer-motion";
 import type { DragControls } from "framer-motion";
 import { ArrowUp, ChevronDown, ChevronRight, Clipboard } from "lucide-react";
 import FileTransferChatView from "../../file-transfer/components/FileTransferChatView";
@@ -129,6 +129,12 @@ const AppMainContent = ({
   showScrollTop,
   onScrollTop
 }: AppMainContentProps) => {
+  const reduceMotion = useReducedMotion();
+  const pageAnimation = {
+    initial: reduceMotion ? false : { opacity: 0.65, y: 3 },
+    animate: { opacity: 1, y: 0 },
+    transition: { duration: reduceMotion ? 0 : 0.14, ease: "easeOut" as const }
+  };
   const [pinnedOrderIds, setPinnedOrderIds] = useState<number[]>(
     () => pinnedItems.map((item) => item.id)
   );
@@ -203,8 +209,8 @@ const AppMainContent = ({
   if (showTagManager && tagManagerEnabled) {
     return (
       <motion.div
-        initial={{ opacity: 0, x: 20 }}
-        animate={{ opacity: 1, x: 0 }}
+        key="tag-manager"
+        {...pageAnimation}
         style={{ height: "100%" }}
       >
         <TagManager t={t} theme={theme} />
@@ -215,8 +221,8 @@ const AppMainContent = ({
   if (showEmojiPanel) {
     return (
       <motion.div
-        initial={{ opacity: 0, x: 20 }}
-        animate={{ opacity: 1, x: 0 }}
+        key="emoji-panel"
+        {...pageAnimation}
         style={{ height: "100%", overflow: "hidden" }}
       >
         <EmojiPanel
@@ -235,8 +241,8 @@ const AppMainContent = ({
     if (chatMode) {
       return (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
+          key="file-transfer"
+          {...pageAnimation}
           style={{ height: "100%", overflow: "hidden" }}
         >
           <FileTransferChatView t={t} localIp={localIp} actualPort={actualPort} />
@@ -246,8 +252,8 @@ const AppMainContent = ({
 
     return (
       <motion.div
-        initial={{ opacity: 0, x: 20 }}
-        animate={{ opacity: 1, x: 0 }}
+        key="settings"
+        {...pageAnimation}
         className={`settings-view ${settingsPanelProps.settingsSubpage === "advanced" ? "advanced-view-shell" : ""}`}
         style={{
           display: "flex",
@@ -266,7 +272,7 @@ const AppMainContent = ({
 
   if (filteredHistory.length === 0) {
     return (
-      <div className="empty-state">
+      <motion.div key="empty" className="empty-state" {...pageAnimation}>
         <Clipboard size={40} opacity={0.2} style={{ marginBottom: "12px" }} />
         {search ? (
           <p>{t("no_records")}</p>
@@ -285,14 +291,14 @@ const AppMainContent = ({
             <p style={{ fontSize: "12px", opacity: 0.6 }}>{t("empty_desc")}</p>
           </>
         )}
-      </div>
+      </motion.div>
     );
   }
 
   return (
     <>
       {filteredHistory.length > 0 && (
-        <div className="history-list-container">
+        <motion.div key="clipboard" className="history-list-container" {...pageAnimation}>
           <VirtualClipboardList
             ref={virtualListRef}
             items={unpinnedItems}
@@ -362,11 +368,10 @@ const AppMainContent = ({
               <ArrowUp size={16} />
             </button>
           )}
-        </div>
+        </motion.div>
       )}
     </>
   );
 };
 
 export default AppMainContent;
-

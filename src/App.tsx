@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useCallback, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import ToastContainer from "./shared/components/ToastContainer";
@@ -376,6 +376,7 @@ const App = () => {
   const searchInputRef = useInputFocus<HTMLInputElement>();
   const tagColors = useTagColors();
   const virtualListRef = useRef<VirtualClipboardListHandle | null>(null);
+  const [windowOpenRevision, setWindowOpenRevision] = useState(0);
   const [showScrollTop, setShowScrollTop] = useState(false);
   const [quickPasteHintsById, setQuickPasteHintsById] = useState<Record<number, QuickPasteHint>>(
     {}
@@ -692,16 +693,7 @@ const App = () => {
       setIsKeyboardMode(false);
       setShowScrollTop(false);
 
-      // Settings and tag views scroll the main container, while clipboard
-      // history scrolls inside Virtuoso. Reset both after React has restored
-      // the clipboard view so reopening always starts from its first item.
-      requestAnimationFrame(() => {
-        const mainContent = document.querySelector<HTMLElement>(".main-content");
-        mainContent?.scrollTo({ top: 0, behavior: "auto" });
-        requestAnimationFrame(() => {
-          virtualListRef.current?.scrollToTop();
-        });
-      });
+      setWindowOpenRevision((revision) => revision + 1);
     });
 
     return () => {
@@ -720,6 +712,16 @@ const App = () => {
     setShowTagManager,
     setTagInput
   ]);
+
+  useLayoutEffect(() => {
+    if (windowOpenRevision === 0) return;
+
+    // Restore both scroll containers in the same commit as the clipboard view,
+    // before painting. The revision also covers reopening an unchanged view.
+    const mainContent = document.querySelector<HTMLElement>(".main-content");
+    mainContent?.scrollTo({ top: 0, behavior: "auto" });
+    virtualListRef.current?.scrollToTop();
+  }, [windowOpenRevision]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;

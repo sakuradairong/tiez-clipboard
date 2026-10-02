@@ -16,6 +16,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 优化重新打开窗口和返回主界面的过渡：搜索栏恢复时直接采用最终高度，滚动位置在界面绘制前统一复位；页面使用单层短淡入，移除设置页重复滑入，并尊重系统减少动态效果偏好。Windows 托盘左键仅在松开时打开窗口，避免一次点击重复触发复位。
 - 修复中文输入法快捷键冲突：外观预设名称输入框（Enter）和主窗口搜索框（Escape）增加输入法组合状态保护（检查 `isComposing`、`nativeEvent.isComposing` 及 `keyCode === 229`），防止候选确认或取消时意外保存预设并清空输入框或清空查询；并在保存期间防止重复提交。
 - 修复外观保存期间草稿被覆盖的问题：为外观调色板、快捷圆角、跟随主题重置按钮和预设操作统一切换保存期间（`busy`）禁用逻辑，保持颜色输入框、滑块与按钮行为一致，避免异步保存完成时旧状态覆盖正在调整的草稿。
 - 恢复条目操作按钮的主题与自定义圆角：移除条目操作按钮固定的 `4px` 圆角，恢复使用 `--button-radius` token 与主题按钮 token（`--bg-button`、`--button-border`、`--button-shadow`），确保自定义 `0px`、`6px`、`24px` 圆角均能对操作按钮生效；极简专属透明效果收敛至 `minimal.css`，统一普通列表与紧凑模式的表现。
@@ -35,6 +36,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
+- 更新应用版本为 `0.3.13`，同步前端、Tauri 与 Rust 清单和锁文件，用于 Windows 本地构建验证。
 - 忽略 WinUI 实验下载的依赖包、Rust 构建目录和生成代码，以及本地 `.mimosa/` 会话产物，避免误提交大文件阻塞 GitHub 推送。
 - 更新应用图标为方案 A「Z-折角」v2（蓝渐变 + 白几何 Z）：Windows 安装器/磁贴、主窗口与文档用图同步替换；托盘改为透明底单色 Z，并按系统任务栏浅/深主题切换墨蓝 / 白色 glyph（含高分屏 `@2x` 墨蓝资源）。未覆盖未随包提供的 `ios/`、`android/` 移动端图标树。
 - GitNexus 索引排除本地实验和诊断目录，避免生成或第三方源码阻塞项目调用图更新。

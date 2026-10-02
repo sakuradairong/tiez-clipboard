@@ -5,7 +5,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { isTauriRuntime } from "../../../shared/lib/tauriRuntime";
 import { ChevronRight, HelpCircle } from "lucide-react";
-import { motion } from "framer-motion";
 import type { Locale } from "../../../shared/types";
 import type { DefaultAppsMap, InstalledAppOption, SettingsSubpage, CloudSyncContentPrefs } from "../../app/types";
 import type { AiProfile, AiProfileStatusMap, AppCleanupPolicy, EditableAiProfile } from "../types";
@@ -479,9 +478,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
     }, [setSettingsSubpage]);
 
     return (
-        <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
+        <div
             style={{ display: 'flex', flexDirection: 'column', gap: '4px', minHeight: '100%', flex: 1 }}
         >
             {settingsSubpage === "theme-store" ? (
@@ -857,7 +854,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
             {/* Removed UpdateModal in generic */}
                 </>
             )}
-        </motion.div>
+        </div>
     );
 };
 
