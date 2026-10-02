@@ -1,5 +1,6 @@
 use crate::database::save_image_to_file;
 use crate::domain::models::ClipboardEntry;
+use crate::services::local_image_resource::{clipboard_image_roots, read_local_image};
 use base64::{engine::general_purpose, Engine as _};
 use regex::Regex;
 use reqwest::header::CONTENT_TYPE;
@@ -8,6 +9,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
+use tauri::Manager;
 use urlencoding::decode;
 
 const HTML_PREVIEW_MAX_CHARS: usize = 5000;
@@ -58,6 +60,46 @@ fn image_ext_from_url(url: &str) -> Option<&'static str> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     normalize_image_ext(ext)
+}
+
+pub(crate) fn is_gif_signature(data: &[u8]) -> bool {
+    data.len() > 6 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"))
+}
+
+pub(crate) fn is_webp_payload(data: &[u8]) -> bool {
+    data.len() >= 12 && data.starts_with(b"RIFF") && data[8..12] == *b"WEBP"
+}
+
+/// True for extended WebP with the animation flag, or an ANIM/ANMF chunk.
+/// Simple `VP8 `/`VP8L` files are still images and must keep the PNG fallback.
+pub(crate) fn is_animated_webp_payload(data: &[u8]) -> bool {
+    if !is_webp_payload(data) {
+        return false;
+    }
+    let mut offset = 12usize;
+    while offset.saturating_add(8) <= data.len() {
+        let chunk = &data[offset..offset + 4];
+        let size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let payload_start = offset + 8;
+        if chunk == b"VP8X" {
+            return payload_start < data.len() && data[payload_start] & 0x02 != 0;
+        }
+        if chunk == b"ANIM" || chunk == b"ANMF" {
+            return true;
+        }
+        if chunk == b"VP8 " || chunk == b"VP8L" {
+            return false;
+        }
+        let padded = size + (size & 1);
+        if padded == 0 {
+            break;
+        }
+        offset = match payload_start.checked_add(padded) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    false
 }
 
 fn image_ext_from_bytes(bytes: &[u8]) -> Option<&'static str> {
@@ -189,6 +231,24 @@ fn looks_like_gif_image_src(src: &str) -> bool {
         || lower.contains("image/gif")
 }
 
+fn looks_like_webp_image_src(src: &str) -> bool {
+    let lower = src.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+
+    lower.starts_with("data:image/webp")
+        || lower.contains(".webp")
+        || lower.contains("format=webp")
+        || lower.contains("fm=webp")
+        || lower.contains("mime=image/webp")
+        || lower.contains("image/webp")
+}
+
+fn looks_like_animated_image_src(src: &str) -> bool {
+    looks_like_gif_image_src(src) || looks_like_webp_image_src(src)
+}
+
 fn resolve_local_image_src_path(src: &str) -> Option<std::path::PathBuf> {
     let is_local = src.starts_with("file://")
         || (src.len() > 2
@@ -227,17 +287,14 @@ fn resolve_local_image_src_path(src: &str) -> Option<std::path::PathBuf> {
     Some(path.to_path_buf())
 }
 
-fn gif_data_url_from_bytes(bytes: &[u8]) -> Option<String> {
-    let ext = image_ext_from_bytes(bytes).or_else(|| {
-        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-            Some("gif")
-        } else {
-            None
-        }
-    })?;
-    if ext != "gif" {
+fn animated_image_data_url_from_bytes(bytes: &[u8]) -> Option<String> {
+    let ext = if is_gif_signature(bytes) {
+        "gif"
+    } else if is_animated_webp_payload(bytes) {
+        "webp"
+    } else {
         return None;
-    }
+    };
 
     let b64 = general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{};base64,{}", image_mime_by_ext(ext), b64))
@@ -256,6 +313,20 @@ fn image_data_url_from_bytes(bytes: &[u8]) -> Option<String> {
     Some(format!("data:{};base64,{}", image_mime_by_ext(ext), b64))
 }
 
+fn current_clipboard_image_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    if let Some(app) = crate::global_state::GLOBAL_APP_HANDLE.get() {
+        if let Some(state) = app.try_state::<crate::app_state::AppDataDir>() {
+            if let Ok(data_dir) = state.0.lock() {
+                roots.extend(crate::services::local_image_resource::managed_image_roots(
+                    &data_dir,
+                ));
+            }
+        }
+    }
+    roots
+}
+
 fn resolve_image_src_to_data_url(src: &str) -> Option<String> {
     let value = src.trim();
     if value.starts_with("data:image/") {
@@ -263,8 +334,12 @@ fn resolve_image_src_to_data_url(src: &str) -> Option<String> {
     }
 
     if let Some(path) = resolve_local_image_src_path(value) {
-        let bytes = std::fs::read(&path).ok()?;
-        return image_data_url_from_bytes(&bytes);
+        let resource = read_local_image(
+            &path,
+            &current_clipboard_image_roots(),
+            REMOTE_IMAGE_MAX_BYTES,
+        )?;
+        return image_data_url_from_bytes(&resource.bytes);
     }
 
     None
@@ -283,28 +358,32 @@ fn resolve_animated_image_src_to_data_url(
         let (header, payload) = value.split_once(',')?;
         if header.to_ascii_lowercase().contains(";base64") {
             let bytes = general_purpose::STANDARD.decode(payload).ok()?;
-            return gif_data_url_from_bytes(&bytes);
+            return animated_image_data_url_from_bytes(&bytes);
         }
     }
 
-    let has_gif_hint = looks_like_gif_image_src(value);
+    let has_animated_hint = looks_like_animated_image_src(value);
 
     if let Some(path) = resolve_local_image_src_path(value) {
-        if !has_gif_hint && !allow_unhinted_image_source {
+        if !has_animated_hint && !allow_unhinted_image_source {
             return None;
         }
-        let bytes = std::fs::read(&path).ok()?;
-        return gif_data_url_from_bytes(&bytes);
+        let resource = read_local_image(
+            &path,
+            &current_clipboard_image_roots(),
+            REMOTE_IMAGE_MAX_BYTES,
+        )?;
+        return animated_image_data_url_from_bytes(&resource.bytes);
     }
 
     if let Some(remote_url) = normalize_remote_img_url(value) {
         // Probe ordinary image URLs too: a .jpg URL can contain GIF89a bytes.
         // Avoid fetching arbitrary links that do not look like image sources.
-        if !has_gif_hint && !allow_unhinted_image_source {
+        if !has_animated_hint && !allow_unhinted_image_source {
             return None;
         }
         let (bytes, _) = fetch_remote_image(&remote_url)?;
-        return gif_data_url_from_bytes(&bytes);
+        return animated_image_data_url_from_bytes(&bytes);
     }
 
     None
@@ -1380,6 +1459,7 @@ mod tests {
         collapse_preview_whitespace, derive_rich_text_content,
         extract_animated_image_data_url_from_html, extract_animated_image_data_url_from_text,
         extract_first_image_data_url_from_html, infer_rich_html_from_plain_text,
+        is_animated_webp_payload, is_webp_payload,
         normalize_clipboard_plain_text, parse_app_cleanup_policies, parse_cf_html,
         parse_cleanup_rules, split_rich_html_and_image_fallback, split_rich_html_and_named_formats,
         truncate_html_for_preview, AppCleanupPolicy, HTML_TRUNCATION_SUFFIX,
@@ -1402,10 +1482,9 @@ mod tests {
             std::env::temp_dir().join(format!("tiez_clip_utils_{}_{}", std::process::id(), unique));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==")
+        image::DynamicImage::new_rgba8(1, 1)
+            .save_with_format(&path, image::ImageFormat::Png)
             .unwrap();
-        fs::write(&path, bytes).unwrap();
         path
     }
 
@@ -1840,6 +1919,75 @@ mod tests {
         let html = r#"<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA" /></div>"#;
 
         let extracted = extract_animated_image_data_url_from_html(html);
+
+        assert!(extracted.is_none());
+    }
+
+    fn two_frame_animated_webp() -> Vec<u8> {
+        let hex = "52494646ca00000057454250565038580a00000002000000010000010000414e494d06000000000000000000414e4d464a0000000000000000000100000100005000000256503820320000003001009d012a0200020001402625a000037000fef2eb7ffff9b03ff6f3ff047a01ffffd2e0fffe9707fff4b83ff4a4000000414e4d464c0000000000000000000100000100005000000056503820340000003401009d012a0200020000002625a000037000fee9221ffff79f3fffb9f3fffb9f3fe8cfffff29fbfff238ffff238ffe50200000";
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn animated_webp_payload_detects_vp8x_flag_and_ignores_still_vp8() {
+        let animated = two_frame_animated_webp();
+        assert!(is_webp_payload(&animated));
+        assert!(is_animated_webp_payload(&animated));
+        assert!(is_animated_webp_payload(&animated[..64]));
+
+        let still_hex = "524946463a00000057454250565038202e0000009001009d012a0200020001402625a00274ba00039800fefb55e3ffa5c1ffd2e0ffe9707fe9707f1bb2ce1ba40000";
+        let still = (0..still_hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&still_hex[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>();
+        assert!(is_webp_payload(&still));
+        assert!(!is_animated_webp_payload(&still));
+        assert!(!is_animated_webp_payload(b"RIFF\x00\x00\x00\x00WEBP"));
+        assert!(!is_animated_webp_payload(b"GIF89a\x01"));
+    }
+
+    #[test]
+    fn extract_animated_image_data_url_from_html_keeps_animated_webp() {
+        let webp_bytes = two_frame_animated_webp();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&webp_bytes);
+        let html = format!(r#"<div><img src="data:image/webp;base64,{b64}" /></div>"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html).unwrap();
+
+        assert!(extracted.starts_with("data:image/webp;base64,"));
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(extracted.split_once(',').unwrap().1)
+                .unwrap(),
+            webp_bytes
+        );
+    }
+
+    #[test]
+    fn extract_animated_image_data_url_from_html_sniffs_webp_served_as_jpeg() {
+        let webp_bytes = two_frame_animated_webp();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&webp_bytes);
+        let html = format!(r#"<img src="data:image/jpeg;base64,{b64}" />"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html).unwrap();
+
+        assert_eq!(extracted, format!("data:image/webp;base64,{b64}"));
+    }
+
+    #[test]
+    fn extract_animated_image_data_url_from_html_ignores_static_webp() {
+        let hex = "524946463a00000057454250565038202e0000009001009d012a0200020001402625a00274ba00039800fefb55e3ffa5c1ffd2e0ffe9707fe9707f1bb2ce1ba40000";
+        let b64 = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect::<Vec<u8>>();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(b64);
+        let html = format!(r#"<img src="data:image/webp;base64,{b64}" />"#);
+
+        let extracted = extract_animated_image_data_url_from_html(&html);
 
         assert!(extracted.is_none());
     }
@@ -2432,7 +2580,7 @@ pub fn app_cleanup_policy_matches(
     false
 }
 
-pub fn embed_local_images(html: &str) -> String {
+pub fn embed_local_images(html: &str, data_dir: &Path) -> String {
     let re = match Regex::new(r#"(<img\s+[^>]*src=["'])([^"']+)(["'][^>]*>)"#) {
         Ok(r) => r,
         Err(_) => return html.to_string(),
@@ -2472,29 +2620,14 @@ pub fn embed_local_images(html: &str) -> String {
                 .unwrap_or(&decoded_path);
 
             let path = std::path::Path::new(clean_path);
-            if path.exists() {
-                if let Ok(data) = std::fs::read(path) {
-                    let ext = path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("png")
-                        .to_lowercase();
-                    let mime = match ext.as_str() {
-                        "jpg" | "jpeg" => "image/jpeg",
-                        "gif" => "image/gif",
-                        "webp" => "image/webp",
-                        "bmp" => "image/bmp",
-                        "svg" => "image/svg+xml",
-                        _ => "image/png",
-                    };
-                    let b64 = general_purpose::STANDARD.encode(&data);
-                    return format!(
-                        "{}{}{}",
-                        prefix,
-                        format!("data:{};base64,{}", mime, b64),
-                        suffix
-                    );
-                }
+            if let Some(resource) =
+                read_local_image(path, &clipboard_image_roots(data_dir), REMOTE_IMAGE_MAX_BYTES)
+            {
+                let b64 = general_purpose::STANDARD.encode(&resource.bytes);
+                return format!(
+                    "{}data:{};base64,{}{}",
+                    prefix, resource.mime, b64, suffix
+                );
             }
         }
 
@@ -2556,36 +2689,15 @@ pub fn process_local_images_in_html(html: &str, data_dir: &std::path::Path) -> S
                 .unwrap_or(&decoded_path);
             let path = std::path::Path::new(clean_path);
 
-            if path.starts_with(&attachments_dir) {
-                return format!("{}{}{}", prefix, src, suffix);
-            }
-
-            if path.exists() {
-                if let Ok(data) = std::fs::read(path) {
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    use std::hash::{Hash, Hasher};
-                    data.hash(&mut hasher);
-                    let hash = hasher.finish();
-
-                    let ext = path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("png")
-                        .to_lowercase();
-                    let new_filename = format!("img_{:x}.{}", hash, ext);
-                    let new_path = attachments_dir.join(&new_filename);
-
-                    if !new_path.exists() {
-                        let _ = std::fs::write(&new_path, &data);
-                    }
-
-                    let new_src = new_path.to_string_lossy().replace('\\', "/");
-                    let final_src = if new_src.starts_with('/') {
-                        format!("file://{}", new_src)
-                    } else {
-                        format!("file:///{}", new_src)
-                    };
-                    return format!("{}{}{}", prefix, final_src, suffix);
+            if let Some(resource) =
+                read_local_image(path, &clipboard_image_roots(data_dir), REMOTE_IMAGE_MAX_BYTES)
+            {
+                if let Some(file_src) = save_image_bytes_to_attachments(
+                    &resource.bytes,
+                    resource.extension,
+                    &attachments_dir,
+                ) {
+                    return format!("{}{}{}", prefix, file_src, suffix);
                 }
             }
         }
@@ -2602,6 +2714,41 @@ pub fn process_local_images_in_html(html: &str, data_dir: &std::path::Path) -> S
         format!("{}{}{}", prefix, src, suffix)
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod local_resource_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn captured_resources_validate_bytes_and_preserve_only_images() {
+        let dir = std::env::temp_dir().join(format!("tiez-resource-capture-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let source = dir.join("cache.jpg");
+        let private = dir.join("private.txt");
+        std::fs::write(&source, png.into_inner()).unwrap();
+        std::fs::write(&private, b"private local text").unwrap();
+        let html = format!(
+            "<img src=\"file:///{}\"><img src=\"file:///{}\">",
+            source.to_string_lossy().replace('\\', "/"),
+            private.to_string_lossy().replace('\\', "/")
+        );
+        let captured = process_local_images_in_html(&html, &dir);
+        assert!(captured.contains("attachments/img_"));
+        assert!(captured.contains(".png\""));
+        assert!(captured.contains("private.txt"));
+        assert_eq!(std::fs::read_dir(dir.join("attachments")).unwrap().count(), 1);
+        let embedded = embed_local_images(&html, &dir);
+        assert!(embedded.contains("data:image/png;base64,"));
+        assert!(!embedded.contains(&general_purpose::STANDARD.encode(b"private local text")));
+        assert!(embedded.contains("private.txt"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 pub fn parse_cf_html(raw: &[u8]) -> Option<String> {

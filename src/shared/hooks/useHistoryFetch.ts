@@ -100,17 +100,21 @@ export const useHistoryFetch = ({
           const rawData = await invoke<ClipboardEntry[]>("get_clipboard_history", {
             limit: requestedLimit,
             offset: baseOffset,
-            content_type: typeFilter || undefined
+            contentType: typeFilter || undefined,
+            includeAllSession: true
           });
 
           if (seq !== fetchSeqRef.current) return;
 
-          const hasMoreNow = rawData.length > pageSize;
-          const data = hasMoreNow ? rawData.slice(0, pageSize) : rawData;
-
-          // Calculate how many DB items we actually retrieved (id > 0)
-          // This is critical for the next offset to be correct
-          const dbItemsCount = data.filter(item => item.id > 0).length;
+          // Session history is bounded and returned in full on the first page.
+          // Only persisted rows participate in the DB offset and lookahead.
+          const hasMoreNow = rawData.filter((item) => item.id > 0).length > pageSize;
+          let dbItemsCount = 0;
+          const data = rawData.filter((item) => {
+            if (item.id <= 0) return true;
+            return dbItemsCount++ < pageSize;
+          });
+          dbItemsCount = Math.min(dbItemsCount, pageSize);
 
           if (reset) {
             setHistory(data);
@@ -222,4 +226,3 @@ export const useHistoryFetch = ({
 
   return { fetchHistory, loadMoreHistory };
 };
-

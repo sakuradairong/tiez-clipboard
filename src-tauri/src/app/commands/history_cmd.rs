@@ -27,6 +27,7 @@ pub fn get_clipboard_history(
     limit: i32,
     offset: i32,
     content_type: Option<String>,
+    include_all_session: Option<bool>,
 ) -> AppResult<Vec<ClipboardEntry>> {
     // 1. Get history from repository
     let mut history = state
@@ -59,10 +60,9 @@ pub fn get_clipboard_history(
             .then_with(|| b.id.cmp(&a.id))
     });
 
-    // 4. Truncate to limit
-    if history.len() > limit as usize {
-        history.truncate(limit as usize);
-    }
+    // List pagination returns all bounded session-only rows alongside the DB page.
+    // Native quick-paste callers retain the original merged limit by default.
+    limit_history_page(&mut history, limit, include_all_session.unwrap_or(false));
 
     // 5. Truncate content for UI performance
     for item in &mut history {
@@ -100,6 +100,71 @@ pub fn get_clipboard_history(
     }
 
     Ok(history)
+}
+
+fn limit_history_page(history: &mut Vec<ClipboardEntry>, limit: i32, include_all_session: bool) {
+    let limit = limit.max(0) as usize;
+    if include_all_session {
+        let mut db_count = 0;
+        history.retain(|item| {
+            if item.id < 0 {
+                return true;
+            }
+            db_count += 1;
+            db_count <= limit
+        });
+    } else {
+        history.truncate(limit);
+    }
+}
+
+#[cfg(test)]
+mod history_page_tests {
+    use super::limit_history_page;
+    use crate::domain::models::ClipboardEntry;
+
+    fn entry(id: i64) -> ClipboardEntry {
+        ClipboardEntry {
+            id,
+            content_type: "text".to_string(),
+            content: format!("entry {id}"),
+            html_content: None,
+            source_app: "test".to_string(),
+            source_app_path: None,
+            timestamp: id,
+            preview: String::new(),
+            is_pinned: false,
+            tags: Vec::new(),
+            use_count: 0,
+            is_external: false,
+            pinned_order: 0,
+            file_preview_exists: true,
+        }
+    }
+
+    #[test]
+    fn full_session_page_retains_every_session_row_and_db_lookahead() {
+        let mut history: Vec<_> = (-200..0).chain(1..=82).map(entry).collect();
+        limit_history_page(&mut history, 81, true);
+        assert_eq!(history.iter().filter(|item| item.id < 0).count(), 200);
+        assert_eq!(history.iter().filter(|item| item.id > 0).count(), 81);
+        assert_eq!(history.last().unwrap().id, 81);
+    }
+
+    #[test]
+    fn native_merged_limit_remains_unchanged() {
+        let mut history: Vec<_> = (-200..0).chain(1..=81).map(entry).collect();
+        limit_history_page(&mut history, 10, false);
+        assert_eq!(history.len(), 10);
+        assert!(history.iter().all(|item| item.id < 0));
+    }
+
+    #[test]
+    fn converted_session_ids_count_toward_the_db_limit() {
+        let mut history = vec![entry(-3), entry(1), entry(-2), entry(2), entry(3)];
+        limit_history_page(&mut history, 2, true);
+        assert_eq!(history.iter().map(|item| item.id).collect::<Vec<_>>(), vec![-3, 1, -2, 2]);
+    }
 }
 
 #[tauri::command]
@@ -260,28 +325,45 @@ pub fn get_all_tags_info(
 
 #[tauri::command]
 pub fn rename_tag_globally(
+    app_handle: AppHandle,
     state: State<'_, DbState>,
     session: State<'_, SessionHistory>,
     old_name: String,
     new_name: String,
 ) -> AppResult<()> {
-    {
-        let mut session_items = session.inner().0.lock().unwrap();
-        for item in session_items.iter_mut() {
-            for tag in item.tags.iter_mut() {
-                if *tag == old_name {
-                    *tag = new_name.clone();
-                }
-            }
-            item.tags.sort();
-            item.tags.dedup();
-        }
-    }
+    let new_name = new_name.trim();
+    rename_tag_then_update_session(session.inner(), &old_name, new_name, || {
+        state
+            .tag_repo
+            .rename(&old_name, new_name)
+            .map_err(AppError::from)
+    })?;
+    let _ = app_handle.emit("clipboard-changed", ());
+    crate::services::cloud_sync::request_cloud_sync(app_handle);
+    Ok(())
+}
 
-    state
-        .tag_repo
-        .rename(&old_name, &new_name)
-        .map_err(AppError::from)
+fn rename_tag_then_update_session<F>(
+    session: &SessionHistory,
+    old_name: &str,
+    new_name: &str,
+    rename_in_repository: F,
+) -> AppResult<()>
+where
+    F: FnOnce() -> AppResult<()>,
+{
+    rename_in_repository()?;
+    let mut session_items = session.0.lock().unwrap();
+    for item in session_items.iter_mut() {
+        for tag in &mut item.tags {
+            if tag == old_name {
+                *tag = new_name.to_string();
+            }
+        }
+        item.tags.sort();
+        item.tags.dedup();
+    }
+    Ok(())
 }
 
 fn delete_tag_then_update_session<F>(
@@ -378,12 +460,47 @@ pub fn get_db_count(state: State<'_, DbState>) -> AppResult<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::delete_tag_then_update_session;
+    use super::{delete_tag_then_update_session, rename_tag_then_update_session};
     use crate::app_state::SessionHistory;
     use crate::domain::models::ClipboardEntry;
     use crate::error::AppError;
     use std::collections::VecDeque;
     use std::sync::Mutex;
+
+    #[test]
+    fn failed_global_tag_rename_keeps_session_tags_then_success_merges_them() {
+        let entry = ClipboardEntry {
+            id: -1,
+            content_type: "text".to_string(),
+            content: "session item".to_string(),
+            html_content: None,
+            source_app: "test".to_string(),
+            timestamp: 1,
+            preview: "session item".to_string(),
+            is_pinned: false,
+            tags: vec!["ordinary".to_string(), "Password".to_string()],
+            use_count: 0,
+            is_external: false,
+            pinned_order: 0,
+            source_app_path: None,
+            file_preview_exists: true,
+        };
+        let session = SessionHistory(Mutex::new(VecDeque::from([entry])));
+        let failed = rename_tag_then_update_session(&session, "ordinary", "Password", || {
+            Err(AppError::Internal("repository failed".to_string()))
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            session.0.lock().expect("read failed rename")[0].tags,
+            vec!["ordinary", "Password"]
+        );
+        rename_tag_then_update_session(&session, "ordinary", "Password", || Ok(()))
+            .expect("successful rename");
+        assert_eq!(
+            session.0.lock().expect("read merged rename")[0].tags,
+            vec!["Password"]
+        );
+    }
 
     #[test]
     fn failed_global_tag_delete_keeps_session_history_consistent() {

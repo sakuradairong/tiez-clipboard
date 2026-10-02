@@ -1,0 +1,4 @@
+# Local experiments contain generated and vendored SDK sources, not application code.
+experiments/
+.mimosa/
+src-tauri/.mimosa/

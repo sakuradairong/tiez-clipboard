@@ -14,6 +14,8 @@ use tauri::{AppHandle, Manager};
 
 use utils::*;
 
+pub(crate) use utils::is_animated_webp_payload;
+
 const DEFAULT_CLIPBOARD_SETTLE_DELAY_MS: u64 = 100;
 const SNIPPING_TOOL_SETTLE_DELAY_MS: u64 = 1200;
 const RICH_TEXT_RETRY_DELAYS_MS: [u64; 7] = [0, 40, 80, 140, 220, 360, 560];
@@ -35,6 +37,34 @@ const GIF_SOURCE_FORMAT_NAMES: [&str; 13] = [
     "image/webp",
     "WebP",
 ];
+
+#[cfg(any(target_os = "windows", test))]
+fn clipboard_preflight_hash(
+    text: Option<&str>,
+    image_bytes: Option<&[u8]>,
+    files: Option<&[String]>,
+) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut has_content = false;
+    if let Some(text) = text {
+        "text".hash(&mut hasher);
+        normalize_clipboard_plain_text(text).hash(&mut hasher);
+        has_content = true;
+    }
+    if let Some(bytes) = image_bytes {
+        "image".hash(&mut hasher);
+        bytes.hash(&mut hasher);
+        has_content = true;
+    }
+    if let Some(files) = files.filter(|files| !files.is_empty()) {
+        "files".hash(&mut hasher);
+        files.hash(&mut hasher);
+        has_content = true;
+    }
+    has_content.then(|| hasher.finish())
+}
 
 fn clear_recent_image_echo_state() {
     crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
@@ -65,7 +95,17 @@ fn should_capture_file_entries(capture_files_enabled: bool) -> bool {
 }
 
 fn is_gif_payload(data: &[u8]) -> bool {
-    data.len() > 6 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"))
+    is_gif_signature(data)
+}
+
+fn animated_image_mime(data: &[u8]) -> Option<&'static str> {
+    if is_gif_payload(data) {
+        Some("image/gif")
+    } else if is_animated_webp_payload(data) {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn clipboard_gif_payload() -> Option<Vec<u8>> {
@@ -73,7 +113,7 @@ fn clipboard_gif_payload() -> Option<Vec<u8>> {
         let data = unsafe {
             crate::infrastructure::windows_api::win_clipboard::get_clipboard_raw_format(name)
         }?;
-        is_gif_payload(&data).then_some(data)
+        animated_image_mime(&data).is_some().then_some(data)
     })
 }
 
@@ -119,24 +159,26 @@ fn single_gif_file_data_url(files: &[String]) -> Option<String> {
     if path.is_empty() || !std::fs::metadata(path).ok()?.is_file() {
         return None;
     }
-    // QQ supplies animated GIFs through CF_HDROP with a .jpg cache filename.
-    // Inspect bytes, not the extension. Read only a header for non-GIF files
-    // so copying a large document/video does not load it into memory.
+    // QQ and browsers may supply animated GIF/WebP through CF_HDROP with a
+    // .jpg cache filename. Inspect bytes, not the extension. Read only a
+    // header for non-animated files so copying a large document/video does
+    // not load it into memory.
     let mut file = std::fs::File::open(path).ok()?;
-    let mut header = [0; 7];
-    file.read_exact(&mut header).ok()?;
-    if !is_gif_payload(&header) {
-        return None;
-    }
+    let mut header = [0; 64];
+    let n = file.read(&mut header).ok()?;
+    let header = &header[..n];
+    animated_image_mime(header)?;
     let mut bytes = header.to_vec();
     file.read_to_end(&mut bytes).ok()?;
+    let mime = animated_image_mime(&bytes)?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Some(format!("data:image/gif;base64,{}", b64))
+    Some(format!("data:{};base64,{}", mime, b64))
 }
 
 fn file_clipboard_data(files: Vec<String>, capture_files_enabled: bool) -> Option<ClipboardData> {
-    // Normalize real GIFs before either capture-files branch. Otherwise the
-    // file pipeline decodes a .jpg GIF as a still image and re-encodes it as PNG.
+    // Normalize real animated GIF/WebP before either capture-files branch.
+    // Otherwise the file pipeline decodes a .jpg/.webp animation as a still
+    // image and re-encodes it as PNG.
     if let Some(data_url) = single_gif_file_data_url(&files) {
         Some(ClipboardData::Image { data_url })
     } else if should_capture_file_entries(capture_files_enabled) {
@@ -487,10 +529,11 @@ fn probe_rich_text_payload(
 pub fn clipboard_image_fallback_data_url() -> Option<String> {
     for _ in 0..3 {
         unsafe {
-            // 1. Try GIF first to preserve animation
+            // 1. Try GIF/animated WebP first to preserve animation
             if let Some(raw) = clipboard_gif_payload() {
+                let mime = animated_image_mime(&raw).unwrap_or("image/gif");
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
-                return Some(format!("data:image/gif;base64,{}", b64));
+                return Some(format!("data:{};base64,{}", mime, b64));
             }
 
             // 2. Some sources (e.g. Office apps) may provide PNG/JPEG custom formats.
@@ -509,9 +552,9 @@ pub fn clipboard_image_fallback_data_url() -> Option<String> {
                         name,
                     )
                 {
-                    if is_gif_payload(&raw) {
+                    if let Some(mime) = animated_image_mime(&raw) {
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
-                        return Some(format!("data:image/gif;base64,{}", b64));
+                        return Some(format!("data:{};base64,{}", mime, b64));
                     }
                     // Fast path: if the raw bytes are already valid PNG/JPEG, skip
                     // image::load_from_memory + re-encode (saves ~200-800ms).
@@ -597,7 +640,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
         last_text: String,
         last_seq: u32,
         last_image_hash: u64,
-        last_content_hash: u64,
+        last_content_hash: Option<u64>,
         last_process_time: u64,
     }
 
@@ -605,7 +648,7 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
         last_text,
         last_seq,
         last_image_hash,
-        last_content_hash: 0,
+        last_content_hash: None,
         last_process_time: 0,
     }));
 
@@ -662,33 +705,28 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        // Calculate hash of current clipboard content
-        let current_content_hash = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-            // Hash text content if available
-            if let Some(text) = read_clipboard_text_once(&mut clipboard, &mut cached_text) {
-                normalize_clipboard_plain_text(&text).hash(&mut hasher);
-            }
-
-            // Avoid forcing delayed bitmap rendering from rich-text applications.
-            // WPS Writer 32-bit in particular can crash while serving CF_DIB
-            // during a Ctrl+C operation.
-            if !is_likely_rich_text_source(&source_snapshot) {
-                if let Some(image) = read_clipboard_image_once(&mut cached_image) {
-                    image.bytes.hash(&mut hasher);
-                }
-            }
-
-            hasher.finish()
+        // Include CF_HDROP before deduplication and reuse the same file snapshot.
+        let clipboard_files = unsafe {
+            crate::infrastructure::windows_api::win_clipboard::get_clipboard_files()
         };
+        let preflight_text = read_clipboard_text_once(&mut clipboard, &mut cached_text);
+        // Keep bitmap rendering lazy for Office/WPS delayed-rendering providers.
+        let preflight_image = if is_likely_rich_text_source(&source_snapshot) {
+            None
+        } else {
+            read_clipboard_image_once(&mut cached_image)
+        };
+        let current_content_hash = clipboard_preflight_hash(
+            preflight_text.as_deref(),
+            preflight_image.as_ref().map(|image| image.bytes.as_slice()),
+            clipboard_files.as_deref(),
+        );
 
         // If content is identical to last processed content within 2000ms window, skip.
         // Rich text sources (Office/WPS) may fire multiple clipboard events over >500ms
         // because they write formats sequentially and probe_rich_text_payload retries.
         if current_content_hash == monitor_state.last_content_hash
-            && current_content_hash != 0
+            && current_content_hash.is_some()
             && now.saturating_sub(monitor_state.last_process_time) < 2000
         {
             return;
@@ -702,69 +740,65 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
         // --- Core processing logic (same as before) ---
 
         // 1. Check Files
-        unsafe {
-            if let Some(files) =
-                crate::infrastructure::windows_api::win_clipboard::get_clipboard_files()
-            {
-                let content = files.join("\n");
-                if !content.is_empty() {
-                    let is_new = content != monitor_state.last_text;
-                    let mut should_process = is_new;
-                    if !is_new {
-                        if let Some(db_state) = app.try_state::<DbState>() {
-                            if let Ok(conn) = db_state.conn.lock() {
-                                if let Ok(None) = db_state
-                                    .repo
-                                    .find_by_content_with_conn(&conn, &content, None)
-                                {
-                                    should_process = true;
-                                }
+        if let Some(files) = clipboard_files {
+            let content = files.join("\n");
+            if !content.is_empty() {
+                let is_new = content != monitor_state.last_text;
+                let mut should_process = is_new;
+                if !is_new {
+                    if let Some(db_state) = app.try_state::<DbState>() {
+                        if let Ok(conn) = db_state.conn.lock() {
+                            if let Ok(None) = db_state
+                                .repo
+                                .find_by_content_with_conn(&conn, &content, None)
+                            {
+                                should_process = true;
                             }
                         }
                     }
-
-                    if should_process {
-                        let normalized = content.trim().replace("\r\n", "\n");
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        use std::hash::{Hash, Hasher};
-                        normalized.hash(&mut hasher);
-                        let current_hash = hasher.finish();
-
-                        let last_app_hash = crate::LAST_APP_SET_HASH.load(Ordering::SeqCst);
-                        let last_app_hash_alt = crate::LAST_APP_SET_HASH_ALT.load(Ordering::SeqCst);
-                        let last_app_time = crate::LAST_APP_SET_TIMESTAMP.load(Ordering::SeqCst);
-                        let now_secs = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-
-                        if (last_app_hash != 0
-                            && (last_app_hash == current_hash || last_app_hash_alt == current_hash))
-                            && (now_secs - last_app_time) < 10
-                        {
-                            crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
-                            crate::LAST_APP_SET_HASH_ALT.store(0, Ordering::SeqCst);
-                        } else {
-                            crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
-                            crate::LAST_APP_SET_HASH_ALT.store(0, Ordering::SeqCst);
-                            monitor_state.last_text = content.clone();
-
-                            let settings = app.state::<SettingsState>();
-                            if let Some(data) = file_clipboard_data(
-                                files,
-                                settings.capture_files.load(Ordering::Relaxed),
-                            ) {
-                                process_new_entry(
-                                    &app,
-                                    data,
-                                    None,
-                                    Some(source_snapshot.clone()),
-                                );
-                            }
-                        }
-                    }
-                    handled = true;
                 }
+
+                if should_process {
+                    let normalized = content.trim().replace("\r\n", "\n");
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    use std::hash::{Hash, Hasher};
+                    normalized.hash(&mut hasher);
+                    let current_hash = hasher.finish();
+
+                    let last_app_hash = crate::LAST_APP_SET_HASH.load(Ordering::SeqCst);
+                    let last_app_hash_alt = crate::LAST_APP_SET_HASH_ALT.load(Ordering::SeqCst);
+                    let last_app_time = crate::LAST_APP_SET_TIMESTAMP.load(Ordering::SeqCst);
+                    let now_secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    if (last_app_hash != 0
+                        && (last_app_hash == current_hash || last_app_hash_alt == current_hash))
+                        && (now_secs - last_app_time) < 10
+                    {
+                        crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
+                        crate::LAST_APP_SET_HASH_ALT.store(0, Ordering::SeqCst);
+                    } else {
+                        crate::LAST_APP_SET_HASH.store(0, Ordering::SeqCst);
+                        crate::LAST_APP_SET_HASH_ALT.store(0, Ordering::SeqCst);
+                        monitor_state.last_text = content.clone();
+
+                        let settings = app.state::<SettingsState>();
+                        if let Some(data) = file_clipboard_data(
+                            files,
+                            settings.capture_files.load(Ordering::Relaxed),
+                        ) {
+                            process_new_entry(
+                                &app,
+                                data,
+                                None,
+                                Some(source_snapshot.clone()),
+                            );
+                        }
+                    }
+                }
+                handled = true;
             }
         }
 
@@ -935,11 +969,12 @@ pub fn start_clipboard_monitor(app_handle: AppHandle) {
                         if should_ignore_recent_image_echo(hash, visual_hash) {
                             clear_recent_image_echo_state();
                         } else {
+                            let mime = animated_image_mime(&gif_data).unwrap_or("image/gif");
                             let b64 = base64::engine::general_purpose::STANDARD.encode(gif_data);
                             process_new_entry(
                                 &app,
                                 ClipboardData::Image {
-                                    data_url: format!("data:image/gif;base64,{}", b64),
+                                    data_url: format!("data:{};base64,{}", mime, b64),
                                 },
                                 None,
                                 Some(source_snapshot.clone()),
@@ -1714,6 +1749,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn two_frame_animated_webp() -> Vec<u8> {
+        decode_hex("52494646ca00000057454250565038580a00000002000000010000010000414e494d06000000000000000000414e4d464a0000000000000000000100000100005000000256503820320000003001009d012a0200020001402625a000037000fef2eb7ffff9b03ff6f3ff047a01ffffd2e0fffe9707fff4b83ff4a4000000414e4d464c0000000000000000000100000100005000000056503820340000003401009d012a0200020000002625a000037000fee9221ffff79f3fffb9f3fffb9f3fe8cfffff29fbfff238ffff238ffe50200000")
+    }
+
+    fn static_webp() -> Vec<u8> {
+        decode_hex("524946463a00000057454250565038202e0000009001009d012a0200020001402625a00274ba00039800fefb55e3ffa5c1ffd2e0ffe9707fe9707f1bb2ce1ba40000")
+    }
+
+    #[test]
+    fn mislabeled_animated_webp_preserves_bytes_with_file_capture_on_and_off() {
+        use base64::Engine;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tiez_webp_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let webp_bytes = two_frame_animated_webp();
+        assert_eq!(webp_bytes.windows(4).filter(|w| *w == b"ANMF").count(), 2);
+
+        for name in ["sticker.webp", "cache.jpg", "cache.png", "no-extension"] {
+            let source = dir.join(name);
+            std::fs::write(&source, &webp_bytes).unwrap();
+            for capture_files in [false, true] {
+                let data = file_clipboard_data(
+                    vec![source.to_string_lossy().into_owned()],
+                    capture_files,
+                )
+                .unwrap();
+                let ClipboardData::Image { data_url } = data else {
+                    panic!("animated WebP must bypass still-image conversion: {name}, {capture_files}");
+                };
+                assert!(data_url.starts_with("data:image/webp;base64,"));
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(data_url.split_once(',').unwrap().1)
+                    .unwrap();
+                assert_eq!(decoded, webp_bytes);
+
+                let stored = crate::database::save_image_to_file(&data_url, &dir).unwrap();
+                assert_eq!(std::path::Path::new(&stored).extension().unwrap(), "webp");
+                assert_eq!(std::fs::read(stored).unwrap(), webp_bytes);
+            }
+        }
+
+        let still = dir.join("still.webp");
+        std::fs::write(&still, static_webp()).unwrap();
+        for files in [
+            vec![still.to_string_lossy().into_owned()],
+            vec![
+                dir.join("sticker.webp").to_string_lossy().into_owned(),
+                still.to_string_lossy().into_owned(),
+            ],
+        ] {
+            assert!(file_clipboard_data(files.clone(), false).is_none());
+            let Some(ClipboardData::Files(preserved)) = file_clipboard_data(files.clone(), true)
+            else {
+                panic!("static WebP must retain the existing file pipeline");
+            };
+            assert_eq!(preserved, files);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn detects_wps_writer_without_treating_spreadsheet_as_writer() {
         let writer = ActiveAppInfo {
@@ -1729,3 +1838,14 @@ mod tests {
         assert!(!is_wps_writer_source(&spreadsheet));
     }
 }
+    #[test]
+    fn file_only_clipboards_have_distinct_preflight_hashes() {
+        let first = vec![r"C:\files\a.txt".to_string()];
+        let second = vec![r"C:\files\b.txt".to_string()];
+        let first_hash = clipboard_preflight_hash(None, None, Some(&first));
+        assert!(first_hash.is_some());
+        assert_ne!(first_hash, clipboard_preflight_hash(None, None, Some(&second)));
+        assert_eq!(first_hash, clipboard_preflight_hash(None, None, Some(&first)));
+        assert_eq!(clipboard_preflight_hash(None, None, None), None);
+        assert_eq!(clipboard_preflight_hash(None, None, Some(&[])), None);
+    }

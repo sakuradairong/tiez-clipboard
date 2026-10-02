@@ -4,7 +4,7 @@ use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use base64::Engine;
 use image::GenericImageView;
 use rqrr::PreparedImage;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -284,15 +284,51 @@ pub async fn analyze_image_entry(
         Ok((text, language)) => (text, language, None),
         Err(error) => (String::new(), None, Some(error)),
     };
-    let persisted = !sensitive;
-
-    if persisted {
+    let mut result = ImageAnalysisResult {
+        text,
+        qr_codes,
+        language,
+        analyzed_at,
+        cached: false,
+        persisted: false,
+        ocr_available: cfg!(target_os = "windows"),
+        ocr_error,
+    };
+    if !sensitive {
         let conn = state
             .conn
             .lock()
             .map_err(|err| AppError::Database(err.to_string()))?;
-        conn.execute(
-            "INSERT INTO clipboard_image_analysis
+        result.persisted = persist_current_image_analysis(&conn, id, content_hash, &result)?;
+    }
+    Ok(result)
+}
+
+fn persist_current_image_analysis(
+    conn: &Connection,
+    id: i64,
+    content_hash: i64,
+    result: &ImageAnalysisResult,
+) -> AppResult<bool> {
+    // The caller holds the shared connection lock throughout this check and write.
+    // A tag edit, deletion or replacement during OCR must not resurrect its index.
+    let current: Option<(String, i64, String)> = conn
+        .query_row(
+            "SELECT content_type, content_hash, tags FROM clipboard_history WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((content_type, current_hash, tags)) = current else {
+        return Ok(false);
+    };
+    let tags: Vec<String> = serde_json::from_str(&tags)
+        .map_err(|err| AppError::Validation(format!("图片标签无效: {err}")))?;
+    if content_type != "image" || current_hash != content_hash || has_sensitive_tag(&tags) {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT INTO clipboard_image_analysis
                 (entry_id, content_hash, ocr_text, qr_codes, language, analyzed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(entry_id) DO UPDATE SET
@@ -301,25 +337,96 @@ pub async fn analyze_image_entry(
                 qr_codes = excluded.qr_codes,
                 language = excluded.language,
                 analyzed_at = excluded.analyzed_at",
-            params![
-                id,
-                content_hash,
-                text,
-                serde_json::to_string(&qr_codes).unwrap_or_else(|_| "[]".to_string()),
-                language,
-                analyzed_at
-            ],
-        )?;
+        params![
+            id,
+            content_hash,
+            result.text,
+            serde_json::to_string(&result.qr_codes).unwrap_or_else(|_| "[]".to_string()),
+            result.language,
+            result.analyzed_at
+        ],
+    )?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{persist_current_image_analysis, ImageAnalysisResult};
+    use rusqlite::Connection;
+
+    fn analysis_fixture() -> (Connection, ImageAnalysisResult) {
+        let conn = Connection::open_in_memory().expect("open analysis fixture");
+        crate::infrastructure::repository::migrations::run_migrations(&conn)
+            .expect("migrate analysis fixture");
+        conn.execute_batch(
+            "INSERT INTO clipboard_history
+                (id, content_type, content, content_hash, source_app, timestamp, preview)
+             VALUES (1, 'image', 'image.png', 7, 'test', 1, 'image');",
+        )
+        .expect("insert ordinary image");
+        let result = ImageAnalysisResult {
+            text: "secret OCR text".into(),
+            qr_codes: vec!["secret QR".into()],
+            language: None,
+            analyzed_at: 10,
+            cached: false,
+            persisted: false,
+            ocr_available: true,
+            ocr_error: None,
+        };
+        (conn, result)
     }
 
-    Ok(ImageAnalysisResult {
-        text,
-        qr_codes,
-        language,
-        analyzed_at,
-        cached: false,
-        persisted,
-        ocr_available: cfg!(target_os = "windows"),
-        ocr_error,
-    })
+    #[test]
+    fn finished_ocr_does_not_recreate_index_after_sensitive_tag_change() {
+        let (conn, result) = analysis_fixture();
+        // OCR began with ordinary tags, then the tag command removed its cache.
+        conn.execute_batch(
+            "UPDATE clipboard_history SET tags = '[\"Password\"]' WHERE id = 1;
+             DELETE FROM clipboard_image_analysis WHERE entry_id = 1;",
+        )
+        .expect("make image sensitive during OCR");
+        assert!(!persist_current_image_analysis(&conn, 1, 7, &result).expect("finish OCR"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clipboard_image_analysis", [], |row| {
+                row.get(0)
+            })
+            .expect("count protected OCR");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn finished_ocr_does_not_index_deleted_or_replaced_images() {
+        for mutation in [
+            "DELETE FROM clipboard_history WHERE id = 1",
+            "UPDATE clipboard_history SET content_hash = 8 WHERE id = 1",
+            "UPDATE clipboard_history SET content_type = 'text' WHERE id = 1",
+        ] {
+            let (conn, result) = analysis_fixture();
+            conn.execute(mutation, []).expect("mutate image during OCR");
+            assert!(
+                !persist_current_image_analysis(&conn, 1, 7, &result).expect("discard stale OCR")
+            );
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM clipboard_image_analysis", [], |row| {
+                    row.get(0)
+                })
+                .expect("count stale OCR");
+            assert_eq!(count, 0);
+        }
+    }
+
+    #[test]
+    fn finished_ocr_persists_current_ordinary_image() {
+        let (conn, result) = analysis_fixture();
+        assert!(persist_current_image_analysis(&conn, 1, 7, &result).expect("persist ordinary OCR"));
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT ocr_text, qr_codes FROM clipboard_image_analysis WHERE entry_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read ordinary OCR");
+        assert_eq!(row, ("secret OCR text".into(), "[\"secret QR\"]".into()));
+    }
 }

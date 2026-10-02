@@ -3,10 +3,25 @@ use crate::database::DbState;
 use crate::error::AppResult;
 use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use std::collections::VecDeque;
 use tauri::{Emitter, Manager, State};
 
 #[allow(dead_code)]
 const WM_PASTE: u32 = 0x0302;
+
+static SEQUENTIAL_PASTE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn complete_queue_paste(
+    items: &mut VecDeque<i64>,
+    id: i64,
+    paste_result: AppResult<()>,
+) -> AppResult<()> {
+    paste_result?;
+    if items.front().copied() == Some(id) {
+        items.pop_front();
+    }
+    Ok(())
+}
 
 #[tauri::command]
 pub fn get_paste_queue(state: State<'_, PasteQueue>) -> Vec<i64> {
@@ -83,14 +98,15 @@ fn prepare_next_paste_item(app_handle: &tauri::AppHandle) {
 
 #[tauri::command]
 pub async fn paste_next_step(app_handle: tauri::AppHandle) {
+    let _paste_guard = SEQUENTIAL_PASTE_LOCK.lock().await;
     let state = app_handle.state::<PasteQueue>();
     let db_state = app_handle.state::<DbState>();
     let session = app_handle.state::<SessionHistory>();
 
-    // 1. Pop item from queue (Scope the lock)
+    // Keep the item queued until clipboard preparation and injection succeed.
     let id_opt = {
-        let mut queue = state.inner().0.lock().unwrap();
-        queue.items.pop_front()
+        let queue = state.inner().0.lock().unwrap();
+        queue.items.front().copied()
     };
 
     if let Some(id) = id_opt {
@@ -130,7 +146,7 @@ pub async fn paste_next_step(app_handle: tauri::AppHandle) {
                 eprintln!(
                     "[ERROR] Failed to prepare clipboard payload for sequential paste: {err}"
                 );
-                let _ = app_handle.emit("queue-item-pasted", id);
+                crate::services::clipboard_ops::clear_recent_paste_marker(&app_handle);
                 return;
             }
 
@@ -156,18 +172,11 @@ pub async fn paste_next_step(app_handle: tauri::AppHandle) {
                 false
             };
 
-            if let Err(err) = crate::services::clipboard_ops::send_paste_keystroke(
+            let paste_result = crate::services::clipboard_ops::send_paste_keystroke(
                 &paste_method,
                 Some(&content),
                 Some(&c_type),
-            ) {
-                eprintln!("[ERROR] Sequential paste injection failed: {err}");
-                let mut queue = state.inner().0.lock().unwrap();
-                queue.items.push_front(id);
-                drop(queue);
-                let _ = app_handle.emit("queue-finished", ());
-                return;
-            }
+            );
 
             // Settle time
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -196,6 +205,16 @@ pub async fn paste_next_step(app_handle: tauri::AppHandle) {
                     SendInput(&[alt_restore], std::mem::size_of::<INPUT>() as i32);
                     println!("[DEBUG] Restored Alt key state for continuous sequential paste");
                 }
+            }
+
+            let queue_result = {
+                let mut queue = state.inner().0.lock().unwrap();
+                complete_queue_paste(&mut queue.items, id, paste_result)
+            };
+            if let Err(err) = queue_result {
+                eprintln!("[ERROR] Sequential paste injection failed: {err}");
+                crate::services::clipboard_ops::clear_recent_paste_marker(&app_handle);
+                return;
             }
 
             // Perform deletion if delete_after_paste is enabled
@@ -243,8 +262,39 @@ pub async fn paste_next_step(app_handle: tauri::AppHandle) {
 
             // Emit event to update UI queue state
             let _ = app_handle.emit("queue-item-pasted", id);
+        } else {
+            // A deleted history item cannot be retried; discard only that item.
+            let mut queue = state.inner().0.lock().unwrap();
+            let _ = complete_queue_paste(&mut queue.items, id, Ok(()));
         }
     } else {
         let _ = app_handle.emit("queue-finished", ());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::complete_queue_paste;
+    use crate::error::AppError;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn failed_paste_keeps_queue_item_for_retry() {
+        let mut items = VecDeque::from([1, 2]);
+        assert!(complete_queue_paste(
+            &mut items,
+            1,
+            Err(AppError::Internal("blocked input".to_string()))
+        ).is_err());
+        assert_eq!(items, VecDeque::from([1, 2]));
+        complete_queue_paste(&mut items, 1, Ok(())).unwrap();
+        assert_eq!(items, VecDeque::from([2]));
+    }
+
+    #[test]
+    fn finished_paste_does_not_consume_a_replaced_queue() {
+        let mut items = VecDeque::from([3, 4]);
+        complete_queue_paste(&mut items, 1, Ok(())).unwrap();
+        assert_eq!(items, VecDeque::from([3, 4]));
     }
 }

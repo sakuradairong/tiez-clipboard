@@ -1,4 +1,4 @@
-use crate::database::ENCRYPT_PREFIX;
+use crate::database::{has_sensitive_tag, ENCRYPT_PREFIX};
 use crate::domain::models::ClipboardEntry;
 use crate::infrastructure::encryption;
 use crate::infrastructure::repository::clipboard_repo::SqliteClipboardRepository;
@@ -160,10 +160,18 @@ impl TagRepository for SqliteTagRepository {
     }
 
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("Tag name must not be empty".to_string());
+        }
+        if old_name == new_name {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
         // Update saved_tags table: merge color info if exists
-        let old_color: Option<String> = conn
+        let old_color: Option<String> = tx
             .query_row(
                 "SELECT color FROM saved_tags WHERE name = ?",
                 params![old_name],
@@ -171,38 +179,87 @@ impl TagRepository for SqliteTagRepository {
             )
             .ok();
 
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO saved_tags (name, color) VALUES (?1, ?2)",
             params![new_name, old_color],
         )
         .map_err(|e| e.to_string())?;
 
-        let _ = conn.execute("DELETE FROM saved_tags WHERE name = ?", params![old_name]);
+        tx.execute("DELETE FROM saved_tags WHERE name = ?", params![old_name])
+            .map_err(|e| e.to_string())?;
 
         // Update entry_tags and refresh JSON cache
-        let mut stmt = conn
-            .prepare("SELECT entry_id FROM entry_tags WHERE tag = ?")
-            .map_err(|e| e.to_string())?;
-        let ids: Vec<i64> = stmt
-            .query_map(params![old_name], |row| row.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(Result::ok)
-            .collect();
+        let ids: Vec<i64> = {
+            let mut stmt = tx
+                .prepare("SELECT entry_id FROM entry_tags WHERE tag = ? ORDER BY entry_id")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![old_name], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        };
+        let clipboard_repo = SqliteClipboardRepository::new(self.conn.clone());
 
         for id in ids {
-            conn.execute(
+            let old_tags: String = tx
+                .query_row(
+                    "SELECT tags FROM clipboard_history WHERE id = ?",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let old_tags: Vec<String> =
+                serde_json::from_str(&old_tags).map_err(|e| e.to_string())?;
+            tx.execute(
                 "INSERT OR IGNORE INTO entry_tags (entry_id, tag) VALUES (?1, ?2)",
                 params![id, new_name],
             )
             .map_err(|e| e.to_string())?;
-            conn.execute(
+            tx.execute(
                 "DELETE FROM entry_tags WHERE entry_id = ? AND tag = ?",
                 params![id, old_name],
             )
             .map_err(|e| e.to_string())?;
-            Self::refresh_entry_tags_json(&conn, id)?;
+            Self::refresh_entry_tags_json(&tx, id)?;
+            let new_tags: String = tx
+                .query_row(
+                    "SELECT tags FROM clipboard_history WHERE id = ?",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let new_tags: Vec<String> =
+                serde_json::from_str(&new_tags).map_err(|e| e.to_string())?;
+            let new_sensitive = has_sensitive_tag(&new_tags);
+            if new_sensitive || has_sensitive_tag(&old_tags) {
+                if new_sensitive {
+                    tx.execute(
+                        "DELETE FROM clipboard_image_analysis WHERE entry_id = ?",
+                        [id],
+                    )
+                    .map_err(|e| e.to_string())?;
+                    clipboard_repo.encrypt_entry_with_conn(&tx, id)?;
+                    #[cfg(all(windows, not(feature = "portable")))]
+                    {
+                        let protected: bool = tx
+                            .query_row(
+                                "SELECT content LIKE 'dpapi:%' AND preview LIKE 'dpapi:%'
+                                    AND (html_content IS NULL OR html_content LIKE 'dpapi:%')
+                             FROM clipboard_history WHERE id = ?",
+                                [id],
+                                |row| row.get(0),
+                            )
+                            .map_err(|e| e.to_string())?;
+                        if !protected {
+                            return Err("Failed to encrypt renamed sensitive entry".to_string());
+                        }
+                    }
+                } else {
+                    clipboard_repo.decrypt_entry_with_conn(&tx, id)?;
+                }
+            }
         }
-        Ok(())
+        tx.commit().map_err(|e| e.to_string())
     }
 
     fn delete_globally(
@@ -366,6 +423,253 @@ mod tests {
     use super::{SqliteTagRepository, TagRepository};
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
+
+    fn setup_rename_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().expect("open rename test db");
+        crate::infrastructure::repository::migrations::run_migrations(&conn)
+            .expect("migrate rename db");
+        conn.execute_batch(
+            "INSERT INTO settings (key, value) VALUES ('app.anon_id', 'rename-device');
+             INSERT INTO saved_tags (name, color) VALUES ('ordinary', '#123456');
+             INSERT INTO clipboard_history
+                (id, content_type, content, html_content, content_hash, source_app,
+                 timestamp, preview, tags, sync_updated_at)
+             VALUES (1, 'rich_text', 'secret text', '<p>secret</p>', 7, 'test', 1,
+                     'secret preview', '[\"ordinary\"]', 1),
+                    (2, 'image', 'image.png', NULL, 8, 'test', 1,
+                     'image preview', '[\"ordinary\"]', 1);
+             INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'ordinary'), (2, 'ordinary');
+             INSERT INTO clipboard_image_analysis
+                (entry_id, content_hash, ocr_text, qr_codes, analyzed_at)
+             VALUES (1, 7, 'old text', '[]', 1), (2, 8, 'secret OCR', '[]', 1);",
+        )
+        .expect("seed rename fixture");
+        Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn global_rename_to_sensitive_protects_content_and_removes_ocr() {
+        let shared = setup_rename_db();
+        let repo = SqliteTagRepository::new(shared.clone());
+        repo.rename("ordinary", "Password")
+            .expect("rename to sensitive tag");
+        let conn = shared.lock().expect("lock renamed db");
+        let (content, preview, html, tags, updated_at, updated_by): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT content, preview, html_content, tags, sync_updated_at, sync_updated_by
+             FROM clipboard_history WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("read protected entry");
+        assert_eq!(tags, "[\"Password\"]");
+        assert!(updated_at > 1);
+        assert_eq!(updated_by, "rename-device");
+        #[cfg(all(windows, not(feature = "portable")))]
+        {
+            for value in [&content, &preview, &html] {
+                assert!(value.starts_with(crate::database::ENCRYPT_PREFIX));
+            }
+            assert_eq!(
+                crate::infrastructure::encryption::decrypt_value(&content).as_deref(),
+                Some("secret text")
+            );
+        }
+        #[cfg(any(not(windows), feature = "portable"))]
+        assert_eq!(
+            (content.as_str(), preview.as_str(), html.as_str()),
+            ("secret text", "secret preview", "<p>secret</p>")
+        );
+        let cached: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clipboard_image_analysis", [], |row| {
+                row.get(0)
+            })
+            .expect("count OCR");
+        assert_eq!(cached, 0);
+        let color: String = conn
+            .query_row(
+                "SELECT color FROM saved_tags WHERE name = 'Password'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserve color");
+        assert_eq!(color, "#123456");
+    }
+
+    #[test]
+    fn global_rename_from_sensitive_decrypts_content() {
+        let shared = setup_rename_db();
+        let repo = SqliteTagRepository::new(shared.clone());
+        repo.rename("ordinary", "Password")
+            .expect("protect fixture");
+        repo.rename("Password", "renamed")
+            .expect("remove sensitive tag");
+        let conn = shared.lock().expect("lock unprotected db");
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT content, preview, html_content, tags FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read unprotected entry");
+        assert_eq!(
+            row,
+            (
+                "secret text".into(),
+                "secret preview".into(),
+                "<p>secret</p>".into(),
+                "[\"renamed\"]".into()
+            )
+        );
+    }
+
+    #[test]
+    fn failed_global_sensitive_rename_rolls_back_tags_content_and_ocr() {
+        let shared = setup_rename_db();
+        {
+            let conn = shared.lock().expect("lock trigger db");
+            conn.execute_batch(
+                "CREATE TRIGGER reject_second_ocr_delete BEFORE DELETE ON clipboard_image_analysis
+                 WHEN OLD.entry_id = 2 BEGIN SELECT RAISE(ABORT, 'OCR unavailable'); END;",
+            )
+            .expect("install failure trigger");
+        }
+        let repo = SqliteTagRepository::new(shared.clone());
+        let error = repo
+            .rename("ordinary", "Password")
+            .expect_err("rename must fail atomically");
+        assert!(error.contains("OCR unavailable"));
+        let conn = shared.lock().expect("lock rollback db");
+        let row: (String, String, i64) = conn
+            .query_row(
+                "SELECT content, tags, sync_updated_at FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read rolled back content");
+        assert_eq!(row, ("secret text".into(), "[\"ordinary\"]".into(), 1));
+        let counts: (i64, i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM entry_tags WHERE tag = 'ordinary'),
+                    (SELECT COUNT(*) FROM clipboard_image_analysis),
+                    (SELECT COUNT(*) FROM saved_tags WHERE name = 'ordinary')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read rolled back tags and OCR");
+        assert_eq!(counts, (2, 2, 1));
+        let new_tag: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM saved_tags WHERE name = 'Password'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count new tag");
+        assert_eq!(new_tag, 0);
+    }
+
+    #[test]
+    fn global_rename_merges_existing_sensitive_tag_and_preserves_protection() {
+        let shared = setup_rename_db();
+        {
+            let conn = shared.lock().expect("lock merge fixture");
+            conn.execute_batch(
+                "INSERT INTO saved_tags (name, color) VALUES ('Password', '#abcdef');
+                 INSERT INTO entry_tags (entry_id, tag) VALUES (1, 'Password');
+                 UPDATE clipboard_history SET tags = '[\"ordinary\",\"Password\"]' WHERE id = 1;",
+            )
+            .expect("seed existing sensitive destination");
+        }
+        let repo = SqliteTagRepository::new(shared.clone());
+        repo.rename("ordinary", "Password")
+            .expect("merge sensitive destination");
+        let conn = shared.lock().expect("lock merged tags");
+        let (tags, content): (String, String) = conn
+            .query_row(
+                "SELECT tags, content FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read merged entry");
+        assert_eq!(tags, "[\"Password\"]");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entry_tags WHERE entry_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count merged tags");
+        assert_eq!(count, 1);
+        #[cfg(all(windows, not(feature = "portable")))]
+        assert!(content.starts_with(crate::database::ENCRYPT_PREFIX));
+        #[cfg(any(not(windows), feature = "portable"))]
+        assert_eq!(content, "secret text");
+        let color: String = conn
+            .query_row(
+                "SELECT color FROM saved_tags WHERE name = 'Password'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("preserve destination color");
+        assert_eq!(color, "#abcdef");
+        let cached: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clipboard_image_analysis", [], |row| {
+                row.get(0)
+            })
+            .expect("count merged OCR");
+        assert_eq!(cached, 0);
+    }
+
+    #[test]
+    fn undecryptable_entry_prevents_global_sensitive_tag_removal() {
+        let shared = setup_rename_db();
+        let repo = SqliteTagRepository::new(shared.clone());
+        repo.rename("ordinary", "Password")
+            .expect("protect rename fixture");
+        {
+            let conn = shared.lock().expect("lock unreadable fixture");
+            conn.execute(
+                "UPDATE clipboard_history SET content = 'dpapi:unreadable' WHERE id = 1",
+                [],
+            )
+            .expect("simulate foreign account ciphertext");
+        }
+        assert!(repo.rename("Password", "renamed").is_err());
+        let conn = shared.lock().expect("lock rejected removal");
+        let (tags, content): (String, String) = conn
+            .query_row(
+                "SELECT tags, content FROM clipboard_history WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read preserved unreadable entry");
+        assert_eq!(tags, "[\"Password\"]");
+        assert_eq!(content, "dpapi:unreadable");
+        let renamed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM saved_tags WHERE name = 'renamed'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rolled back name");
+        assert_eq!(renamed, 0);
+    }
 
     fn setup_tag_db() -> Arc<Mutex<Connection>> {
         let conn = Connection::open_in_memory().expect("open tag test db");

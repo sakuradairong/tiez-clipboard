@@ -118,7 +118,23 @@ impl PipelineStage for DiscoveryStage {
                         || lower.ends_with(".webp")
                     {
                         if let Ok(img_data) = std::fs::read(path) {
-                            if let Ok(img) = image::load_from_memory(&img_data) {
+                            if is_gif_signature(&img_data) {
+                                let b64 =
+                                    base64::engine::general_purpose::STANDARD.encode(&img_data);
+                                (
+                                    "image".to_string(),
+                                    format!("data:image/gif;base64,{}", b64),
+                                    None,
+                                )
+                            } else if is_animated_webp_payload(&img_data) {
+                                let b64 =
+                                    base64::engine::general_purpose::STANDARD.encode(&img_data);
+                                (
+                                    "image".to_string(),
+                                    format!("data:image/webp;base64,{}", b64),
+                                    None,
+                                )
+                            } else if let Ok(img) = image::load_from_memory(&img_data) {
                                 let mut bytes: Vec<u8> = Vec::new();
                                 let mut cursor = std::io::Cursor::new(&mut bytes);
                                 if img.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
@@ -267,7 +283,7 @@ impl PipelineStage for TransformationStage {
                     &data_dir,
                 ))
             } else {
-                Some(embed_local_images(html))
+                Some(embed_local_images(html, &data_dir))
             };
         }
     }

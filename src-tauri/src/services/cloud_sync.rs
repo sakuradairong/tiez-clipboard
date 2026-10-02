@@ -7,6 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::encryption;
 use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use crate::services::local_image_resource::{managed_image_roots, read_local_image};
 use base64::Engine;
 use regex::Regex;
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
@@ -565,26 +566,17 @@ fn is_setting_sync_eligible(key: &str) -> bool {
     )
 }
 
-fn to_data_url_from_path(path: &str) -> Option<String> {
-    let file_path = Path::new(path);
-    if !file_path.exists() || !file_path.is_file() {
-        return None;
-    }
-
-    let bytes = std::fs::read(file_path).ok()?;
-    if bytes.is_empty() || bytes.len() > MAX_INLINE_IMAGE_BYTES {
-        return None;
-    }
-
-    let mime = mime_guess::from_path(file_path)
-        .first_or_octet_stream()
-        .essence_str()
-        .to_string();
-    let payload = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Some(format!("data:{};base64,{}", mime, payload))
+fn to_data_url_from_path(path: &str, data_dir: &Path) -> Option<String> {
+    let resource = read_local_image(
+        Path::new(path),
+        &managed_image_roots(data_dir),
+        MAX_INLINE_IMAGE_BYTES,
+    )?;
+    let payload = base64::engine::general_purpose::STANDARD.encode(resource.bytes);
+    Some(format!("data:{};base64,{}", resource.mime, payload))
 }
 
-fn rewrite_rich_fallback_payload_to_data_url(html: &str) -> String {
+fn rewrite_rich_fallback_payload_to_data_url(html: &str, data_dir: &Path) -> String {
     let Some(start) = html.rfind(RICH_IMAGE_FALLBACK_PREFIX) else {
         return html.to_string();
     };
@@ -603,7 +595,7 @@ fn rewrite_rich_fallback_payload_to_data_url(html: &str) -> String {
         return html.to_string();
     }
 
-    let Some(data_url) = to_data_url_from_path(payload) else {
+    let Some(data_url) = to_data_url_from_path(payload, data_dir) else {
         return html.to_string();
     };
 
@@ -615,7 +607,7 @@ fn rewrite_rich_fallback_payload_to_data_url(html: &str) -> String {
     )
 }
 
-fn rich_html_resource_path_to_data_url(raw: &str) -> Option<String> {
+fn rich_html_resource_path_to_data_url(raw: &str, data_dir: &Path) -> Option<String> {
     let value = raw.trim();
     if value.is_empty()
         || value.starts_with("data:")
@@ -666,10 +658,10 @@ fn rich_html_resource_path_to_data_url(raw: &str) -> Option<String> {
         return None;
     }
 
-    to_data_url_from_path(clean_path)
+    to_data_url_from_path(clean_path, data_dir)
 }
 
-fn rewrite_rich_html_image_sources_to_data_url(html: &str) -> String {
+fn rewrite_rich_html_image_sources_to_data_url(html: &str, data_dir: &Path) -> String {
     static IMG_SRC_RE: OnceLock<Regex> = OnceLock::new();
     let re = IMG_SRC_RE
         .get_or_init(|| Regex::new(r#"(?is)(<img\b[^>]*\bsrc=["'])([^"']+)(["'][^>]*>)"#).unwrap());
@@ -679,7 +671,7 @@ fn rewrite_rich_html_image_sources_to_data_url(html: &str) -> String {
         let src = &caps[2];
         let suffix = &caps[3];
 
-        if let Some(data_url) = rich_html_resource_path_to_data_url(src) {
+        if let Some(data_url) = rich_html_resource_path_to_data_url(src, data_dir) {
             format!("{}{}{}", prefix, data_url, suffix)
         } else {
             caps[0].to_string()
@@ -688,16 +680,16 @@ fn rewrite_rich_html_image_sources_to_data_url(html: &str) -> String {
     .into_owned()
 }
 
-fn rewrite_rich_html_resources_for_sync(html: &str) -> String {
-    let with_inline_images = rewrite_rich_html_image_sources_to_data_url(html);
-    rewrite_rich_fallback_payload_to_data_url(&with_inline_images)
+fn rewrite_rich_html_resources_for_sync(html: &str, data_dir: &Path) -> String {
+    let with_inline_images = rewrite_rich_html_image_sources_to_data_url(html, data_dir);
+    rewrite_rich_fallback_payload_to_data_url(&with_inline_images, data_dir)
 }
 
-fn encode_emoji_favorites_setting(raw: &str) -> Option<String> {
+fn encode_emoji_favorites_setting(raw: &str, data_dir: &Path) -> Option<String> {
     let paths: Vec<String> = serde_json::from_str(raw).ok()?;
     let encoded: Vec<String> = paths
         .into_iter()
-        .filter_map(|path| to_data_url_from_path(path.trim()))
+        .filter_map(|path| to_data_url_from_path(path.trim(), data_dir))
         .collect();
     serde_json::to_string(&encoded).ok()
 }
@@ -807,18 +799,18 @@ fn decode_emoji_favorites_setting(app: &AppHandle, raw: &str) -> AppResult<Strin
         .map_err(|e| AppError::Internal(format!("serialize emoji favorites failed: {}", e)))
 }
 
-fn normalize_item_for_sync(mut item: CloudSyncItem) -> Option<CloudSyncItem> {
+fn normalize_item_for_sync(mut item: CloudSyncItem, data_dir: &Path) -> Option<CloudSyncItem> {
     if item.deleted_at > 0 {
         return Some(item);
     }
 
     if item.content_type == "image" && !item.content.starts_with("data:image/") {
-        item.content = to_data_url_from_path(&item.content)?;
+        item.content = to_data_url_from_path(&item.content, data_dir)?;
     }
 
     if item.content_type == "rich_text" {
         if let Some(html) = item.html_content.as_ref() {
-            item.html_content = Some(rewrite_rich_html_resources_for_sync(html));
+            item.html_content = Some(rewrite_rich_html_resources_for_sync(html, data_dir));
         }
     }
 
@@ -944,6 +936,7 @@ async fn process_items_blobs_before_push(
     blobs_path: &str,
     blob_cache: &mut HashMap<String, i64>,
     items: &mut [CloudSyncItem],
+    data_dir: &Path,
 ) -> AppResult<()> {
     for item in items {
         if item.deleted_at > 0 {
@@ -952,7 +945,7 @@ async fn process_items_blobs_before_push(
 
         if item.content_type == "image" {
             if !item.content.starts_with("data:image/") {
-                item.content = to_data_url_from_path(&item.content).ok_or_else(|| {
+                item.content = to_data_url_from_path(&item.content, data_dir).ok_or_else(|| {
                     AppError::Internal("convert image path to data url failed".to_string())
                 })?;
             }
@@ -1352,6 +1345,8 @@ fn collect_local_syncable_items(
     app: &AppHandle,
     prefs: &CloudSyncContentPrefs,
 ) -> AppResult<Vec<CloudSyncItem>> {
+    let data_dir = get_app_data_dir(app)
+        .ok_or_else(|| AppError::Internal("App data dir unavailable".to_string()))?;
     let db_state = app
         .try_state::<DbState>()
         .ok_or_else(|| AppError::Internal("DB state unavailable".to_string()))?;
@@ -1418,25 +1413,28 @@ fn collect_local_syncable_items(
                 .get(&e.id)
                 .cloned()
                 .unwrap_or_else(|| (e.timestamp, String::new(), 0, HASH_VERSION_WHITESPACE));
-            let normalized = normalize_item_for_sync(CloudSyncItem {
-                content_type: e.content_type,
-                content: e.content,
-                content_hash: 0,
-                hash_version: HASH_VERSION_WHITESPACE,
-                deleted_at: 0,
-                html_content: e.html_content,
-                content_blob_hash: None,
-                html_blob_hash: None,
-                source_app: e.source_app,
-                timestamp: e.timestamp,
-                updated_at,
-                updated_by,
-                preview: e.preview,
-                is_pinned: e.is_pinned,
-                tags: e.tags,
-                use_count: e.use_count,
-                pinned_order: e.pinned_order,
-            })?;
+            let normalized = normalize_item_for_sync(
+                CloudSyncItem {
+                    content_type: e.content_type,
+                    content: e.content,
+                    content_hash: 0,
+                    hash_version: HASH_VERSION_WHITESPACE,
+                    deleted_at: 0,
+                    html_content: e.html_content,
+                    content_blob_hash: None,
+                    html_blob_hash: None,
+                    source_app: e.source_app,
+                    timestamp: e.timestamp,
+                    updated_at,
+                    updated_by,
+                    preview: e.preview,
+                    is_pinned: e.is_pinned,
+                    tags: e.tags,
+                    use_count: e.use_count,
+                    pinned_order: e.pinned_order,
+                },
+                &data_dir,
+            )?;
             let mut item = normalized;
             item.content_hash = if persisted_hash != 0 {
                 persisted_hash
@@ -2921,6 +2919,8 @@ async fn fetch_webdav_ops_batch(
 }
 
 fn collect_syncable_settings(app: &AppHandle) -> AppResult<HashMap<String, String>> {
+    let data_dir = get_app_data_dir(app)
+        .ok_or_else(|| AppError::Internal("App data dir unavailable".to_string()))?;
     let db_state = app
         .try_state::<DbState>()
         .ok_or_else(|| AppError::Internal("DB state unavailable".to_string()))?;
@@ -2928,7 +2928,7 @@ fn collect_syncable_settings(app: &AppHandle) -> AppResult<HashMap<String, Strin
     map.retain(|k, _| is_setting_sync_eligible(k));
 
     if let Some(raw) = map.get(EMOJI_FAVORITES_SETTING_KEY).cloned() {
-        if let Some(encoded) = encode_emoji_favorites_setting(&raw) {
+        if let Some(encoded) = encode_emoji_favorites_setting(&raw, &data_dir) {
             map.insert(EMOJI_FAVORITES_SETTING_KEY.to_string(), encoded);
         }
     }
@@ -3550,12 +3550,15 @@ async fn sync_once_webdav(
             .unwrap_or(0);
         let mut next_seq = get_local_webdav_op_seq(app).max(published_seq);
         let mut processed_delta = delta_items.clone();
+        let data_dir = get_app_data_dir(app)
+            .ok_or_else(|| AppError::Internal("App data dir unavailable".to_string()))?;
         process_items_blobs_before_push(
             &client,
             cfg,
             &paths.blobs_path,
             &mut webdav_blob_cache,
             &mut processed_delta,
+            &data_dir,
         )
         .await?;
         for chunk in processed_delta.chunks(WEBDAV_OP_BATCH_SIZE) {
@@ -3995,6 +3998,8 @@ pub async fn cloud_sync_now(app: AppHandle) -> AppResult<CloudSyncStatus> {
 }
 
 fn check_and_create_emoji_sync_op(app: &AppHandle) -> AppResult<Option<CloudSyncItem>> {
+    let data_dir = get_app_data_dir(app)
+        .ok_or_else(|| AppError::Internal("App data dir unavailable".to_string()))?;
     let db_state = app
         .try_state::<DbState>()
         .ok_or_else(|| AppError::Internal("DB unavailable".to_string()))?;
@@ -4021,7 +4026,7 @@ fn check_and_create_emoji_sync_op(app: &AppHandle) -> AppResult<Option<CloudSync
         return Ok(None);
     }
 
-    let Some(sync_payload) = encode_emoji_favorites_setting(&emoji_json) else {
+    let Some(sync_payload) = encode_emoji_favorites_setting(&emoji_json, &data_dir) else {
         return Ok(None);
     };
     if sync_payload.trim().is_empty() || sync_payload == "[]" {
@@ -4061,6 +4066,8 @@ fn check_and_create_emoji_sync_op(app: &AppHandle) -> AppResult<Option<CloudSync
 }
 
 fn merge_remote_emojis(app: &AppHandle, remote_json: &str) -> AppResult<()> {
+    let data_dir = get_app_data_dir(app)
+        .ok_or_else(|| AppError::Internal("App data dir unavailable".to_string()))?;
     let db_state = app
         .try_state::<DbState>()
         .ok_or_else(|| AppError::Internal("DB unavailable".to_string()))?;
@@ -4097,7 +4104,7 @@ fn merge_remote_emojis(app: &AppHandle, remote_json: &str) -> AppResult<()> {
     }
 
     let sync_payload =
-        encode_emoji_favorites_setting(&new_json).unwrap_or_else(|| "[]".to_string());
+        encode_emoji_favorites_setting(&new_json, &data_dir).unwrap_or_else(|| "[]".to_string());
     if let Some(hash) = merged_emoji_suppression_hash(&remote_paths, &merged_paths, &sync_payload) {
         LAST_PUSHED_EMOJI_HASH.store(hash, Ordering::Relaxed);
     }
@@ -4127,8 +4134,8 @@ mod tests {
 
     const TEST_PNG_BYTES: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
-        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 15, 4, 0, 9,
-        251, 3, 253, 160, 164, 95, 122, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0,
+        5, 0, 1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
 
     fn make_temp_dir(name: &str) -> PathBuf {
@@ -5209,7 +5216,8 @@ mod tests {
     #[test]
     fn rewrite_rich_html_resources_for_sync_inlines_local_images_and_fallbacks() {
         let dir = make_temp_dir("rich-html");
-        let image_path = dir.join("inline.png");
+        fs::create_dir(dir.join("attachments")).unwrap();
+        let image_path = dir.join("attachments/inline.png");
         fs::write(&image_path, TEST_PNG_BYTES).expect("write test png");
 
         let image_path_str = image_path.to_string_lossy().replace('\\', "/");
@@ -5218,7 +5226,7 @@ mod tests {
             image_path_str, RICH_IMAGE_FALLBACK_PREFIX, image_path_str, RICH_IMAGE_FALLBACK_SUFFIX
         );
 
-        let rewritten = rewrite_rich_html_resources_for_sync(&html);
+        let rewritten = rewrite_rich_html_resources_for_sync(&html, &dir);
 
         assert!(rewritten.contains("src=\"data:image/png;base64,"));
         assert!(rewritten.contains(RICH_IMAGE_FALLBACK_PREFIX));
@@ -5231,7 +5239,8 @@ mod tests {
     #[test]
     fn normalize_item_for_sync_rewrites_rich_html_local_resources() {
         let dir = make_temp_dir("normalize-item");
-        let image_path = dir.join("entry.png");
+        fs::create_dir(dir.join("attachments")).unwrap();
+        let image_path = dir.join("attachments/entry.png");
         fs::write(&image_path, TEST_PNG_BYTES).expect("write test png");
 
         let item = CloudSyncItem {
@@ -5257,12 +5266,51 @@ mod tests {
             pinned_order: 0,
         };
 
-        let normalized = normalize_item_for_sync(item).expect("normalized item");
+        let normalized = normalize_item_for_sync(item, &dir).expect("normalized item");
         let html = normalized.html_content.expect("html content");
 
         assert!(html.contains("src=\"data:image/png;base64,"));
         assert!(!html.contains("entry.png"));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rich_html_sync_rejects_unmanaged_images_and_managed_non_images() {
+        let dir = make_temp_dir("resource-boundary");
+        fs::create_dir(dir.join("attachments")).unwrap();
+        let private = dir.join("private.png");
+        let disguised = dir.join("attachments/private.png");
+        fs::write(&private, TEST_PNG_BYTES).unwrap();
+        fs::write(&disguised, b"private text disguised as an image").unwrap();
+        for path in [&private, &disguised] {
+            let html = format!(
+                "<img src=\"{}\">{}{}{}",
+                path.to_string_lossy(),
+                RICH_IMAGE_FALLBACK_PREFIX,
+                path.to_string_lossy(),
+                RICH_IMAGE_FALLBACK_SUFFIX
+            );
+            assert_eq!(rewrite_rich_html_resources_for_sync(&html, &dir), html);
+            assert!(super::to_data_url_from_path(&path.to_string_lossy(), &dir).is_none());
+        }
+        let raw = serde_json::to_string(&vec![private.to_string_lossy(), disguised.to_string_lossy()])
+            .unwrap();
+        assert_eq!(
+            super::encode_emoji_favorites_setting(&raw, &dir).as_deref(),
+            Some("[]")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn managed_mislabeled_image_sync_uses_actual_mime() {
+        let dir = make_temp_dir("managed-mislabeled-image");
+        fs::create_dir(dir.join("attachments")).unwrap();
+        let source = dir.join("attachments/cache.jpg");
+        fs::write(&source, TEST_PNG_BYTES).unwrap();
+        let encoded = super::to_data_url_from_path(&source.to_string_lossy(), &dir).unwrap();
+        assert!(encoded.starts_with("data:image/png;base64,"));
+        fs::remove_dir_all(dir).unwrap();
     }
 }

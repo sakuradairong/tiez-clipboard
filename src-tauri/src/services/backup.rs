@@ -4,6 +4,7 @@ use crate::error::{AppError, AppResult};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -123,6 +124,63 @@ fn info_from_manifest(manifest: &BackupManifest, path: &Path) -> BackupInfo {
     }
 }
 
+fn validated_backup_path(raw: &str) -> AppResult<PathBuf> {
+    let invalid = || AppError::Validation("备份包含不安全路径".to_string());
+    // Backups use '/' on every platform. Validate Windows semantics even when
+    // inspecting an archive on another host (prefixes, ADS and device names).
+    if raw.is_empty() || raw.contains('\\') {
+        return Err(invalid());
+    }
+    let parts: Vec<&str> = raw.split('/').collect();
+    if !(parts.len() == 1 && parts[0] == DATABASE_NAME)
+        && !(parts.len() > 1 && matches!(parts[0], "attachments" | "emoji_favorites"))
+    {
+        return Err(invalid());
+    }
+    for part in &parts {
+        if part.is_empty()
+            || matches!(*part, "." | "..")
+            || part.ends_with('.')
+            || part.ends_with(' ')
+            || part
+                .chars()
+                .any(|ch| ch.is_control() || "<>:\"|?*".contains(ch))
+        {
+            return Err(invalid());
+        }
+        let stem = part
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ')
+            .to_ascii_uppercase();
+        let numbered_device = stem
+            .strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT"))
+            .is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            });
+        if matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+        ) || numbered_device
+        {
+            return Err(invalid());
+        }
+    }
+    let path = PathBuf::from(raw);
+    if path
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(invalid());
+    }
+    Ok(path)
+}
+
 fn read_and_validate_manifest(path: &Path, verify_hashes: bool) -> AppResult<BackupManifest> {
     let file = File::open(path).map_err(|err| io_error("无法打开备份", err))?;
     let mut archive = ZipArchive::new(file)
@@ -151,21 +209,22 @@ fn read_and_validate_manifest(path: &Path, verify_hashes: bool) -> AppResult<Bac
     if !manifest.files.iter().any(|file| file.path == DATABASE_NAME) {
         return Err(AppError::Validation("备份缺少剪贴板数据库".to_string()));
     }
-    let total_bytes: u64 = manifest.files.iter().map(|entry| entry.size).sum();
+    let total_bytes = manifest.files.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(entry.size)
+            .ok_or_else(|| AppError::Validation("备份解压后体积超过安全限制".to_string()))
+    })?;
     if total_bytes > MAX_RESTORE_BYTES {
         return Err(AppError::Validation(
             "备份解压后体积超过安全限制".to_string(),
         ));
     }
 
+    let mut seen = HashSet::new();
     for expected in &manifest.files {
-        let safe_path = Path::new(&expected.path);
-        if safe_path.is_absolute()
-            || safe_path
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
-        {
-            return Err(AppError::Validation("备份包含不安全路径".to_string()));
+        validated_backup_path(&expected.path)?;
+        if !seen.insert(expected.path.to_lowercase()) {
+            return Err(AppError::Validation("备份包含重复路径".to_string()));
         }
         let mut entry = archive
             .by_name(&expected.path)
@@ -212,15 +271,20 @@ fn validate_database(path: &Path) -> AppResult<()> {
 }
 
 fn extract_backup(path: &Path, destination: &Path, manifest: &BackupManifest) -> AppResult<()> {
+    let safe_paths = manifest
+        .files
+        .iter()
+        .map(|entry| validated_backup_path(&entry.path))
+        .collect::<AppResult<Vec<_>>>()?;
     fs::create_dir_all(destination).map_err(|err| io_error("无法创建恢复暂存目录", err))?;
     let file = File::open(path).map_err(|err| io_error("无法打开待恢复备份", err))?;
     let mut archive = ZipArchive::new(file)
         .map_err(|err| AppError::Validation(format!("备份文件格式无效: {err}")))?;
-    for expected in &manifest.files {
+    for (expected, relative) in manifest.files.iter().zip(safe_paths) {
         let mut entry = archive
             .by_name(&expected.path)
             .map_err(|_| AppError::Validation(format!("备份缺少文件: {}", expected.path)))?;
-        let output = destination.join(&expected.path);
+        let output = destination.join(relative);
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent).map_err(|err| io_error("无法创建恢复目录", err))?;
         }
@@ -494,6 +558,125 @@ mod tests {
         let path = std::env::temp_dir().join(format!("tiez-{label}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).expect("create test directory");
         path
+    }
+
+    #[test]
+    fn backup_paths_reject_windows_escape_aliases_and_streams() {
+        for path in [
+            r"\outside.txt",
+            r"C:outside.txt",
+            r"C:\outside.txt",
+            r"\\server\share\outside.txt",
+            r"\\?\C:\outside.txt",
+            "/outside.txt",
+            "attachments/../outside.txt",
+            "attachments/./file.png",
+            "attachments//file.png",
+            "attachments/file.png:secret",
+            "attachments/file.png.",
+            "attachments/file.png ",
+            "attachments/NUL.png",
+            "attachments/con .txt",
+            "attachments/COM1.png",
+            "attachments/LPT¹.txt",
+            "settings.json",
+            "clipboard.db/extra",
+            "attachments",
+            "attachments/file\0.png",
+        ] {
+            assert!(
+                validated_backup_path(path).is_err(),
+                "unsafe backup path: {path:?}"
+            );
+        }
+        for path in [
+            "clipboard.db",
+            "attachments/image.png",
+            "attachments/subdir/照片.webp",
+            "emoji_favorites/收藏.gif",
+            "attachments/COM10.png",
+        ] {
+            assert_eq!(
+                validated_backup_path(path).expect("valid managed file"),
+                PathBuf::from(path)
+            );
+        }
+    }
+
+    fn write_path_test_archive(archive_path: &Path, names: &[&str]) -> BackupManifest {
+        let payload = b"safe test payload";
+        let manifest = BackupManifest {
+            format_version: BACKUP_FORMAT_VERSION,
+            app_version: "test".to_string(),
+            created_at: 1,
+            source_data_path: "unused".to_string(),
+            entry_count: 0,
+            files: names
+                .iter()
+                .map(|name| BackupFileEntry {
+                    path: (*name).to_string(),
+                    size: payload.len() as u64,
+                    sha256: format!("{:x}", Sha256::digest(payload)),
+                })
+                .collect(),
+        };
+        let mut archive =
+            ZipWriter::new(File::create(archive_path).expect("create path test archive"));
+        for name in names {
+            archive
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("start path test entry");
+            archive.write_all(payload).expect("write path test entry");
+        }
+        archive
+            .start_file(MANIFEST_NAME, SimpleFileOptions::default())
+            .expect("start path manifest");
+        archive
+            .write_all(&serde_json::to_vec(&manifest).expect("serialize path manifest"))
+            .expect("write path manifest");
+        archive.finish().expect("finish path archive");
+        manifest
+    }
+
+    #[test]
+    fn invalid_pending_path_is_quarantined_before_any_extraction() {
+        let root = test_dir("backup-unsafe-path");
+        let pending = root.join(PENDING_BACKUP_NAME);
+        let manifest =
+            write_path_test_archive(&pending, &[DATABASE_NAME, "attachments/file.txt:secret"]);
+        let current_db = root.join(DATABASE_NAME);
+        fs::write(&current_db, "current database must survive").expect("write current sentinel");
+        let staging = root.join("extract-test");
+        assert!(extract_backup(&pending, &staging, &manifest).is_err());
+        assert!(
+            !staging.exists(),
+            "all paths must be checked before extraction starts"
+        );
+        apply_pending_restore(&root).expect("quarantine unsafe backup");
+        assert!(!pending.exists());
+        assert_eq!(
+            fs::read_to_string(current_db).expect("read current sentinel"),
+            "current database must survive"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backup_manifest_rejects_windows_case_aliases() {
+        let root = test_dir("backup-duplicate-path");
+        let archive = root.join("duplicate.tiez-backup");
+        write_path_test_archive(
+            &archive,
+            &[
+                DATABASE_NAME,
+                "attachments/image.png",
+                "attachments/IMAGE.png",
+            ],
+        );
+        let error =
+            read_and_validate_manifest(&archive, true).expect_err("reject Windows path aliases");
+        assert!(error.to_string().contains("重复路径"));
+        let _ = fs::remove_dir_all(root);
     }
 
     fn write_test_backup(

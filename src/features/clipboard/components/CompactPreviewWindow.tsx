@@ -24,6 +24,7 @@ import { getRichTextSnapshotDataUrl } from "../../../shared/lib/richTextSnapshot
 
 type PreviewPayload = {
     contentType: string;
+    isSensitiveHidden?: boolean;
     content: string;
     preview?: string;
     htmlContent?: string;
@@ -294,6 +295,12 @@ const CompactPreviewWindow = () => {
         })();
         compactPreviewLog("listen compact-preview-update");
         const unlisten = listen<PreviewPayload>("compact-preview-update", (event) => {
+            if (event.payload.isSensitiveHidden) {
+                lastSentSizeRef.current = null;
+                setPayload(null);
+                void getCurrentWindow().hide();
+                return;
+            }
             compactPreviewLog("received compact-preview-update", {
                 contentType: event.payload.contentType,
                 contentLength: event.payload.content?.length ?? 0,
@@ -304,6 +311,11 @@ const CompactPreviewWindow = () => {
             setPayload(event.payload);
             applyTheme(event.payload);
         });
+        const unlistenClear = listen("compact-preview-clear", () => {
+            lastSentSizeRef.current = null;
+            setPayload(null);
+            void getCurrentWindow().hide();
+        });
         emitTo("main", "compact-preview-mounted", true)
             .then(() => compactPreviewLog("emit compact-preview-mounted"))
             .catch((err) => {
@@ -313,6 +325,7 @@ const CompactPreviewWindow = () => {
         return () => {
             compactPreviewLog("window unmount cleanup");
             unlisten.then((f) => f());
+            unlistenClear.then((f) => f());
         };
     }, []);
 

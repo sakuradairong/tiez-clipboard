@@ -124,6 +124,8 @@ fn get_app_path_for_content_type(
 }
 
 async fn handle_url_content(app_path: &Option<String>, content: &str) -> Result<(), AppError> {
+    let normalized_url = normalize_external_url(content)?;
+    let content = normalized_url.as_str();
     if let Some(app) = app_path {
         if std::path::Path::new(app).exists() {
             Command::new(app)
@@ -176,11 +178,7 @@ async fn handle_url_content(app_path: &Option<String>, content: &str) -> Result<
 async fn launch_default_handler(content: &str) -> Result<(), AppError> {
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "start", "", content])
-            .creation_flags(0x08000000);
-        cmd.spawn()
-            .map_err(|e| AppError::Internal(format!("启动默认浏览器失败: {}", e)))?;
+        launch_with_default_app(content, "url", false)?;
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -191,6 +189,27 @@ async fn launch_default_handler(content: &str) -> Result<(), AppError> {
             .map_err(|e| AppError::Internal(format!("启动默认浏览器失败: {}", e)))?;
     }
     Ok(())
+}
+
+fn normalize_external_url(content: &str) -> Result<String, AppError> {
+    let value = content.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(AppError::Validation("链接为空或包含控制字符".to_string()));
+    }
+
+    let value = if value.to_ascii_lowercase().starts_with("www.") {
+        format!("https://{}", value)
+    } else {
+        value.to_string()
+    };
+    let url = reqwest::Url::parse(&value)
+        .map_err(|_| AppError::Validation("链接格式无效".to_string()))?;
+    match url.scheme() {
+        "http" | "https" | "ftp" | "ftps" if url.host_str().is_some() => {}
+        "mailto" if !url.path().is_empty() => {}
+        _ => return Err(AppError::Validation("不支持打开此链接协议".to_string())),
+    }
+    Ok(url.to_string())
 }
 
 fn is_file_type(content_type: &str) -> bool {
@@ -228,11 +247,19 @@ fn create_temp_file(
             let is_gif = content.contains("image/gif")
                 || (bytes.len() > 6
                     && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")));
-            let extension = if is_gif { "gif" } else { "png" };
+            let is_animated_webp =
+                crate::services::clipboard::is_animated_webp_payload(&bytes);
+            let extension = if is_gif {
+                "gif"
+            } else if is_animated_webp {
+                "webp"
+            } else {
+                "png"
+            };
             temp_path.push(format!("{}.{}", filename, extension));
 
-            if is_gif {
-                // For GIFs, write raw bytes directly to preserve animation
+            if is_gif || is_animated_webp {
+                // Keep original animated bytes — image crate would flatten frames.
                 std::fs::write(&temp_path, &bytes).map_err(AppError::from)?;
             } else {
                 // For other images, use image crate to ensure standard peak format
@@ -442,6 +469,12 @@ fn read_image_file(file_path: &std::path::Path, new_content: &mut String) -> boo
                 return true;
             }
 
+            if crate::services::clipboard::is_animated_webp_payload(&buffer) {
+                let b64 = general_purpose::STANDARD.encode(&buffer);
+                *new_content = format!("data:image/webp;base64,{}", b64);
+                return true;
+            }
+
             if let Ok(img) = image::load_from_memory(&buffer) {
                 use std::io::Cursor;
                 let mut bytes: Vec<u8> = Vec::new();
@@ -538,6 +571,43 @@ fn update_database_with_changes(
             let _ = app_handle.emit("clipboard-changed", id);
             println!("Database updated for id: {}", id);
             crate::services::cloud_sync::request_cloud_sync(app_handle.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_external_url;
+
+    #[test]
+    fn external_urls_preserve_query_separators_without_shell_encoding() {
+        assert_eq!(
+            normalize_external_url("https://example.test/?x=1&ver").unwrap(),
+            "https://example.test/?x=1&ver"
+        );
+        assert_eq!(
+            normalize_external_url(" www.example.test/path?a=1&b=2 ").unwrap(),
+            "https://www.example.test/path?a=1&b=2"
+        );
+        for url in ["ftp://example.test/file", "ftps://example.test/file", "mailto:user@example.test"] {
+            assert!(normalize_external_url(url).is_ok());
+        }
+    }
+
+    #[test]
+    fn external_urls_reject_local_and_executable_protocols() {
+        for url in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "data:text/html,hello",
+            "ms-msdt:/id PCWDiagnostic",
+            "C:\\Windows\\System32\\cmd.exe",
+            "https://example.test/\n&ver",
+            "https://example.test/\0",
+            "mailto:",
+            "",
+        ] {
+            assert!(normalize_external_url(url).is_err(), "accepted {url:?}");
         }
     }
 }

@@ -47,6 +47,12 @@ pub fn get_mqtt_running() -> bool {
     MQTT_RUNNING.load(Ordering::Relaxed)
 }
 
+fn reconnect_delay_secs(attempts: u32) -> u64 {
+    // The fifth retry already reaches the cap. Bound the exponent before any
+    // arithmetic so long outages never overflow or reset the delay to zero.
+    (5 * (1_u64 << attempts.saturating_sub(1).min(4))).min(60)
+}
+
 // Force restart MQTT client by setting running flag to false
 pub fn restart_mqtt_client(app: AppHandle) {
     info!(">>> [MQTT] Restart requested.");
@@ -428,8 +434,7 @@ pub fn start_mqtt_client(app: AppHandle) {
                     let _ = app.emit("mqtt-status", "disconnected");
 
                     // Cap backoff at 60 seconds
-                    let wait_secs =
-                        (5 * u64::pow(2, (current_attempts as u32).saturating_sub(1))).min(60);
+                    let wait_secs = reconnect_delay_secs(current_attempts);
                     info!(
                         ">>> [MQTT] Retrying in {}s (Attempt {})...",
                         wait_secs, current_attempts
@@ -562,4 +567,20 @@ pub fn start_mqtt_client(app: AppHandle) {
             sleep(Duration::from_secs(5)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconnect_delay_secs;
+
+    #[test]
+    fn reconnect_backoff_stays_capped_after_long_outages() {
+        assert_eq!(reconnect_delay_secs(1), 5);
+        assert_eq!(reconnect_delay_secs(2), 10);
+        assert_eq!(reconnect_delay_secs(3), 20);
+        assert_eq!(reconnect_delay_secs(4), 40);
+        for attempts in [5, 62, 63, 64, 65, 66, u32::MAX] {
+            assert_eq!(reconnect_delay_secs(attempts), 60);
+        }
+    }
 }

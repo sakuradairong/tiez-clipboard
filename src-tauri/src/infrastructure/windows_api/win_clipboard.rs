@@ -866,11 +866,43 @@ pub unsafe fn set_clipboard_image_and_gif(
     result
 }
 
-/// Set image with multiple formats: GIF (optional), PNG (optional), and DIB
+/// Local sniff for animated WebP so this Win32 module does not depend on the
+/// clipboard service. Matches VP8X animation bit / ANIM / ANMF; rejects VP8/VP8L.
+fn is_animated_webp_clipboard_bytes(data: &[u8]) -> bool {
+    if data.len() < 12 || !data.starts_with(b"RIFF") || data[8..12] != *b"WEBP" {
+        return false;
+    }
+    let mut offset = 12usize;
+    while offset.saturating_add(8) <= data.len() {
+        let chunk = &data[offset..offset + 4];
+        let size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let payload_start = offset + 8;
+        if chunk == b"VP8X" {
+            return payload_start < data.len() && data[payload_start] & 0x02 != 0;
+        }
+        if chunk == b"ANIM" || chunk == b"ANMF" {
+            return true;
+        }
+        if chunk == b"VP8 " || chunk == b"VP8L" {
+            return false;
+        }
+        let padded = size + (size & 1);
+        if padded == 0 {
+            break;
+        }
+        offset = match payload_start.checked_add(padded) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    false
+}
+
+/// Set image with multiple formats: animated GIF/WebP (optional), PNG (optional), and DIB
 /// This maximizes compatibility with different applications
-/// For GIF: Also sets CF_HDROP with temp file path (WeChat/QQ need this for animated GIFs).
-/// Callers should omit `png_data` when `gif_data` is set — many apps prefer PNG and would
-/// otherwise paste a static frame instead of the animated GIF.
+/// For animated images: Also sets CF_HDROP with a temp file path (WeChat/QQ need this).
+/// Callers should omit `png_data` when animated bytes are set — many apps prefer PNG and
+/// would otherwise paste a static frame instead of the animation.
 pub unsafe fn set_clipboard_image_with_formats(
     image: ImageData,
     gif_data: Option<&[u8]>,
@@ -878,18 +910,31 @@ pub unsafe fn set_clipboard_image_with_formats(
 ) -> Result<Option<String>, String> {
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 
-    // For GIF, create temp file first (before opening clipboard)
-    let gif_temp_path: Option<String> = if let Some(gif_bytes) = gif_data {
+    let animated_kind = gif_data.and_then(|bytes| {
+        if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            Some("gif")
+        } else if is_animated_webp_clipboard_bytes(bytes) {
+            Some("webp")
+        } else {
+            None
+        }
+    });
+
+    // Create temp file first (before opening clipboard)
+    let gif_temp_path: Option<String> = if let (Some(animated_bytes), Some(ext)) =
+        (gif_data, animated_kind)
+    {
         let temp_dir = std::env::temp_dir();
         let filename = format!(
-            "TieZ_GIF_{}.gif",
+            "TieZ_Clip_{}.{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_millis()
+                .as_millis(),
+            ext
         );
         let path = temp_dir.join(filename);
-        if std::fs::write(&path, gif_bytes).is_ok() {
+        if std::fs::write(&path, animated_bytes).is_ok() {
             path.to_str().map(|s| s.to_string())
         } else {
             None
@@ -905,7 +950,7 @@ pub unsafe fn set_clipboard_image_with_formats(
     let result = (|| {
         let _ = EmptyClipboard();
 
-        // 1. Set CF_HDROP for GIF (WeChat/QQ need file path for animated GIF)
+        // 1. Set CF_HDROP for animated GIF/WebP (WeChat/QQ need a file path)
         if let Some(ref path) = gif_temp_path {
             let mut buffer: Vec<u16> = Vec::new();
             buffer.extend(path.encode_utf16());
@@ -936,27 +981,31 @@ pub unsafe fn set_clipboard_image_with_formats(
             }
         }
 
-        // 2. Set GIF formats (if available)
-        if let Some(gif_bytes) = gif_data {
-            let gif_format_names = [
-                "GIF",
-                "Animated GIF",
-                "gif",
-                "image/gif",
-                "Graphics Interchange Format",
-            ];
+        // 2. Set animated GIF/WebP formats only when the payload kind is known
+        if let (Some(animated_bytes), Some(kind)) = (gif_data, animated_kind) {
+            let format_names: &[&str] = match kind {
+                "webp" => &["image/webp", "WebP", "webp"],
+                "gif" => &[
+                    "GIF",
+                    "Animated GIF",
+                    "gif",
+                    "image/gif",
+                    "Graphics Interchange Format",
+                ],
+                _ => &[],
+            };
 
-            for name in gif_format_names {
+            for name in format_names {
                 let name_w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
                 let format_id = RegisterClipboardFormatW(windows::core::PCWSTR(name_w.as_ptr()));
                 if format_id != 0 {
-                    if let Ok(h_global) = GlobalAlloc(GHND, gif_bytes.len()) {
+                    if let Ok(h_global) = GlobalAlloc(GHND, animated_bytes.len()) {
                         let p_mem = GlobalLock(h_global);
                         if !p_mem.is_null() {
                             std::ptr::copy_nonoverlapping(
-                                gif_bytes.as_ptr(),
+                                animated_bytes.as_ptr(),
                                 p_mem as *mut u8,
-                                gif_bytes.len(),
+                                animated_bytes.len(),
                             );
                             let _ = GlobalUnlock(h_global);
                             let _ = SetClipboardData(

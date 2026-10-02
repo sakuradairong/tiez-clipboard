@@ -59,11 +59,11 @@ function setup(length: number, base: number, selected = 0, keyboardMode = false)
   return {
     copyToClipboard,
     selected: () => selected,
-    key: async (key: string) => {
+    key: async (key: string, overrides: Partial<KeyboardEvent> = {}) => {
       await keyHandler({
         key, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
         target: { tagName: "DIV", classList: { contains: () => false } },
-        preventDefault: () => {}, stopPropagation: () => {}
+        preventDefault: () => {}, stopPropagation: () => {}, ...overrides
       } as unknown as KeyboardEvent);
       render();
     },
@@ -79,6 +79,26 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   native.handler = undefined;
+});
+
+describe("IME candidate confirmation", () => {
+  it.each([
+    { isComposing: true },
+    { isComposing: false, keyCode: 229 }
+  ])("leaves composing Enter untouched (%j)", async (composition) => {
+    const nav = setup(2, 0, 0, true);
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    await nav.key("Enter", {
+      ...composition,
+      target: { tagName: "INPUT", classList: { contains: () => true } } as unknown as EventTarget,
+      preventDefault, stopPropagation
+    });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(stopPropagation).not.toHaveBeenCalled();
+    expect(nav.copyToClipboard).not.toHaveBeenCalled();
+    expect(nav.selected()).toBe(0);
+  });
 });
 
 describe("collapsed pinned keyboard selection", () => {

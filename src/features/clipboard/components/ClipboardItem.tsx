@@ -48,6 +48,7 @@ import { getRichTextSnapshotDataUrl } from "../../../shared/lib/richTextSnapshot
 import { getFileIcon as getSystemFileIcon, peekFileIcon } from "../../../shared/lib/fileIcon";
 import { getSourceAppIcon, peekSourceAppIcon } from "../../../shared/lib/sourceAppIcon";
 import { registerCompactPreviewControls } from "../lib/compactPreviewControls";
+import { hasSensitiveTag } from "../../../shared/lib/sensitiveTags";
 
 const COMPACT_PREVIEW_LABEL = "compact-preview";
 const RICH_IMAGE_FALLBACK_PREFIX = "<!--TIEZ_RICH_IMAGE:";
@@ -155,6 +156,9 @@ let compactPreviewMountedPromise: Promise<boolean> | null = null;
 let compactPreviewResizeListener: Promise<() => void> | null = null;
 let compactPreviewPendingShow = false;
 let compactPreviewPendingAnchor: CompactPreviewAnchor | null = null;
+let compactPreviewPendingIsCurrent: (() => boolean) | null = null;
+let compactPreviewGeneration = 0;
+let compactPreviewOwner: object | null = null;
 let compactPreviewPendingTimer: ReturnType<typeof setTimeout> | null = null;
 let compactPreviewLifecycleListenersReady: Promise<void> | null = null;
 
@@ -173,6 +177,8 @@ const clearCompactPreviewPendingState = () => {
     }
     compactPreviewPendingShow = false;
     compactPreviewPendingAnchor = null;
+    compactPreviewPendingIsCurrent = null;
+    compactPreviewGeneration += 1;
 };
 
 const resolveAnchorPhysical = async (
@@ -281,6 +287,13 @@ const placeAndShowPendingCompactPreview = async (
         return;
     }
 
+    const previewWindow = compactPreviewWindow;
+    const anchor = compactPreviewPendingAnchor;
+    const generation = compactPreviewGeneration;
+    const requestIsCurrent = compactPreviewPendingIsCurrent;
+    const isCurrent = () => generation === compactPreviewGeneration && !!requestIsCurrent?.();
+    if (!isCurrent()) return;
+
     const appWindow = getCurrentWindow();
     const scale = await appWindow.scaleFactor();
     const monitor = await currentMonitor();
@@ -291,7 +304,7 @@ const placeAndShowPendingCompactPreview = async (
 
     const widthPx = Math.round(widthLogical * scale);
     const heightPx = Math.round(heightLogical * scale);
-    const anchorPx = await resolveAnchorPhysical(compactPreviewPendingAnchor, scale);
+    const anchorPx = await resolveAnchorPhysical(anchor, scale);
     const mainOuter = await appWindow.outerPosition().catch(() => null);
     const mainSize = await appWindow.outerSize().catch(() => null);
     const avoidRect =
@@ -326,28 +339,36 @@ const placeAndShowPendingCompactPreview = async (
         scale
     });
 
+    if (!isCurrent()) return;
     setIgnoreBlurSafe(true);
     try {
-        await compactPreviewWindow.setPosition(new PhysicalPosition(target.x, target.y));
-        await compactPreviewWindow.show();
+        await previewWindow.setPosition(new PhysicalPosition(target.x, target.y));
+        if (!isCurrent()) return;
+        await previewWindow.show();
+        if (!isCurrent()) {
+            await previewWindow.hide();
+            return;
+        }
         // Force top-most z-order refresh so preview is not occluded by the main top-most window.
         // macOS skips this toggle because frequent style-mask sync can cause UI stalls.
         if (!IS_MACOS) {
             try {
-                await compactPreviewWindow.setAlwaysOnTop(false);
-                await compactPreviewWindow.setAlwaysOnTop(true);
+                await previewWindow.setAlwaysOnTop(false);
+                if (!isCurrent()) return;
+                await previewWindow.setAlwaysOnTop(true);
                 compactPreviewLog("refresh always-on-top stacking done");
             } catch (stackErr) {
                 compactPreviewLog("refresh always-on-top stacking failed", stackErr);
             }
         }
-        const visible = await compactPreviewWindow.isVisible().catch(() => null);
+        const visible = await previewWindow.isVisible().catch(() => null);
         compactPreviewLog("preview window shown", { visible, target });
     } catch (err) {
         setIgnoreBlurSafe(false);
         compactPreviewLog("preview show failed", err);
         throw err;
     }
+    if (!isCurrent()) return;
     if (options?.keepPending) {
         compactPreviewLog("keep pending state after place/show", { widthLogical, heightLogical });
     } else {
@@ -359,11 +380,13 @@ const hideCompactPreviewGlobal = async () => {
     const previewWindow = compactPreviewWindow;
     compactPreviewLog("hide preview requested", { hasWindow: !!previewWindow });
     clearCompactPreviewPendingState();
+    compactPreviewOwner = null;
     setIgnoreBlurSafe(false);
 
     if (!previewWindow) return;
 
     try {
+        await previewWindow.emit("compact-preview-clear").catch(() => {});
         await previewWindow.hide();
         const visible = await previewWindow.isVisible().catch(() => null);
         compactPreviewLog("preview window hidden", { visible });
@@ -757,6 +780,8 @@ const ClipboardItem = ({
     const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverAnchorRef = useRef<CompactPreviewAnchor | null>(null);
     const hoverRequestIdRef = useRef(0);
+    const previewOwnerRef = useRef({});
+    const previewAllowedRef = useRef(false);
     const richTextFallback = useMemo(
         () => item.content_type === "rich_text" && item.html_content
         ? (() => {
@@ -1025,11 +1050,14 @@ const ClipboardItem = ({
     const compactPreviewEnabled =
         compactMode &&
         COMPACT_PREVIEW_WINDOW_SUPPORTED &&
-        item.content_type !== "file";
+        item.content_type !== "file" &&
+        !isSensitiveHidden;
+    previewAllowedRef.current = !!compactPreviewEnabled;
 
     const isHoverPreviewRequestCurrent = (requestId: number) => {
         const node = itemRef.current;
         return (
+            previewAllowedRef.current &&
             hoverRequestIdRef.current === requestId &&
             !!hoverAnchorRef.current &&
             !!node &&
@@ -1133,13 +1161,18 @@ const ClipboardItem = ({
             }
             compactPreviewPendingShow = true;
             compactPreviewPendingAnchor = anchor;
+            compactPreviewOwner = previewOwnerRef.current;
+            compactPreviewGeneration += 1;
+            compactPreviewPendingIsCurrent = () => isHoverPreviewRequestCurrent(requestId);
             compactPreviewLog("emit compact-preview-update", {
                 itemId: item.id,
                 contentType: item.content_type,
+                isSensitiveHidden,
                 hasHtml: !!item.html_content
             });
             await previewWindow.emit("compact-preview-update", {
                 contentType: item.content_type,
+                isSensitiveHidden,
                 content: item.content,
                 preview: item.preview,
                 htmlContent: item.html_content,
@@ -1154,6 +1187,7 @@ const ClipboardItem = ({
                 clipboardTagFontSize
             });
             compactPreviewLog("emit compact-preview-update done");
+            if (!isHoverPreviewRequestCurrent(requestId)) return;
             if (compactPreviewPendingTimer) {
                 clearTimeout(compactPreviewPendingTimer);
             }
@@ -1189,9 +1223,13 @@ const ClipboardItem = ({
                 try {
                     compactPreviewPendingShow = true;
                     compactPreviewPendingAnchor = anchor;
+                    compactPreviewOwner = previewOwnerRef.current;
+                    compactPreviewGeneration += 1;
+                    compactPreviewPendingIsCurrent = () => isHoverPreviewRequestCurrent(requestId);
                     compactPreviewLog("emit compact-preview-update after recreate");
                     await previewWindow.emit("compact-preview-update", {
                         contentType: item.content_type,
+                        isSensitiveHidden,
                         content: item.content,
                         preview: item.preview,
                         htmlContent: item.html_content,
@@ -1204,6 +1242,7 @@ const ClipboardItem = ({
                         colorMode: document.documentElement.classList.contains("dark-mode") ? "dark" : "light"
                     });
                     compactPreviewLog("emit compact-preview-update after recreate done");
+                    if (!isHoverPreviewRequestCurrent(requestId)) return;
                     if (compactPreviewPendingTimer) {
                         clearTimeout(compactPreviewPendingTimer);
                     }
@@ -1288,14 +1327,29 @@ const ClipboardItem = ({
 
     useEffect(() => {
         if (!compactPreviewEnabled) {
-            void hideCompactPreview();
+            cancelHoverPreview();
+            if (compactPreviewOwner === previewOwnerRef.current) {
+                void hideCompactPreviewGlobal();
+            }
         }
     }, [compactPreviewEnabled]);
+
+    // Invalidate closures before pending native awaits can show stale or newly hidden content.
+    useLayoutEffect(() => {
+        return () => {
+            cancelHoverPreview();
+            if (compactPreviewOwner === previewOwnerRef.current) {
+                void hideCompactPreviewGlobal();
+            }
+        };
+    }, [item.id, item.content, item.html_content, item.tags, isSensitiveHidden, compactMode]);
 
     useEffect(() => {
         return () => {
             cancelHoverPreview();
-            void hideCompactPreviewGlobal();
+            if (compactPreviewOwner === previewOwnerRef.current) {
+                void hideCompactPreviewGlobal();
+            }
         };
     }, []);
 
@@ -1713,7 +1767,7 @@ const ClipboardItem = ({
 
                 <div className="item-meta-right">
                     <div className="item-actions">
-                        {(item.tags?.includes('sensitive') || item.tags?.includes('密码') || item.tags?.includes('password')) && (
+                        {hasSensitiveTag(item.tags) && (
                             <button
                                 className={`btn-icon ${isRevealed ? "active" : ""}`}
                                 onClick={onToggleReveal}
@@ -2168,6 +2222,10 @@ export default memo(ClipboardItem, (prevProps, nextProps) => {
         prevProps.item.file_preview_exists === nextProps.item.file_preview_exists &&
         prevProps.item.tags === nextProps.item.tags &&
         prevProps.isRevealed === nextProps.isRevealed &&
+        prevProps.isSensitiveHidden === nextProps.isSensitiveHidden &&
+        prevProps.sensitiveMaskPrefixVisible === nextProps.sensitiveMaskPrefixVisible &&
+        prevProps.sensitiveMaskSuffixVisible === nextProps.sensitiveMaskSuffixVisible &&
+        prevProps.sensitiveMaskEmailDomain === nextProps.sensitiveMaskEmailDomain &&
         prevProps.isEditingTags === nextProps.isEditingTags &&
         prevProps.isAIProcessing === nextProps.isAIProcessing &&
         prevProps.aiOptionsOpen === nextProps.aiOptionsOpen &&

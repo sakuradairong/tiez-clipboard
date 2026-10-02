@@ -16,11 +16,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::app_state::{SessionHistory, SettingsState};
+use crate::app_state::{AppDataDir, SessionHistory, SettingsState};
 use crate::database::ClipboardEntry;
 use crate::database::DbState;
 use crate::infrastructure::repository::clipboard_repo::ClipboardRepository;
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use crate::services::local_image_resource::read_local_image;
 pub use models::*;
 pub use utils::*;
 
@@ -398,6 +399,21 @@ pub fn append_message(
     let _ = app.emit("new-chat-message", msg);
 }
 
+fn import_received_image_for_history(
+    source: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> Option<String> {
+    // This file was explicitly received through the transfer endpoint. Trust its
+    // receiving directory only here; HTML and cloud paths retain their scopes.
+    let receiving_dir = source.parent()?.to_path_buf();
+    let image = read_local_image(source, &[receiving_dir], 16 * 1024 * 1024)?;
+    let payload = base64::engine::general_purpose::STANDARD.encode(image.bytes);
+    crate::database::save_image_to_file(
+        &format!("data:{};base64,{}", image.mime, payload),
+        data_dir,
+    )
+}
+
 pub async fn register_received_file(
     app_handle: &AppHandle,
     final_path: std::path::PathBuf,
@@ -434,6 +450,13 @@ pub async fn register_received_file(
         Some(&saved_path),
     );
     if settings.auto_copy_file.load(Ordering::Relaxed) {
+        let imported_image = if is_image {
+            let app_data = app_handle.state::<AppDataDir>();
+            let data_dir = app_data.0.lock().ok().map(|dir| dir.clone());
+            data_dir.and_then(|dir| import_received_image_for_history(&final_path, &dir))
+        } else {
+            None
+        };
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -441,7 +464,7 @@ pub async fn register_received_file(
         let entry = ClipboardEntry {
             id: 0,
             content_type: type_enum.to_string(),
-            content: saved_path.clone(),
+            content: imported_image.clone().unwrap_or_else(|| saved_path.clone()),
             html_content: None,
             source_app: "File Transfer".to_string(),
             source_app_path: None,
@@ -450,7 +473,7 @@ pub async fn register_received_file(
             is_pinned: false,
             tags: Vec::new(),
             use_count: 0,
-            is_external: false,
+            is_external: imported_image.is_some(),
             pinned_order: 0,
             file_preview_exists: true,
         };
@@ -459,6 +482,7 @@ pub async fn register_received_file(
             if let Ok(id) = db_state.repo.save(&entry, None) {
                 if id != 0 {
                     let _ = app_handle.emit("clipboard-changed", id);
+                    crate::services::cloud_sync::request_cloud_sync(app_handle.clone());
                 }
             }
         } else {
@@ -514,4 +538,65 @@ pub fn get_file_server_status(app_handle: AppHandle) -> StatusPayload {
 #[tauri::command]
 pub fn get_app_logo(app_handle: AppHandle) -> String {
     get_app_logo_base64(&app_handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_received_image_for_history;
+    use crate::services::local_image_resource::{managed_image_roots, read_local_image};
+    use std::fs;
+    use std::io::Cursor;
+    use std::path::Path;
+
+    #[test]
+    fn received_image_history_uses_managed_copy_and_preserves_download() {
+        let root =
+            std::env::temp_dir().join(format!("tiez-transfer-image-{}", uuid::Uuid::new_v4()));
+        let downloads = root.join("downloads");
+        let data_dir = root.join("data");
+        fs::create_dir_all(&downloads).expect("create receiving directory");
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("encode transfer fixture");
+        let bytes = png.into_inner();
+        let source = downloads.join("received.jpg");
+        fs::write(&source, &bytes).expect("write received mislabeled image");
+        let managed =
+            import_received_image_for_history(&source, &data_dir).expect("import received image");
+        assert!(Path::new(&managed).starts_with(data_dir.join("attachments")));
+        assert_eq!(
+            Path::new(&managed).extension().and_then(|ext| ext.to_str()),
+            Some("png")
+        );
+        assert_eq!(
+            fs::read(&source).expect("original download still exists"),
+            bytes
+        );
+        assert_eq!(fs::read(&managed).expect("managed image exists"), bytes);
+        assert!(
+            read_local_image(
+                Path::new(&managed),
+                &managed_image_roots(&data_dir),
+                16 * 1024 * 1024
+            )
+            .is_some(),
+            "history image must satisfy the cloud resource boundary"
+        );
+        fs::remove_dir_all(root).expect("remove transfer fixture");
+    }
+
+    #[test]
+    fn received_non_image_is_not_imported_by_declared_mime() {
+        let root =
+            std::env::temp_dir().join(format!("tiez-transfer-non-image-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("create transfer fixture");
+        let source = root.join("received.png");
+        let data_dir = root.join("data");
+        fs::write(&source, b"private text").expect("write disguised transfer file");
+        assert!(import_received_image_for_history(&source, &data_dir).is_none());
+        assert!(!data_dir.join("attachments").exists());
+        assert_eq!(fs::read(&source).expect("source retained"), b"private text");
+        fs::remove_dir_all(root).expect("remove transfer fixture");
+    }
 }

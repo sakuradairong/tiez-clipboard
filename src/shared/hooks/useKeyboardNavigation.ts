@@ -99,6 +99,8 @@ export const useKeyboardNavigation = ({
     let isPastingLocal = false;
 
     const handleKeyDown = async (e: KeyboardEvent) => {
+      // Candidate confirmation belongs to the IME, including WebView's 229 fallback.
+      if (e.isComposing || e.keyCode === 229) return;
       if (!isWindowVisibleRef.current) return;
       if (isPastingLocal) {
         e.preventDefault();
@@ -272,4 +274,3 @@ export const useKeyboardNavigation = ({
     showTagManager
   ]);
 };
-

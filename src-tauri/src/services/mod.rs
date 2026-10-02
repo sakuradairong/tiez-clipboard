@@ -8,6 +8,7 @@ pub mod content_handler;
 pub mod encryption_queue;
 pub mod file_transfer;
 pub mod image_analysis;
+pub(crate) mod local_image_resource;
 pub mod mqtt_sub;
 pub mod paste_queue;
 pub mod relay_key;

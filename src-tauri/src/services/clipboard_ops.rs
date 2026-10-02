@@ -310,7 +310,10 @@ pub async fn copy_to_clipboard(
             &current_type,
             html_content.as_deref(),
         );
-        handle_window_focus_for_paste(&app_handle).await?;
+        handle_window_focus_for_paste(&app_handle).await.map_err(|error| {
+            clear_recent_paste_marker(&app_handle);
+            error
+        })?;
     }
 
     // 2. Copy to system clipboard
@@ -321,7 +324,12 @@ pub async fn copy_to_clipboard(
         paste_with_format
             .unwrap_or(current_type == "rich_text" && html_content.as_deref().is_some()),
     )
-    .await?;
+    .await.map_err(|error| {
+        if paste {
+            clear_recent_paste_marker(&app_handle);
+        }
+        error
+    })?;
 
     // 3. Perform paste action if requested
     if paste {
@@ -352,15 +360,25 @@ pub async fn paste_text_directly(app_handle: tauri::AppHandle, content: String) 
     #[cfg(not(target_os = "windows"))]
     remember_recent_paste(&app_handle, &content, "text", None);
 
-    handle_window_focus_for_paste(&app_handle).await?;
+    handle_window_focus_for_paste(&app_handle).await.map_err(|error| {
+        clear_recent_paste_marker(&app_handle);
+        error
+    })?;
 
     #[cfg(not(target_os = "windows"))]
-    prepare_clipboard_payload(&content, "text", None, false).await?;
+    prepare_clipboard_payload(&content, "text", None, false).await.map_err(|error| {
+        clear_recent_paste_marker(&app_handle);
+        error
+    })?;
 
     #[cfg(not(target_os = "windows"))]
     let temporary_clipboard = capture_clipboard_snapshot();
 
     let paste_result = send_paste_keystroke("game_mode", Some(&content), Some("text"));
+
+    if paste_result.is_err() {
+        clear_recent_paste_marker(&app_handle);
+    }
 
     if paste_result.is_ok() {
         hide_window_after_paste(&app_handle).await;
@@ -444,7 +462,10 @@ pub async fn paste_content_transiently(
         &current_type,
         html_content.as_deref(),
     );
-    handle_window_focus_for_paste(&app_handle).await?;
+    handle_window_focus_for_paste(&app_handle).await.map_err(|error| {
+        clear_recent_paste_marker(&app_handle);
+        error
+    })?;
 
     prepare_clipboard_payload(
         &content,
@@ -453,7 +474,10 @@ pub async fn paste_content_transiently(
         paste_with_format
             .unwrap_or(current_type == "rich_text" && html_content.as_deref().is_some()),
     )
-    .await?;
+    .await.map_err(|error| {
+        clear_recent_paste_marker(&app_handle);
+        error
+    })?;
     let temporary_clipboard = capture_clipboard_snapshot();
 
     let paste_result = perform_paste_action(
@@ -497,6 +521,7 @@ pub async fn paste_history_item_by_index(
         (index + 1) as i32,
         0,
         None,
+        None,
     )?;
 
     let Some(item) = history.get(index).cloned() else {
@@ -534,6 +559,9 @@ async fn handle_window_focus_for_paste(app_handle: &tauri::AppHandle) -> AppResu
     // 1. Only restore focus if our window actually took focus; avoids unnecessary focus flips
     // that can force fullscreen apps into windowed mode.
     if crate::IS_MAIN_WINDOW_FOCUSED.load(Ordering::Relaxed) {
+        #[cfg(target_os = "windows")]
+        restore_focus_before_paste(app_handle).await?;
+        #[cfg(not(target_os = "windows"))]
         let _ = restore_focus_before_paste(app_handle).await;
     }
 
@@ -570,6 +598,15 @@ async fn restore_focus_before_paste(_app_handle: &tauri::AppHandle) -> AppResult
         let target_hwnd = HWND(last_hwnd_val as _);
         #[cfg(target_os = "windows")]
         unsafe {
+            if let Some(window) = _app_handle.get_webview_window("main") {
+                if let Ok(main_hwnd) = window.hwnd() {
+                    if main_hwnd.0 == target_hwnd.0 {
+                        return Err(AppError::Internal(
+                            "粘贴已中止：目标窗口是 TieZ，历史记录已保留".to_string(),
+                        ));
+                    }
+                }
+            }
             if !IsWindowVisible(target_hwnd).as_bool() {
                 return Err(AppError::Internal(
                     "Target window is no longer visible".to_string(),
@@ -609,7 +646,22 @@ async fn restore_focus_before_paste(_app_handle: &tauri::AppHandle) -> AppResult
     // Settling time for Windows to process focus change msg
     // Increased to 150ms for heavy games/apps
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    #[cfg(target_os = "windows")]
+    unsafe {
+        validate_restored_paste_focus(last_hwnd_val, GetForegroundWindow().0 as usize)?;
+    }
     Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn validate_restored_paste_focus(target: usize, foreground: usize) -> AppResult<()> {
+    if target != 0 && foreground == target {
+        Ok(())
+    } else {
+        Err(AppError::Internal(
+            "粘贴已中止：无法恢复目标窗口焦点，历史记录已保留".to_string(),
+        ))
+    }
 }
 
 fn calculate_content_hash(content: &str) -> (u64, u64) {
@@ -938,17 +990,23 @@ fn is_gif_image_bytes(bytes: &[u8]) -> bool {
     bytes.len() > 6 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
 }
 
+fn is_animated_clipboard_image_bytes(bytes: &[u8]) -> bool {
+    is_gif_image_bytes(bytes)
+        || crate::services::clipboard::is_animated_webp_payload(bytes)
+}
+
 /// Decide whether the PNG clipboard format should accompany an image paste.
 ///
-/// Many Windows apps prefer `PNG` / `image/png` over GIF named formats and
-/// CF_HDROP. Attaching a first-frame PNG beside a GIF therefore makes paste
-/// targets materialize a static PNG even when the history entry is still GIF.
-fn should_attach_png_clipboard_format(is_gif: bool) -> bool {
-    !is_gif
+/// Many Windows apps prefer `PNG` / `image/png` over GIF/WebP named formats and
+/// CF_HDROP. Attaching a first-frame PNG beside an animated image therefore
+/// makes paste targets materialize a static PNG even when the history entry
+/// still has the original animation.
+fn should_attach_png_clipboard_format(is_animated: bool) -> bool {
+    !is_animated
 }
 
 fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult<(u64, u64, u64)> {
-    let is_gif = is_gif_image_bytes(&bytes);
+    let is_animated = is_animated_clipboard_image_bytes(&bytes);
 
     let (width, height, raw_bytes) = {
         let img = image::load_from_memory(&bytes)
@@ -968,7 +1026,7 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
     let visual_hash =
         calc_image_hash_from_rgba(width, height, &raw_bytes).unwrap_or(pixel_hash as i64) as u64;
 
-    let gif_hash = if is_gif {
+    let gif_hash = if is_animated {
         let mut hasher = DefaultHasher::new();
         bytes.hash(&mut hasher);
         Some(hasher.finish())
@@ -976,10 +1034,10 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
         None
     };
 
-    // PNG is a compatibility format for still images. Never attach it for GIF
-    // pastes — see should_attach_png_clipboard_format.
+    // PNG is a compatibility format for still images. Never attach it for
+    // animated GIF/WebP pastes — see should_attach_png_clipboard_format.
     let mut png_buf: Vec<u8> = Vec::new();
-    let png_payload = if should_attach_png_clipboard_format(is_gif) {
+    let png_payload = if should_attach_png_clipboard_format(is_animated) {
         let img = image::load_from_memory(&bytes)
             .map_err(|e| AppError::Internal(format!("加载图像失败: {}", e)))?;
         img.write_to(
@@ -1008,7 +1066,7 @@ fn copy_image_bytes_to_clipboard(bytes: Vec<u8>, current_time: u64) -> AppResult
                 height: height as usize,
                 bytes: raw_bytes,
             },
-            if is_gif { Some(&bytes) } else { None },
+            if is_animated { Some(&bytes) } else { None },
             png_payload,
         )
         .map_err(AppError::from)?
@@ -1101,7 +1159,10 @@ async fn perform_paste_action(
 
     if stole_focus {
         println!("[WARN] Clipboard window STOLE focus back, attempting one last restore...");
-        let _ = restore_focus_before_paste(app_handle).await;
+        restore_focus_before_paste(app_handle).await.map_err(|error| {
+            clear_recent_paste_marker(app_handle);
+            error
+        })?;
     }
 
     // Get paste method from settings
@@ -1113,7 +1174,10 @@ async fn perform_paste_action(
         .unwrap_or_else(|| "shift_insert".to_string());
 
     // Send paste keystroke
-    send_paste_keystroke(&paste_method, content, Some(content_type))?;
+    send_paste_keystroke(&paste_method, content, Some(content_type)).map_err(|error| {
+        clear_recent_paste_marker(app_handle);
+        error
+    })?;
 
     // Hide after paste if not pinned
     hide_window_after_paste(app_handle).await;
@@ -1145,6 +1209,84 @@ async fn hide_window_after_paste(app_handle: &tauri::AppHandle) {
         crate::app::window_manager::release_win_keys();
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn validate_paste_input_count(sent: u32, expected: usize) -> AppResult<()> {
+    if sent as usize == expected {
+        Ok(())
+    } else {
+        Err(AppError::Internal(format!(
+            "粘贴输入被系统阻止或未完整发送（{}/{}），历史记录已保留",
+            sent, expected
+        )))
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn send_paste_inputs(inputs: &[INPUT], pending_keys: &mut Vec<PasteKey>) -> AppResult<()> {
+    let sent = SendInput(inputs, std::mem::size_of::<INPUT>() as i32);
+    let keys: Vec<_> = inputs
+        .iter()
+        .map(|input| {
+            debug_assert_eq!(input.r#type, INPUT_KEYBOARD);
+            let key = input.Anonymous.ki;
+            (
+                PasteKey {
+                    virtual_key: key.wVk.0,
+                    scan_code: key.wScan,
+                    flags: key.dwFlags.0 & !KEYEVENTF_KEYUP.0,
+                },
+                key.dwFlags.0 & KEYEVENTF_KEYUP.0 != 0,
+            )
+        })
+        .collect();
+    track_accepted_paste_keys(pending_keys, &keys, sent);
+    validate_paste_input_count(sent, inputs.len())
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PasteKey {
+    virtual_key: u16,
+    scan_code: u16,
+    flags: u32,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn track_accepted_paste_keys(
+    pending_keys: &mut Vec<PasteKey>,
+    keys: &[(PasteKey, bool)],
+    sent: u32,
+) {
+    for (key, is_key_up) in keys.iter().take(sent as usize) {
+        if *is_key_up {
+            pending_keys.retain(|pending| pending != key);
+        } else if !pending_keys.contains(key) {
+            pending_keys.push(*key);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn paste_key_cleanup_inputs(pending_keys: &[PasteKey]) -> Vec<INPUT> {
+    pending_keys
+        .iter()
+        .rev()
+        .map(|key| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(key.virtual_key),
+                    wScan: key.scan_code,
+                    dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
+                        key.flags | KEYEVENTF_KEYUP.0,
+                    ),
+                    ..Default::default()
+                },
+            },
+        })
+        .collect()
 }
 
 pub fn send_paste_keystroke(
@@ -1213,7 +1355,8 @@ pub fn send_paste_keystroke(
                 },
             },
         ];
-        SendInput(&release_modifiers, std::mem::size_of::<INPUT>() as i32);
+        let mut pending_keys = Vec::new();
+        send_paste_inputs(&release_modifiers, &mut pending_keys)?;
 
         std::thread::sleep(std::time::Duration::from_millis(50));
 
@@ -1224,176 +1367,181 @@ pub fn send_paste_keystroke(
             method
         };
 
-        if effective_method == "ctrl_v" {
-            let v_scan = MapVirtualKeyW(VK_V.0 as u32, MAPVK_VK_TO_VSC) as u16;
-            let ctrl_scan = MapVirtualKeyW(VK_CONTROL.0 as u32, MAPVK_VK_TO_VSC) as u16;
+        let injection_result = (|| -> AppResult<()> {
+            if effective_method == "ctrl_v" {
+                let v_scan = MapVirtualKeyW(VK_V.0 as u32, MAPVK_VK_TO_VSC) as u16;
+                let ctrl_scan = MapVirtualKeyW(VK_CONTROL.0 as u32, MAPVK_VK_TO_VSC) as u16;
 
-            let inputs = [
-                INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
-                            wScan: ctrl_scan,
-                            dwFlags: KEYEVENTF_SCANCODE,
-                            ..Default::default()
-                        },
-                    },
-                },
-                INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
-                            wScan: v_scan,
-                            dwFlags: KEYEVENTF_SCANCODE,
-                            ..Default::default()
-                        },
-                    },
-                },
-            ];
-            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-
-            let inputs_up = [
-                INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
-                            wScan: v_scan,
-                            dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
-                            ..Default::default()
-                        },
-                    },
-                },
-                INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
-                            wScan: ctrl_scan,
-                            dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
-                            ..Default::default()
-                        },
-                    },
-                },
-            ];
-            SendInput(&inputs_up, std::mem::size_of::<INPUT>() as i32);
-        } else if effective_method == "game_mode" {
-            if let Some(text) = content {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-
-                let target_hwnd = GetForegroundWindow();
-                let target_thread = GetWindowThreadProcessId(target_hwnd, None);
-                let current_thread = windows::Win32::System::Threading::GetCurrentThreadId();
-                let mut attached = false;
-
-                if target_thread != 0 && target_thread != current_thread {
-                    if AttachThreadInput(current_thread, target_thread, true).as_bool() {
-                        attached = true;
-                    }
-                }
-
-                use windows::Win32::UI::Input::Ime::{
-                    ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus, ImmReleaseContext,
-                    ImmSetConversionStatus, ImmSetOpenStatus, IME_CMODE_ALPHANUMERIC,
-                    IME_CONVERSION_MODE, IME_SENTENCE_MODE, IME_SMODE_NONE,
-                };
-
-                let himc = ImmGetContext(target_hwnd);
-                let mut ime_open = false;
-                let mut ime_conv = IME_CONVERSION_MODE(0);
-                let mut ime_sentence = IME_SENTENCE_MODE(0);
-                let mut has_himc = false;
-
-                if !himc.0.is_null() {
-                    has_himc = true;
-                    ime_open = ImmGetOpenStatus(himc).as_bool();
-                    let _ =
-                        ImmGetConversionStatus(himc, Some(&mut ime_conv), Some(&mut ime_sentence));
-
-                    if ime_open {
-                        let _ = ImmSetOpenStatus(himc, false);
-                    }
-                    let _ = ImmSetConversionStatus(himc, IME_CMODE_ALPHANUMERIC, IME_SMODE_NONE);
-                }
-
-                let total_len = text.chars().count();
-                let (down_delay_ms, up_delay_ms, check_interval) = if total_len > 800 {
-                    (2u64, 2u64, 40usize)
-                } else if total_len > 200 {
-                    (4u64, 4u64, 30usize)
-                } else {
-                    (10u64, 10u64, 20usize)
-                };
-
-                let mut idx = 0usize;
-                for c in text.encode_utf16() {
-                    if idx % check_interval == 0 {
-                        let current_hwnd = GetForegroundWindow();
-                        if current_hwnd.0 != target_hwnd.0 {
-                            println!("[WARN] Game mode paste aborted: foreground window changed");
-                            break;
-                        }
-                    }
-                    if c == '\r' as u16 {
-                        idx += 1;
-                        continue;
-                    }
-                    if c == '\n' as u16 {
-                        let enter_scan = MapVirtualKeyW(VK_RETURN.0 as u32, MAPVK_VK_TO_VSC) as u16;
-                        let enter_down = INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: VK_RETURN,
-                                    wScan: enter_scan,
-                                    dwFlags: KEYEVENTF_SCANCODE,
-                                    ..Default::default()
-                                },
-                            },
-                        };
-                        let enter_up = INPUT {
-                            r#type: INPUT_KEYBOARD,
-                            Anonymous: INPUT_0 {
-                                ki: KEYBDINPUT {
-                                    wVk: VK_RETURN,
-                                    wScan: enter_scan,
-                                    dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
-                                    ..Default::default()
-                                },
-                            },
-                        };
-                        SendInput(&[enter_down], std::mem::size_of::<INPUT>() as i32);
-                        std::thread::sleep(std::time::Duration::from_millis(down_delay_ms));
-                        SendInput(&[enter_up], std::mem::size_of::<INPUT>() as i32);
-                        std::thread::sleep(std::time::Duration::from_millis(up_delay_ms));
-                        idx += 1;
-                        continue;
-                    }
-                    let mut input = INPUT {
+                let inputs = [
+                    INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
-                                wScan: c,
-                                dwFlags:
-                                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
-                                        4,
-                                    ), // KEYEVENTF_UNICODE
+                                wScan: ctrl_scan,
+                                dwFlags: KEYEVENTF_SCANCODE,
                                 ..Default::default()
                             },
                         },
+                    },
+                    INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
+                                wScan: v_scan,
+                                dwFlags: KEYEVENTF_SCANCODE,
+                                ..Default::default()
+                            },
+                        },
+                    },
+                ];
+                send_paste_inputs(&inputs, &mut pending_keys)?;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+
+                let inputs_up = [
+                    INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
+                                wScan: v_scan,
+                                dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+                                ..Default::default()
+                            },
+                        },
+                    },
+                    INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
+                                wScan: ctrl_scan,
+                                dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+                                ..Default::default()
+                            },
+                        },
+                    },
+                ];
+                send_paste_inputs(&inputs_up, &mut pending_keys)?;
+            } else if effective_method == "game_mode" {
+                if let Some(text) = content {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+
+                    let target_hwnd = GetForegroundWindow();
+                    let target_thread = GetWindowThreadProcessId(target_hwnd, None);
+                    let current_thread = windows::Win32::System::Threading::GetCurrentThreadId();
+                    let mut attached = false;
+
+                    if target_thread != 0 && target_thread != current_thread {
+                        if AttachThreadInput(current_thread, target_thread, true).as_bool() {
+                            attached = true;
+                        }
+                    }
+
+                    use windows::Win32::UI::Input::Ime::{
+                        ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus, ImmReleaseContext,
+                        ImmSetConversionStatus, ImmSetOpenStatus, IME_CMODE_ALPHANUMERIC,
+                        IME_CONVERSION_MODE, IME_SENTENCE_MODE, IME_SMODE_NONE,
                     };
-                    SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-                    std::thread::sleep(std::time::Duration::from_millis(down_delay_ms));
-                    input.Anonymous.ki.dwFlags |=
-                        windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP;
-                    SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-                    std::thread::sleep(std::time::Duration::from_millis(up_delay_ms));
-                    idx += 1;
-                }
+
+                    let himc = ImmGetContext(target_hwnd);
+                    let mut ime_open = false;
+                    let mut ime_conv = IME_CONVERSION_MODE(0);
+                    let mut ime_sentence = IME_SENTENCE_MODE(0);
+                    let mut has_himc = false;
+
+                    if !himc.0.is_null() {
+                        has_himc = true;
+                        ime_open = ImmGetOpenStatus(himc).as_bool();
+                        let _ =
+                            ImmGetConversionStatus(himc, Some(&mut ime_conv), Some(&mut ime_sentence));
+
+                        if ime_open {
+                            let _ = ImmSetOpenStatus(himc, false);
+                        }
+                        let _ = ImmSetConversionStatus(himc, IME_CMODE_ALPHANUMERIC, IME_SMODE_NONE);
+                    }
+
+                    let total_len = text.chars().count();
+                    let (down_delay_ms, up_delay_ms, check_interval) = if total_len > 800 {
+                        (2u64, 2u64, 40usize)
+                    } else if total_len > 200 {
+                        (4u64, 4u64, 30usize)
+                    } else {
+                        (10u64, 10u64, 20usize)
+                    };
+
+                    let typing_result = (|| -> AppResult<()> {
+                        let mut idx = 0usize;
+                        for c in text.encode_utf16() {
+                            if idx % check_interval == 0 {
+                                let current_hwnd = GetForegroundWindow();
+                                if current_hwnd.0 != target_hwnd.0 {
+                                    return Err(AppError::Internal(
+                                        "粘贴已中止：目标窗口焦点改变，历史记录已保留".to_string(),
+                                    ));
+                                }
+                            }
+                            if c == '\r' as u16 {
+                                idx += 1;
+                                continue;
+                            }
+                            if c == '\n' as u16 {
+                                let enter_scan = MapVirtualKeyW(VK_RETURN.0 as u32, MAPVK_VK_TO_VSC) as u16;
+                                let enter_down = INPUT {
+                                    r#type: INPUT_KEYBOARD,
+                                    Anonymous: INPUT_0 {
+                                        ki: KEYBDINPUT {
+                                            wVk: VK_RETURN,
+                                            wScan: enter_scan,
+                                            dwFlags: KEYEVENTF_SCANCODE,
+                                            ..Default::default()
+                                        },
+                                    },
+                                };
+                                let enter_up = INPUT {
+                                    r#type: INPUT_KEYBOARD,
+                                    Anonymous: INPUT_0 {
+                                        ki: KEYBDINPUT {
+                                            wVk: VK_RETURN,
+                                            wScan: enter_scan,
+                                            dwFlags: KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+                                            ..Default::default()
+                                        },
+                                    },
+                                };
+                                send_paste_inputs(&[enter_down], &mut pending_keys)?;
+                                std::thread::sleep(std::time::Duration::from_millis(down_delay_ms));
+                                send_paste_inputs(&[enter_up], &mut pending_keys)?;
+                                std::thread::sleep(std::time::Duration::from_millis(up_delay_ms));
+                                idx += 1;
+                                continue;
+                            }
+                            let mut input = INPUT {
+                                r#type: INPUT_KEYBOARD,
+                                Anonymous: INPUT_0 {
+                                    ki: KEYBDINPUT {
+                                        wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(0),
+                                        wScan: c,
+                                        dwFlags:
+                                            windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(
+                                                4,
+                                            ), // KEYEVENTF_UNICODE
+                                        ..Default::default()
+                                    },
+                                },
+                            };
+                            send_paste_inputs(&[input], &mut pending_keys)?;
+                            std::thread::sleep(std::time::Duration::from_millis(down_delay_ms));
+                            input.Anonymous.ki.dwFlags |=
+                                windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_KEYUP;
+                            send_paste_inputs(&[input], &mut pending_keys)?;
+                            std::thread::sleep(std::time::Duration::from_millis(up_delay_ms));
+                            idx += 1;
+                        }
+                        Ok(())
+                    })();
 
                 if has_himc {
                     let _ = ImmSetConversionStatus(himc, ime_conv, ime_sentence);
@@ -1406,6 +1554,7 @@ pub fn send_paste_keystroke(
                 if attached {
                     let _ = AttachThreadInput(current_thread, target_thread, false);
                 }
+                typing_result?;
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 let ctrl_scan = MapVirtualKeyW(VK_CONTROL.0 as u32, MAPVK_VK_TO_VSC) as u16;
@@ -1423,17 +1572,17 @@ pub fn send_paste_keystroke(
                     },
                 };
 
-                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                send_paste_inputs(&[input], &mut pending_keys)?;
                 std::thread::sleep(std::time::Duration::from_millis(80));
                 input.Anonymous.ki.wScan = v_scan;
-                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                send_paste_inputs(&[input], &mut pending_keys)?;
                 std::thread::sleep(std::time::Duration::from_millis(120));
                 input.Anonymous.ki.dwFlags |= KEYEVENTF_KEYUP;
-                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                send_paste_inputs(&[input], &mut pending_keys)?;
                 std::thread::sleep(std::time::Duration::from_millis(80));
                 input.Anonymous.ki.wScan = ctrl_scan;
                 input.Anonymous.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                let _ = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+                send_paste_inputs(&[input], &mut pending_keys)?;
             }
         } else {
             let shift_scan = MapVirtualKeyW(VK_SHIFT.0 as u32, MAPVK_VK_TO_VSC) as u16;
@@ -1450,7 +1599,7 @@ pub fn send_paste_keystroke(
                     },
                 },
             };
-            SendInput(&[shift_down], std::mem::size_of::<INPUT>() as i32);
+            send_paste_inputs(&[shift_down], &mut pending_keys)?;
             std::thread::sleep(std::time::Duration::from_millis(10));
 
             let insert_down = INPUT {
@@ -1464,7 +1613,7 @@ pub fn send_paste_keystroke(
                     },
                 },
             };
-            SendInput(&[insert_down], std::mem::size_of::<INPUT>() as i32);
+            send_paste_inputs(&[insert_down], &mut pending_keys)?;
             std::thread::sleep(std::time::Duration::from_millis(10));
 
             let insert_up = INPUT {
@@ -1478,7 +1627,7 @@ pub fn send_paste_keystroke(
                     },
                 },
             };
-            SendInput(&[insert_up], std::mem::size_of::<INPUT>() as i32);
+            send_paste_inputs(&[insert_up], &mut pending_keys)?;
             std::thread::sleep(std::time::Duration::from_millis(10));
 
             let shift_up = INPUT {
@@ -1492,8 +1641,20 @@ pub fn send_paste_keystroke(
                     },
                 },
             };
-            SendInput(&[shift_up], std::mem::size_of::<INPUT>() as i32);
+            send_paste_inputs(&[shift_up], &mut pending_keys)?;
         }
+        Ok(())
+        })();
+        if injection_result.is_err() {
+            // Release only keys accepted from this action and still awaiting key-up.
+            // Preserve scan-code/Unicode/extended flags so V, Insert and typed characters
+            // are cleaned up as well as modifiers, without touching unrelated user keys.
+            let cleanup_inputs = paste_key_cleanup_inputs(&pending_keys);
+            if !cleanup_inputs.is_empty() {
+                let _ = SendInput(&cleanup_inputs, std::mem::size_of::<INPUT>() as i32);
+            }
+        }
+        injection_result?;
     }
 
     #[cfg(target_os = "macos")]
@@ -1662,6 +1823,7 @@ fn paste_latest(app_handle: tauri::AppHandle, paste_with_format: bool, text_only
             1,
             0,
             None,
+            None,
         ) else {
             return;
         };
@@ -1701,15 +1863,95 @@ pub fn paste_latest_plain(app_handle: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_gif_image_bytes, should_attach_png_clipboard_format, should_restore_direct_text_clipboard,
-        ClipboardSnapshot,
+        is_animated_clipboard_image_bytes, is_gif_image_bytes, should_attach_png_clipboard_format,
+        should_restore_direct_text_clipboard, track_accepted_paste_keys,
+        validate_paste_input_count, validate_restored_paste_focus, ClipboardSnapshot, PasteKey,
     };
+
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn two_frame_animated_webp() -> Vec<u8> {
+        decode_hex("52494646ca00000057454250565038580a00000002000000010000010000414e494d06000000000000000000414e4d464a0000000000000000000100000100005000000256503820320000003001009d012a0200020001402625a000037000fef2eb7ffff9b03ff6f3ff047a01ffffd2e0fffe9707fff4b83ff4a4000000414e4d464c0000000000000000000100000100005000000056503820340000003401009d012a0200020000002625a000037000fee9221ffff79f3fffb9f3fffb9f3fe8cfffff29fbfff238ffff238ffe50200000")
+    }
+
+    fn static_webp() -> Vec<u8> {
+        decode_hex("524946463a00000057454250565038202e0000009001009d012a0200020001402625a00274ba00039800fefb55e3ffa5c1ffd2e0ffe9707fe9707f1bb2ce1ba40000")
+    }
 
     fn text_snapshot(value: &str) -> ClipboardSnapshot {
         ClipboardSnapshot::Text {
             text: value.to_string(),
             html: None,
         }
+    }
+
+    #[test]
+    fn paste_input_requires_every_requested_event() {
+        assert!(validate_paste_input_count(2, 2).is_ok());
+        assert!(validate_paste_input_count(0, 2).is_err());
+        assert!(validate_paste_input_count(1, 2).is_err());
+        assert!(validate_paste_input_count(0, 1).is_err());
+    }
+
+    #[test]
+    fn restored_focus_requires_the_actual_target_foreground() {
+        assert!(validate_restored_paste_focus(10, 10).is_ok());
+        assert!(validate_restored_paste_focus(10, 20).is_err());
+        assert!(validate_restored_paste_focus(10, 0).is_err());
+        assert!(validate_restored_paste_focus(0, 0).is_err());
+    }
+
+    #[test]
+    fn partial_paste_tracks_only_accepted_key_downs() {
+        let ctrl = PasteKey { virtual_key: 0, scan_code: 0x1d, flags: 8 };
+        let v = PasteKey { virtual_key: 0, scan_code: 0x2f, flags: 8 };
+        let mut pending = Vec::new();
+
+        track_accepted_paste_keys(&mut pending, &[(ctrl, false), (v, false)], 0);
+        assert!(pending.is_empty(), "blocked input must not release unrelated held keys");
+
+        track_accepted_paste_keys(&mut pending, &[(ctrl, false), (v, false)], 1);
+        assert_eq!(pending, vec![ctrl], "a rejected V down is not eligible for cleanup");
+    }
+
+    #[test]
+    fn partial_paste_key_up_retains_only_the_unreleased_key() {
+        let ctrl = PasteKey { virtual_key: 0, scan_code: 0x1d, flags: 8 };
+        let v = PasteKey { virtual_key: 0, scan_code: 0x2f, flags: 8 };
+        let mut pending = Vec::new();
+
+        track_accepted_paste_keys(&mut pending, &[(ctrl, false), (v, false)], 2);
+        track_accepted_paste_keys(&mut pending, &[(v, true), (ctrl, true)], 1);
+        assert_eq!(pending, vec![ctrl], "successful V up must not be sent twice");
+
+        track_accepted_paste_keys(&mut pending, &[(ctrl, true)], 1);
+        assert!(pending.is_empty(), "completed input needs no cleanup");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn paste_cleanup_releases_action_keys_with_their_exact_input_flags() {
+        let keys = [
+            PasteKey { virtual_key: 0, scan_code: 0x2f, flags: 8 }, // scan-code V
+            PasteKey { virtual_key: 0x2d, scan_code: 0x52, flags: 9 }, // extended Insert
+            PasteKey { virtual_key: 0x0d, scan_code: 0x1c, flags: 8 }, // Return
+            PasteKey { virtual_key: 0, scan_code: 0x4f60, flags: 4 }, // Unicode character
+        ];
+        let inputs = super::paste_key_cleanup_inputs(&keys);
+        assert_eq!(inputs.len(), keys.len());
+        for (input, expected) in inputs.iter().zip(keys.iter().rev()) {
+            assert_eq!(input.r#type, super::INPUT_KEYBOARD);
+            let actual = unsafe { input.Anonymous.ki };
+            assert_eq!(actual.wVk.0, expected.virtual_key);
+            assert_eq!(actual.wScan, expected.scan_code);
+            assert_eq!(actual.dwFlags.0, expected.flags | super::KEYEVENTF_KEYUP.0);
+        }
+        assert!(super::paste_key_cleanup_inputs(&[]).is_empty());
     }
 
     #[test]
@@ -1742,5 +1984,25 @@ mod tests {
     fn gif_paste_omits_png_clipboard_format() {
         assert!(!should_attach_png_clipboard_format(true));
         assert!(should_attach_png_clipboard_format(false));
+    }
+
+    #[test]
+    fn animated_webp_paste_omits_png_and_decodes_preview_frame() {
+        let animated = two_frame_animated_webp();
+        assert!(is_animated_clipboard_image_bytes(&animated));
+        assert!(!should_attach_png_clipboard_format(
+            is_animated_clipboard_image_bytes(&animated)
+        ));
+        assert!(
+            image::load_from_memory(&animated).is_ok(),
+            "paste still needs a DIB preview frame from the first WebP frame"
+        );
+
+        let still = static_webp();
+        assert!(!is_animated_clipboard_image_bytes(&still));
+        assert!(should_attach_png_clipboard_format(
+            is_animated_clipboard_image_bytes(&still)
+        ));
+        assert!(!is_animated_clipboard_image_bytes(b"\x89PNG\r\n\x1a\n"));
     }
 }

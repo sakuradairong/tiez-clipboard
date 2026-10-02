@@ -7,6 +7,7 @@ import ClipboardItem from "../../features/clipboard/components/ClipboardItem";
 import type { QuickPasteHint } from "../../features/clipboard/types";
 import type { ClipboardEntry } from "../types";
 import type { Locale } from "../types";
+import { hasSensitiveTag } from "../lib/sensitiveTags";
 
 interface UseClipboardItemRendererOptions {
   privacyProtection: boolean;
@@ -97,9 +98,7 @@ export const useClipboardItemRenderer = ({
     (item: ClipboardEntry, index: number, dragControls?: DragControls, disableLayout?: boolean) => {
       const isSensitiveHidden =
         privacyProtection &&
-        (item.tags?.includes("sensitive") ||
-          item.tags?.includes("密码") ||
-          item.tags?.includes("password")) &&
+        hasSensitiveTag(item.tags) &&
         !revealedIds.has(item.id);
       const isEditingTags = editingTagsId === item.id;
 

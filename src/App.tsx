@@ -49,8 +49,7 @@ import UpdateDialog from "./shared/components/UpdateDialog";
 import type { ClipboardEntry } from "./shared/types";
 import type { QuickPasteHint, VirtualClipboardListHandle } from "./features/clipboard/types";
 
-/** Must match privacy blur checks in `useClipboardItemRenderer` / `ClipboardItem`. */
-const BUILTIN_SENSITIVE_TAG_NAMES = ["sensitive", "密码", "password"] as const;
+import { BUILTIN_SENSITIVE_TAG_NAMES } from "./shared/lib/sensitiveTags";
 import type { QuickPasteModifier } from "./features/app/types";
 import {
   forceHideCompactPreviewWindow,

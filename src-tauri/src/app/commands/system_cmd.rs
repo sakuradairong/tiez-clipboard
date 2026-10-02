@@ -5,6 +5,108 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
 use tauri::{AppHandle, Manager, State};
 
+#[cfg(target_os = "windows")]
+const CLIPBOARD_BACKUP_KEY: &str = "Software\\tiez\\ClipboardSettingsBackup";
+#[cfg(target_os = "windows")]
+static CLIPBOARD_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(target_os = "windows")]
+fn owned_clipboard_value_matches(
+    current: Option<&winreg::RegValue>,
+    applied_present: Option<u32>,
+    applied: Option<&winreg::RegValue>,
+) -> bool {
+    match applied_present {
+        Some(0) => current.is_none(),
+        Some(1) => applied.is_some() && current == applied,
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn has_original_clipboard_snapshot(
+    present: Option<u32>,
+    value: Option<&winreg::RegValue>,
+) -> bool {
+    match present {
+        Some(0) => true,
+        Some(1) => value.is_some_and(|value| {
+            matches!(value.vtype, winreg::enums::REG_DWORD | winreg::enums::REG_SZ)
+        }),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn save_clipboard_registry_snapshot(
+    backup: &winreg::RegKey,
+    prefix: &str,
+    value: Option<&winreg::RegValue>,
+) -> AppResult<()> {
+    if let Some(value) = value {
+        backup.set_raw_value(format!("{}Value", prefix), value)?;
+    } else {
+        match backup.delete_value(format!("{}Value", prefix)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    backup.set_value(format!("{}Present", prefix), &u32::from(value.is_some()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn set_owned_clipboard_registry_value(
+    hkcu: &winreg::RegKey,
+    path: &str,
+    name: &str,
+    value: Option<winreg::RegValue>,
+) -> AppResult<bool> {
+    use winreg::enums::{REG_DWORD, REG_SZ};
+
+    let _guard = CLIPBOARD_REGISTRY_LOCK.lock().unwrap();
+    let (key, _) = hkcu.create_subkey(path)?;
+    let current = match key.get_raw_value(name) {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    if current == value {
+        return Ok(false);
+    }
+    if current.as_ref().is_some_and(|value| !matches!(value.vtype, REG_DWORD | REG_SZ)) {
+        return Err(AppError::Validation(format!("不支持修改注册表设置 {} 的当前类型", name)));
+    }
+
+    let (backup, _) = hkcu.create_subkey(format!("{}\\{}", CLIPBOARD_BACKUP_KEY, name))?;
+    let applied = backup.get_raw_value("AppliedValue").ok();
+    let original = backup.get_raw_value("OriginalValue").ok();
+    let has_original = has_original_clipboard_snapshot(
+        backup.get_value("OriginalPresent").ok(), original.as_ref(),
+    );
+    let still_owned = owned_clipboard_value_matches(
+        current.as_ref(),
+        backup.get_value("AppliedPresent").ok(),
+        applied.as_ref(),
+    );
+    // A subsequent user change starts a new ownership interval.
+    if !has_original || !still_owned {
+        save_clipboard_registry_snapshot(&backup, "Original", current.as_ref())?;
+    }
+    // Persist the intended value before changing the system setting.
+    save_clipboard_registry_snapshot(&backup, "Applied", value.as_ref())?;
+    let result = match value.as_ref() {
+        Some(value) => key.set_raw_value(name, value),
+        None => key.delete_value(name),
+    };
+    if let Err(error) = result {
+        let _ = save_clipboard_registry_snapshot(&backup, "Applied", current.as_ref());
+        return Err(error.into());
+    }
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn is_app_ready(state: State<'_, AppReady>) -> AppResult<bool> {
     Ok(state.0.load(std::sync::atomic::Ordering::SeqCst))
@@ -121,13 +223,17 @@ pub fn set_windows_clipboard_history(enabled: bool) -> AppResult<()> {
     {
         use winreg::enums::*;
         use winreg::RegKey;
+        use winreg::types::ToRegValue;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let mut needs_restart = false;
 
-        if let Ok((key, _)) = hkcu.create_subkey("Software\\Microsoft\\Clipboard") {
+        if let Ok((_key, _)) = hkcu.create_subkey("Software\\Microsoft\\Clipboard") {
             let value: u32 = if enabled { 1 } else { 0 };
-            let _ = key.set_value("EnableClipboardHistory", &value);
-            let _ = key.set_value("EnableCloudClipboard", &value);
+            for name in ["EnableClipboardHistory", "EnableCloudClipboard"] {
+                set_owned_clipboard_registry_value(
+                    &hkcu, "Software\\Microsoft\\Clipboard", name, Some(value.to_reg_value()),
+                )?;
+            }
         }
 
         if let Ok((adv_key, _)) =
@@ -135,13 +241,13 @@ pub fn set_windows_clipboard_history(enabled: bool) -> AppResult<()> {
         {
             let current_disabled: String = adv_key.get_value("DisabledHotkeys").unwrap_or_default();
             if current_disabled.to_uppercase().contains('V') {
-                let new_val = current_disabled.to_uppercase().replace('V', "");
-                if new_val.is_empty() {
-                    let _ = adv_key.delete_value("DisabledHotkeys");
-                } else {
-                    let _ = adv_key.set_value("DisabledHotkeys", &new_val);
-                }
-                needs_restart = true;
+                let new_val = current_disabled.replace(['V', 'v'], "");
+                needs_restart |= set_owned_clipboard_registry_value(
+                    &hkcu,
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                    "DisabledHotkeys",
+                    (!new_val.is_empty()).then(|| new_val.to_reg_value()),
+                )?;
             }
         }
 
@@ -153,8 +259,10 @@ pub fn set_windows_clipboard_history(enabled: bool) -> AppResult<()> {
                 .unwrap_or(0)
                 != 0
             {
-                let _ = policy_key.delete_value("DisallowClipboardHistory");
-                needs_restart = true;
+                needs_restart |= set_owned_clipboard_registry_value(
+                    &hkcu, "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                    "DisallowClipboardHistory", None,
+                )?;
             }
         }
 
@@ -169,16 +277,20 @@ pub fn set_windows_clipboard_history(enabled: bool) -> AppResult<()> {
                     .unwrap_or(1)
                     == 0
                 {
-                    let _ = sys_policy.delete_value("AllowClipboardHistory");
-                    needs_restart = true;
+                    needs_restart |= set_owned_clipboard_registry_value(
+                        &hkcu, "Software\\Policies\\Microsoft\\Windows\\System",
+                        "AllowClipboardHistory", None,
+                    )?;
                 }
                 if sys_policy
                     .get_value::<u32, _>("AllowCrossDeviceClipboard")
                     .unwrap_or(1)
                     == 0
                 {
-                    let _ = sys_policy.delete_value("AllowCrossDeviceClipboard");
-                    needs_restart = true;
+                    needs_restart |= set_owned_clipboard_registry_value(
+                        &hkcu, "Software\\Policies\\Microsoft\\Windows\\System",
+                        "AllowCrossDeviceClipboard", None,
+                    )?;
                 }
             }
         }
@@ -240,6 +352,7 @@ pub fn trigger_registry_win_v_optimization(enable: bool) -> AppResult<bool> {
     {
         use winreg::enums::*;
         use winreg::RegKey;
+        use winreg::types::ToRegValue;
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let mut changed = false;
 
@@ -248,27 +361,27 @@ pub fn trigger_registry_win_v_optimization(enable: bool) -> AppResult<bool> {
         {
             let current: String = adv_key.get_value("DisabledHotkeys").unwrap_or_default();
             if enable && !current.to_uppercase().contains('V') {
-                let _ = adv_key.set_value("DisabledHotkeys", &format!("{}V", current));
-                changed = true;
+                changed |= set_owned_clipboard_registry_value(
+                    &hkcu,
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                    "DisabledHotkeys", Some(format!("{}V", current).to_reg_value()),
+                )?;
             } else if !enable && current.to_uppercase().contains('V') {
-                let clean = current.to_uppercase().replace('V', "");
-                if clean.is_empty() {
-                    let _ = adv_key.delete_value("DisabledHotkeys");
-                } else {
-                    let _ = adv_key.set_value("DisabledHotkeys", &clean);
-                }
-                changed = true;
+                let clean = current.replace(['V', 'v'], "");
+                changed |= set_owned_clipboard_registry_value(
+                    &hkcu,
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+                    "DisabledHotkeys", (!clean.is_empty()).then(|| clean.to_reg_value()),
+                )?;
             }
         }
 
-        if let Ok((cb_key, _)) = hkcu.create_subkey("Software\\Microsoft\\Clipboard") {
+        if let Ok((_cb_key, _)) = hkcu.create_subkey("Software\\Microsoft\\Clipboard") {
             let val: u32 = if enable { 0 } else { 1 };
-            let prev_history = cb_key.get_value::<u32, _>("EnableClipboardHistory").ok();
-            let prev_cloud = cb_key.get_value::<u32, _>("EnableCloudClipboard").ok();
-            let _ = cb_key.set_value("EnableClipboardHistory", &val);
-            let _ = cb_key.set_value("EnableCloudClipboard", &val);
-            if prev_history != Some(val) || prev_cloud != Some(val) {
-                changed = true;
+            for name in ["EnableClipboardHistory", "EnableCloudClipboard"] {
+                changed |= set_owned_clipboard_registry_value(
+                    &hkcu, "Software\\Microsoft\\Clipboard", name, Some(val.to_reg_value()),
+                )?;
             }
         }
 
@@ -283,8 +396,10 @@ pub fn trigger_registry_win_v_optimization(enable: bool) -> AppResult<bool> {
                     .unwrap_or(0)
                     != 0
                 {
-                    let _ = policy_key.delete_value("DisallowClipboardHistory");
-                    changed = true;
+                    changed |= set_owned_clipboard_registry_value(
+                        &hkcu, "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+                        "DisallowClipboardHistory", None,
+                    )?;
                 }
             }
 
@@ -296,16 +411,20 @@ pub fn trigger_registry_win_v_optimization(enable: bool) -> AppResult<bool> {
                     .unwrap_or(1)
                     == 0
                 {
-                    let _ = sys_policy.delete_value("AllowClipboardHistory");
-                    changed = true;
+                    changed |= set_owned_clipboard_registry_value(
+                        &hkcu, "Software\\Policies\\Microsoft\\Windows\\System",
+                        "AllowClipboardHistory", None,
+                    )?;
                 }
                 if sys_policy
                     .get_value::<u32, _>("AllowCrossDeviceClipboard")
                     .unwrap_or(1)
                     == 0
                 {
-                    let _ = sys_policy.delete_value("AllowCrossDeviceClipboard");
-                    changed = true;
+                    changed |= set_owned_clipboard_registry_value(
+                        &hkcu, "Software\\Policies\\Microsoft\\Windows\\System",
+                        "AllowCrossDeviceClipboard", None,
+                    )?;
                 }
             }
         }
@@ -866,4 +985,42 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod clipboard_registry_tests {
+    use super::{has_original_clipboard_snapshot, owned_clipboard_value_matches};
+    use winreg::types::ToRegValue;
+
+    #[test]
+    fn registry_ownership_requires_exact_value_and_presence() {
+        let applied = 0u32.to_reg_value();
+        let changed = 1u32.to_reg_value();
+        assert!(owned_clipboard_value_matches(Some(&applied), Some(1), Some(&applied)));
+        assert!(!owned_clipboard_value_matches(Some(&changed), Some(1), Some(&applied)));
+        assert!(!owned_clipboard_value_matches(None, Some(1), Some(&applied)));
+        assert!(owned_clipboard_value_matches(None, Some(0), None));
+        assert!(!owned_clipboard_value_matches(Some(&applied), Some(0), None));
+        assert!(!owned_clipboard_value_matches(None, None, None));
+    }
+
+    #[test]
+    fn registry_ownership_distinguishes_string_case_and_value_type() {
+        let applied = "V".to_reg_value();
+        let changed = "v".to_reg_value();
+        assert!(!owned_clipboard_value_matches(Some(&changed), Some(1), Some(&applied)));
+        let dword = 0u32.to_reg_value();
+        let text = "0".to_reg_value();
+        assert!(!owned_clipboard_value_matches(Some(&text), Some(1), Some(&dword)));
+    }
+
+    #[test]
+    fn original_snapshot_requires_a_value_when_marked_present() {
+        let original = 0u32.to_reg_value();
+        assert!(has_original_clipboard_snapshot(Some(0), None));
+        assert!(has_original_clipboard_snapshot(Some(1), Some(&original)));
+        assert!(!has_original_clipboard_snapshot(Some(1), None));
+        assert!(!has_original_clipboard_snapshot(None, None));
+        assert!(!has_original_clipboard_snapshot(Some(2), Some(&original)));
+    }
 }
