@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Download, RefreshCw, X, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 import { FORK_LINKS } from "../config/fork";
 import "./UpdateDialog.css"; // Import the custom styles
 
@@ -26,6 +27,7 @@ const UpdateDialog: React.FC<UpdateDialogProps> = ({
   onClose,
 }) => {
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     if (isOpen) {
       invoke("set_ignore_blur", { ignore: true }).catch(console.error);
     } else {

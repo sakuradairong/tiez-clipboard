@@ -64,7 +64,10 @@ export const getTagTextColor = (backgroundColor: string) => {
 };
 
 export const getConciseTime = (timestamp: number, language: Locale) => {
-  const diff = Date.now() - timestamp;
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return language === "zh" ? "刚刚" : "just now";
+  }
+  const diff = Math.max(0, Date.now() - timestamp);
   const seconds = Math.floor(diff / 1000);
 
   if (language === "zh") {

@@ -912,6 +912,10 @@ const App = () => {
       // Ignore localStorage errors
     }
 
+    if (!isTauriRuntime()) {
+      return;
+    }
+
     try {
       await invoke("save_setting", { key, value: path });
       console.log(`[THEME DEBUG] saveAppSetting success: key=${key}`);
@@ -921,6 +925,7 @@ const App = () => {
   }, [setAppSettings]);
 
   const saveSetting = useCallback((key: string, val: string) => {
+    if (!isTauriRuntime()) return;
     invoke("save_setting", { key, value: val })
       .then(() => {
         if (key === "app.emoji_favorites") {
@@ -1174,6 +1179,7 @@ const App = () => {
         showSearchBox={showSearchBox}
         search={search}
         setSearch={setSearch}
+        isComposing={isComposing}
         setIsComposing={setIsComposing}
         searchInputRef={searchInputRef}
         showTagFilter={showTagFilter}

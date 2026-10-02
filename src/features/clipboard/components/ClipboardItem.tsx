@@ -2066,7 +2066,7 @@ const ClipboardItem = ({
                                 </span>
                             </div>
                         )
-                        : item.preview
+                        : (item.preview || item.content)
                 )}
                 {overlayTagsInPreview && renderTagsContainer(true)}
                 </div>

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { RefObject } from "react";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 import { matchesHotkey } from "./useHotkeyMatching";
 import { useWindowVisibility } from "./useWindowVisibility";
 import type { ClipboardEntry } from "../types";
@@ -92,6 +93,7 @@ export const useKeyboardNavigation = ({
   };
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     invoke("set_navigation_mode", { active: isKeyboardMode }).catch(console.error);
   }, [isKeyboardMode]);
 
@@ -216,6 +218,7 @@ export const useKeyboardNavigation = ({
   }, [searchInputRef, setIsKeyboardMode, setSelectedIndex]);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
     const unlisten = listen<string>("navigation-action", async (event) => {
       try {
         const isVisible = await getCurrentWindow().isVisible();

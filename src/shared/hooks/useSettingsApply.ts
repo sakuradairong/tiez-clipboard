@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyThemeClasses, normalizeThemeId } from "../config/themes";
 import { applyThemeCustomization, parseThemeCustomization } from "../lib/appearance";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 
 interface UseSettingsApplyOptions {
   theme: string;
@@ -80,33 +81,37 @@ export const useSettingsApply = ({
       applySystemMode();
     }
 
-    invoke("set_theme", {
-      theme: normalizedTheme,
-      color_mode: colorMode,
-    }).catch(console.error);
-
     let unlisten: (() => void) | null = null;
     let cleanupMedia: (() => void) | null = null;
 
-    if (colorMode === "system") {
-      getCurrentWindow()
-        .onThemeChanged((event) => {
-          if (disposed) return;
-          const next = event?.payload === "dark" ? "dark" : "light";
-          applyExplicitMode(next);
-          invoke("set_theme", {
-            theme: normalizedTheme,
-            color_mode: "system",
-          }).catch(console.error);
-        })
-        .then((f) => {
-          if (disposed) {
-            f();
-            return;
-          }
-          unlisten = f;
-        });
+    if (isTauriRuntime()) {
+      invoke("set_theme", {
+        theme: normalizedTheme,
+        color_mode: colorMode,
+      }).catch(console.error);
 
+      if (colorMode === "system") {
+        getCurrentWindow()
+          .onThemeChanged((event) => {
+            if (disposed) return;
+            const next = event?.payload === "dark" ? "dark" : "light";
+            applyExplicitMode(next);
+            invoke("set_theme", {
+              theme: normalizedTheme,
+              color_mode: "system",
+            }).catch(console.error);
+          })
+          .then((f) => {
+            if (disposed) {
+              f();
+              return;
+            }
+            unlisten = f;
+          });
+      }
+    }
+
+    if (colorMode === "system") {
       if (window.matchMedia) {
         const media = window.matchMedia("(prefers-color-scheme: dark)");
         const onChange = () => applyExplicitMode(media.matches ? "dark" : "light");

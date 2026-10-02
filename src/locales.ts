@@ -363,6 +363,7 @@ export const translations = {
         tags: "标签",
 
         // Content Types
+        type_all: "全部",
         type_code: "代码",
         type_url: "URL",
         type_file: "文件",
@@ -920,6 +921,7 @@ export const translations = {
 
 
         // Content Types
+        type_all: "All",
         type_code: "Code",
         type_url: "URL",
         type_file: "File",
@@ -1458,6 +1460,7 @@ export const translations = {
         tags: "標籤",
 
         // Content Types
+        type_all: "全部",
         type_code: "程式碼",
         type_url: "URL",
         type_file: "檔案",

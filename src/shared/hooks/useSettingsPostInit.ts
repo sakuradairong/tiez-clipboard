@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 import type { MutableRefObject } from "react";
 import type { AiProfile, AppCleanupPolicy } from "../../features/settings/types";
 import type { QuickPasteModifier, CloudSyncContentPrefs } from "../../features/app/types";
@@ -434,7 +435,9 @@ export const useSettingsPostInit = ({
 
     if (settings["app.window_pinned"] === "true") {
       setIsWindowPinned(true);
-      invoke("set_window_pinned", { pinned: true }).catch(console.error);
+      if (isTauriRuntime()) {
+        invoke("set_window_pinned", { pinned: true }).catch(console.error);
+      }
     }
 
     // 1. DEFINE PRESETS
@@ -484,10 +487,12 @@ export const useSettingsPostInit = ({
       }
     } else {
       // First time initialization
-      invoke("save_setting", {
-        key: "ai_profiles",
-        value: JSON.stringify(recommended)
-      }).catch(console.error);
+      if (isTauriRuntime()) {
+        invoke("save_setting", {
+          key: "ai_profiles",
+          value: JSON.stringify(recommended)
+        }).catch(console.error);
+      }
     }
     setAiProfiles(finalProfiles);
 

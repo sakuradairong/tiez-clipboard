@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 import type { Dispatch, SetStateAction } from "react";
 import type { ClipboardEntry } from "../types";
 
@@ -57,6 +58,10 @@ export const useHistoryFetch = ({
   }, [historyLength]);
   const fetchHistory = useCallback(
     async (reset = false) => {
+      if (!isTauriRuntime()) {
+        return;
+      }
+
       const seq = ++fetchSeqRef.current;
       try {
         if (reset) {
@@ -191,6 +196,8 @@ export const useHistoryFetch = ({
   fetchFnRef.current = fetchHistory;
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+
     // Rust setup emits `app-ready` once all backend state is managed; refetch
     // so a slow boot still shows history even after fetch retries were spent.
     const unlistenPromise = listen("app-ready", () => {

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { isTauriRuntime } from "../lib/tauriRuntime";
 import { playSoundEffect } from "../lib/soundEffects";
 
 interface UseSoundEffectsOptions {
@@ -14,6 +15,8 @@ export const useSoundEffects = ({
   pasteSoundEnabled
 }: UseSoundEffectsOptions) => {
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+
     const AudioContext =
       window.AudioContext ||
       (window as Window & { webkitAudioContext?: typeof window.AudioContext }).webkitAudioContext;

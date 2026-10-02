@@ -15,6 +15,10 @@
     margin-bottom: 0 !important;
 }
 
+.history-item.compact .content-preview {
+    padding-right: 58px;
+}
+
 /* Add extra padding when drag handle is present to avoid overlap */
 .history-item.compact:has(.drag-handle) {
     padding-left: 28px !important;

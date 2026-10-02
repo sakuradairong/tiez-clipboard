@@ -3,6 +3,7 @@ import { memo, useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import { isTauriRuntime } from "../../../shared/lib/tauriRuntime";
 import { ChevronRight, HelpCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import type { Locale } from "../../../shared/types";
@@ -428,6 +429,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
 
 
     useEffect(() => {
+        if (!isTauriRuntime()) return;
         getVersion()
             .then(v => setAppVersion(v))
             .catch(err => {

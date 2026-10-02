@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { DEFAULT_THEME } from "../../../shared/config/themes";
 import type { ClipboardEntry, Locale } from "../../../shared/types";
+import { isTauriRuntime } from "../../../shared/lib/tauriRuntime";
 import type {
   AppState,
   CloudSyncContentPrefs,
@@ -13,6 +14,59 @@ import { DEFAULT_CLOUD_SYNC_CONTENT_PREFS } from "../types";
 import type { AiProfile, AppCleanupPolicy } from "../../settings/types";
 
 const DEFAULT_AI_KEY = import.meta.env.VITE_AI_DEFAULT_API_KEY ?? "";
+
+const BROWSER_PREVIEW_SAMPLES: ClipboardEntry[] = [
+  {
+    id: -1,
+    content: "TieZ 是用于快速搜索、选择、复制和粘贴历史内容的小型桌面剪贴板工具。",
+    preview: "TieZ 是用于快速搜索、选择、复制和粘贴历史内容的小型桌面剪贴板工具。",
+    content_type: "text",
+    timestamp: Date.now() - 1000 * 60 * 3,
+    source_app: "Notepad",
+    is_pinned: true,
+    tags: ["置顶", "便签"]
+  },
+  {
+    id: -2,
+    content: "function copyToClipboard(text: string) {\n  navigator.clipboard.writeText(text);\n}",
+    preview: "function copyToClipboard(text: string) {\n  navigator.clipboard.writeText(text);\n}",
+    content_type: "code",
+    timestamp: Date.now() - 1000 * 60 * 15,
+    source_app: "Visual Studio Code",
+    is_pinned: false,
+    tags: ["TypeScript"]
+  },
+  {
+    id: -3,
+    content: "https://github.com/sakuradairong/tiez-clipboard",
+    preview: "https://github.com/sakuradairong/tiez-clipboard",
+    content_type: "url",
+    timestamp: Date.now() - 1000 * 60 * 45,
+    source_app: "Microsoft Edge",
+    is_pinned: false,
+    tags: ["开源"]
+  },
+  {
+    id: -4,
+    content: "#2563eb",
+    preview: "#2563eb",
+    content_type: "text",
+    timestamp: Date.now() - 1000 * 60 * 120,
+    source_app: "Figma",
+    is_pinned: false,
+    tags: ["设计"]
+  },
+  {
+    id: -5,
+    content: "C:\\Users\\Desktop\\Project-Report-2026.pdf",
+    preview: "Project-Report-2026.pdf",
+    content_type: "file",
+    timestamp: Date.now() - 1000 * 60 * 240,
+    source_app: "Explorer",
+    is_pinned: false,
+    tags: ["文档"]
+  }
+];
 
 export const useAppState = (): AppState => {
   const [showSettings, setShowSettings] = useState(false);
@@ -31,7 +85,9 @@ export const useAppState = (): AppState => {
     default_apps: true,
     data: true
   });
-  const [history, setHistory] = useState<ClipboardEntry[]>([]);
+  const [history, setHistory] = useState<ClipboardEntry[]>(() => {
+    return isTauriRuntime() ? [] : BROWSER_PREVIEW_SAMPLES;
+  });
   const [search, setSearch] = useState("");
   const [isComposing, setIsComposing] = useState(false);
   const [searchIsFocused, setSearchIsFocused] = useState(false);

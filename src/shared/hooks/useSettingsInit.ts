@@ -27,7 +27,10 @@ export const useSettingsInit = ({
   const settingsEffectCount = useRef(0);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!isTauriRuntime()) {
+      setSettings({});
+      return;
+    }
 
     let disposed = false;
 
