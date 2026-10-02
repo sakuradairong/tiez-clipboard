@@ -17,6 +17,7 @@
   --accent-color: #2f6fed;
   --accent-color-rgb: 47, 111, 237;
   --accent-hover: #245dce;
+  --accent-contrast-color: #ffffff;
   --border-dark: #24364d;
   --border-light: rgba(255, 255, 255, 0.78);
   --shadow-color: rgba(24, 34, 53, 0.18);
@@ -86,7 +87,7 @@
   --button-active-shadow: 0 6px 14px rgba(15, 23, 42, 0.12);
   --button-active-transform: translateY(0);
   --button-active-filled-background: var(--accent-color);
-  --button-active-filled-color: #ffffff;
+  --button-active-filled-color: var(--accent-contrast-color);
   --button-active-filled-border-color: var(--accent-color);
   --button-active-filled-shadow: 0 12px 24px rgba(var(--accent-color-rgb), 0.28);
   --button-text-transform: none;
@@ -191,7 +192,7 @@
   --menu-radius: 14px;
   --menu-shadow: var(--shadow-md);
   --menu-item-hover-background: var(--accent-color);
-  --menu-item-hover-color: #ffffff;
+  --menu-item-hover-color: var(--accent-contrast-color);
 
   --scrollbar-size: 10px;
   --scrollbar-size-thin: 4px;

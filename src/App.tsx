@@ -785,6 +785,7 @@ const App = () => {
   useContextMenuBlock();
 
   useSettingsApply({
+    themeCustomization: appSettings["app.theme_customization"],
     theme,
     colorMode,
 
@@ -817,6 +818,17 @@ const App = () => {
   }, []);
 
   useCustomBackground({ customBackground, customBackgroundOpacity, theme });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tiez_theme_customization", appSettings["app.theme_customization"] ?? "");
+      localStorage.setItem("tiez_custom_background", customBackground);
+      localStorage.setItem("tiez_custom_background_opacity", String(customBackgroundOpacity));
+      localStorage.setItem("tiez_surface_opacity", String(surfaceOpacity));
+    } catch {
+      // Appearance still applies when browser storage is unavailable.
+    }
+  }, [appSettings, customBackground, customBackgroundOpacity, surfaceOpacity]);
 
   useClipboardEvents({
     onUpdated: (updatedItem) => {

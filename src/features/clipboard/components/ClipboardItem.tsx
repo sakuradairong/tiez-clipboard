@@ -59,6 +59,35 @@ const SPREADSHEET_APP_RE = /(?:^|[\\/])(excel|et|wps|wpssheet|soffice)(?:\.exe|\
 const STANDALONE_COLOR_RE = /^(#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgb|hsl)a?\(\s*[^)]+\s*\))$/i;
 const COMPACT_PREVIEW_DEBUG = false;
 
+const getCompactPreviewAppearance = () => {
+    const rootStyle = getComputedStyle(document.documentElement);
+    const itemFontSize = parseInt(rootStyle.getPropertyValue("--clipboard-item-font-size"));
+    const tagFontSize = parseInt(rootStyle.getPropertyValue("--clipboard-tag-font-size"));
+    let themeCustomization: string | undefined;
+    let customBackground: string | undefined;
+    let customBackgroundOpacity: number | undefined;
+    let surfaceOpacity: number | undefined;
+    try {
+        themeCustomization = localStorage.getItem("tiez_theme_customization") || undefined;
+        customBackground = localStorage.getItem("tiez_custom_background") || undefined;
+        const backgroundOpacity = Number(localStorage.getItem("tiez_custom_background_opacity") ?? "45");
+        const surface = Number(localStorage.getItem("tiez_surface_opacity") ?? "50");
+        if (Number.isFinite(backgroundOpacity)) customBackgroundOpacity = backgroundOpacity;
+        if (Number.isFinite(surface)) surfaceOpacity = surface;
+    } catch {
+        // Preview remains available when appearance caches cannot be read.
+    }
+    return {
+        colorMode: document.documentElement.classList.contains("dark-mode") ? "dark" : "light",
+        clipboardItemFontSize: Number.isFinite(itemFontSize) ? itemFontSize : undefined,
+        clipboardTagFontSize: Number.isFinite(tagFontSize) ? tagFontSize : undefined,
+        themeCustomization,
+        customBackground,
+        customBackgroundOpacity,
+        surfaceOpacity
+    };
+};
+
 type ImageAnalysisResult = {
     text: string;
     qrCodes: string[];
@@ -1137,21 +1166,6 @@ const ClipboardItem = ({
         }
 
         try {
-            const rootStyle = getComputedStyle(document.documentElement);
-            const clipboardItemFontSizeRaw = parseInt(
-                rootStyle.getPropertyValue("--clipboard-item-font-size")
-            );
-            const clipboardTagFontSizeRaw = parseInt(
-                rootStyle.getPropertyValue("--clipboard-tag-font-size")
-            );
-            const clipboardItemFontSize = Number.isFinite(clipboardItemFontSizeRaw)
-                ? clipboardItemFontSizeRaw
-                : undefined;
-            const clipboardTagFontSize = Number.isFinite(clipboardTagFontSizeRaw)
-                ? clipboardTagFontSizeRaw
-                : undefined;
-            const colorMode = document.documentElement.classList.contains("dark-mode") ? "dark" : "light";
-
             if (!isHoverPreviewRequestCurrent(requestId)) {
                 compactPreviewLog("show preview aborted: stale hover request before emit", {
                     itemId: item.id,
@@ -1181,10 +1195,8 @@ const ClipboardItem = ({
                 timestamp: item.timestamp,
                 language,
                 theme,
-                colorMode,
                 richTextSnapshotPreview,
-                clipboardItemFontSize,
-                clipboardTagFontSize
+                ...getCompactPreviewAppearance()
             });
             compactPreviewLog("emit compact-preview-update done");
             if (!isHoverPreviewRequestCurrent(requestId)) return;
@@ -1239,7 +1251,7 @@ const ClipboardItem = ({
                         language,
                         theme,
                         richTextSnapshotPreview,
-                        colorMode: document.documentElement.classList.contains("dark-mode") ? "dark" : "light"
+                        ...getCompactPreviewAppearance()
                     });
                     compactPreviewLog("emit compact-preview-update after recreate done");
                     if (!isHoverPreviewRequestCurrent(requestId)) return;

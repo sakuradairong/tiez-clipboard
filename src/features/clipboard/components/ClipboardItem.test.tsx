@@ -102,6 +102,7 @@ beforeEach(() => {
   hooks.cursor = 0;
   hooks.effects = [];
   vi.clearAllMocks();
+  native.preview.emit.mockResolvedValue(undefined);
   native.scaleFactor.mockResolvedValue(1);
   vi.useFakeTimers();
   vi.stubGlobal("document", { documentElement: { classList: { contains: () => false } } });
@@ -172,5 +173,40 @@ describe("compact preview privacy", () => {
     await Promise.resolve();
     expect(native.preview.emit).toHaveBeenCalledWith("compact-preview-clear");
     expect(native.preview.hide).toHaveBeenCalled();
+  });
+});
+
+describe("compact preview appearance", () => {
+  it("retains fonts and custom appearance when a missing preview window is recreated", async () => {
+    const cache: Record<string, string> = {
+      tiez_theme_customization: '{"accentColor":"#348271","cornerRadius":4}',
+      tiez_custom_background: "C:/Pictures/background.png",
+      tiez_custom_background_opacity: "35",
+      tiez_surface_opacity: "70"
+    };
+    vi.stubGlobal("localStorage", { getItem: (key: string) => cache[key] ?? null });
+    let missingWindow = true;
+    native.preview.emit.mockImplementation((event: string) => {
+      if (event === "compact-preview-update" && missingWindow) {
+        missingWindow = false;
+        return Promise.reject(new Error("window not found"));
+      }
+      return Promise.resolve();
+    });
+    hover(render(props(false)));
+    await vi.advanceTimersByTimeAsync(1500);
+    await vi.waitFor(() => expect(native.preview.emit.mock.calls.filter(
+      ([event]) => event === "compact-preview-update"
+    )).toHaveLength(2));
+    const updates = native.preview.emit.mock.calls.filter(([event]) => event === "compact-preview-update");
+    expect(updates).toHaveLength(2);
+    const appearance = {
+      colorMode: "light", clipboardItemFontSize: 13, clipboardTagFontSize: 13,
+      themeCustomization: cache.tiez_theme_customization,
+      customBackground: cache.tiez_custom_background,
+      customBackgroundOpacity: 35, surfaceOpacity: 70
+    };
+    expect(updates[0][1]).toEqual(expect.objectContaining(appearance));
+    expect(updates[1][1]).toEqual(expect.objectContaining(appearance));
   });
 });

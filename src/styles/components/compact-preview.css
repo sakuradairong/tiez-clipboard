@@ -55,6 +55,40 @@ body.compact-preview #root>* {
     margin: 0 !important;
     box-shadow: none !important;
     filter: none !important;
+    isolation: isolate;
+    background: transparent;
+    border: var(--panel-border);
+    border-radius: var(--panel-radius);
+}
+
+/* The preview owns its surface because the app shell is intentionally reset. */
+.compact-preview-root .compact-popover-portal.compact-preview-window::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--bg-window);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: -1;
+}
+
+body.has-custom-bg .compact-preview-root .compact-popover-portal.compact-preview-window::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--custom-bg-image, none);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    opacity: var(--custom-bg-opacity, 0.45);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: -1;
+}
+
+/* Avoid painting the same image behind the preview's own surface. */
+html body.compact-preview.has-custom-bg::before {
+    content: none;
 }
 
 /* Keep compact preview visually single-layer. */

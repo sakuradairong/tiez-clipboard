@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyThemeClasses, normalizeThemeId } from "../config/themes";
+import { applyThemeCustomization, parseThemeCustomization } from "../lib/appearance";
 
 interface UseSettingsApplyOptions {
   theme: string;
@@ -13,6 +14,7 @@ interface UseSettingsApplyOptions {
   clipboardTagFontSize: number;
   surfaceOpacity: number;
   showAppBorder: boolean;
+  themeCustomization?: string;
 }
 
 export const useSettingsApply = ({
@@ -24,7 +26,8 @@ export const useSettingsApply = ({
   clipboardItemFontSize,
   clipboardTagFontSize,
   surfaceOpacity,
-  showAppBorder: _showAppBorder
+  showAppBorder: _showAppBorder,
+  themeCustomization
 }: UseSettingsApplyOptions) => {
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -132,4 +135,10 @@ export const useSettingsApply = ({
     const scale = Math.min(2, Math.max(0, surfaceOpacity / 50));
     root.style.setProperty("--surface-opacity-scale", scale.toString());
   }, [clipboardItemFontSize, clipboardTagFontSize, surfaceOpacity, settingsLoaded]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    applyThemeCustomization(parseThemeCustomization(themeCustomization));
+    return () => applyThemeCustomization({ accentColor: null, cornerRadius: null });
+  }, [themeCustomization, theme, settingsLoaded]);
 };

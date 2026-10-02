@@ -83,7 +83,7 @@ body.theme-sakura {
   --card-selected-background: rgba(212, 96, 122, 0.08);
   --card-selected-border-color: rgba(212, 96, 122, 0.3);
   --card-selected-shadow: 0 8px 20px rgba(212, 96, 122, 0.12);
-  --card-selected-outline: 1.5px solid rgba(212, 96, 122, 0.2);
+  --card-selected-outline: 1.5px solid rgba(var(--accent-color-rgb), 0.2);
 
   --panel-border: 1px solid rgba(255, 255, 255, 0.45);
   --panel-radius: 16px;
@@ -134,6 +134,20 @@ body.theme-sakura {
 body.theme-sakura {
   position: relative;
   isolation: isolate;
+}
+
+body.has-custom-bg.theme-sakura::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  background-image: var(--custom-bg-image, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: var(--custom-bg-opacity, 0.45);
+  border-radius: calc(var(--shell-radius) + 1px);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* --- Decorative: sakura petals animation --- */
@@ -246,7 +260,7 @@ body.theme-sakura #root > * {
     --card-selected-background: rgba(232, 112, 136, 0.12);
     --card-selected-border-color: rgba(232, 112, 136, 0.25);
     --card-selected-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-    --card-selected-outline: 1px solid rgba(232, 112, 136, 0.18);
+    --card-selected-outline: 1px solid rgba(var(--accent-color-rgb), 0.18);
 
     --panel-border: 1px solid rgba(255, 255, 255, 0.06);
     --data-panel-border: 1px solid rgba(255, 255, 255, 0.07);
@@ -304,7 +318,7 @@ body.dark-mode.theme-sakura {
   --card-selected-background: rgba(232, 112, 136, 0.12);
   --card-selected-border-color: rgba(232, 112, 136, 0.25);
   --card-selected-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  --card-selected-outline: 1px solid rgba(232, 112, 136, 0.18);
+  --card-selected-outline: 1px solid rgba(var(--accent-color-rgb), 0.18);
 
   --panel-border: 1px solid rgba(255, 255, 255, 0.06);
   --data-panel-border: 1px solid rgba(255, 255, 255, 0.07);
@@ -321,11 +335,6 @@ body.dark-mode.theme-sakura {
 /* Dark mode: swap glow to subtle sakura pink */
 body.dark-mode.theme-sakura #root::after {
   background: radial-gradient(circle, rgba(232, 112, 136, 0.04) 0%, transparent 70%);
-}
-
-/* Dark mode: fainter petal pattern */
-body.dark-mode.theme-sakura::before {
-  opacity: 0.35;
 }
 
 /* Dark mode: announcement ticker */

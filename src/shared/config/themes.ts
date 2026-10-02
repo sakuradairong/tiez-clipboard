@@ -14,6 +14,14 @@ export const isStoreTheme = (themeId: string): boolean =>
 
 export const THEMES: ThemeDefinition[] = [
   {
+    id: "minimal",
+    labels: {
+      zh: "极简",
+      en: "Minimal",
+      tw: "極簡"
+    }
+  },
+  {
     id: "retro",
     labels: {
       zh: "3D复古",

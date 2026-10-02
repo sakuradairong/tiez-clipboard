@@ -257,6 +257,7 @@ const AdvancedSettingsWindow = () => {
     });
 
     useSettingsApply({
+        themeCustomization: appState.appSettings["app.theme_customization"],
         theme,
         colorMode,
         showAppBorder,

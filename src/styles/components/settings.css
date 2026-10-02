@@ -398,7 +398,7 @@
 
 .settings-inline-choice-btn.primary {
   background: var(--accent-color);
-  color: white;
+  color: var(--accent-contrast-color, white);
   box-shadow: 0 2px 8px rgba(var(--accent-color-rgb), 0.25);
 }
 
@@ -1238,4 +1238,106 @@ body.theme-acrylic .settings-view select.search-input option {
   background: var(--segment-active-background);
   color: var(--segment-active-color);
   box-shadow: var(--segment-active-shadow);
+}
+
+.appearance-customization {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--panel-divider-color);
+}
+
+.appearance-customization h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.appearance-customization-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.appearance-customization-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.appearance-customization-row,
+.appearance-customization-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.appearance-customization-row input[type="color"] {
+  width: 36px;
+  height: 30px;
+  padding: 2px;
+  background: var(--bg-input);
+  border: var(--input-border);
+  border-radius: var(--input-radius);
+}
+
+.appearance-customization-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-color);
+}
+
+.appearance-customization-actions .btn-icon {
+  width: auto;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.appearance-customization select {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: var(--input-border);
+  border-radius: var(--input-radius);
+}
+
+.appearance-item-preview {
+  display: grid;
+  gap: 6px;
+  font-size: var(--clipboard-item-font-size);
+}
+
+.appearance-item-preview > div {
+  padding: 10px;
+  color: var(--text-primary);
+  background: var(--bg-element);
+  border: var(--card-border);
+  border-radius: var(--card-radius);
+}
+
+.appearance-item-preview > .appearance-preview-selected {
+  background: var(--card-selected-background);
+  border-color: var(--card-selected-border-color);
+}
+
+.appearance-customization-feedback {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.appearance-customization-feedback.error {
+  color: var(--text-primary);
+  border-left: 3px solid var(--accent-color);
+  padding-left: 8px;
+}
+
+@media (max-width: 360px) {
+  .appearance-customization-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { emitTo, listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow, LogicalSize, currentMonitor } from "@tauri-apps/api/window";
 import {
     FileText,
@@ -15,12 +16,16 @@ import HtmlContent from "../../../shared/components/HtmlContent";
 import {
     applyThemeClasses,
     DEFAULT_THEME,
-    normalizeThemeId
+    normalizeThemeId,
+    supportsCustomBackground,
+    isStoreTheme
 } from "../../../shared/config/themes";
 import { getConciseTime } from "../../../shared/lib/utils";
 import type { Locale } from "../../../shared/types";
 import { toTauriLocalImageSrc } from "../../../shared/lib/localImageSrc";
 import { getRichTextSnapshotDataUrl } from "../../../shared/lib/richTextSnapshot";
+import { applyThemeCustomization, parseThemeCustomization } from "../../../shared/lib/appearance";
+import { injectStoreThemeCSS } from "../../theme-store/hooks/useThemeApply";
 
 type PreviewPayload = {
     contentType: string;
@@ -37,6 +42,10 @@ type PreviewPayload = {
     richTextSnapshotPreview?: boolean;
     clipboardItemFontSize?: number;
     clipboardTagFontSize?: number;
+    themeCustomization?: string;
+    customBackground?: string;
+    customBackgroundOpacity?: number;
+    surfaceOpacity?: number;
 };
 
 const RICH_IMAGE_FALLBACK_PREFIX = "<!--TIEZ_RICH_IMAGE:";
@@ -135,6 +144,32 @@ const applyTheme = (payload: PreviewPayload) => {
     const body = document.body;
 
     applyThemeClasses(theme, root, body);
+    applyThemeCustomization(parseThemeCustomization(payload.themeCustomization));
+
+    if (isStoreTheme(theme)) {
+        try {
+            const cached = localStorage.getItem(`tiez_store_css_${theme}`);
+            if (cached) injectStoreThemeCSS(theme, cached);
+        } catch {
+            // A preview can still use neutral styles if storage is unavailable.
+        }
+    }
+
+    const backgroundOpacity = Math.min(100, Math.max(0,
+        Number.isFinite(payload.customBackgroundOpacity) ? payload.customBackgroundOpacity! : 45));
+    const surfaceOpacity = Math.min(100, Math.max(0,
+        Number.isFinite(payload.surfaceOpacity) ? payload.surfaceOpacity! : 50));
+    const hasCustomBackground = Boolean(payload.customBackground && supportsCustomBackground(theme));
+    for (const target of [root, body]) {
+        target.style.setProperty("--custom-bg-opacity", (backgroundOpacity / 100).toString());
+        target.style.setProperty("--surface-opacity-scale", (surfaceOpacity / 50).toString());
+        if (hasCustomBackground) {
+            target.style.setProperty("--custom-bg-image", `url("${convertFileSrc(payload.customBackground!)}")`);
+        } else {
+            target.style.removeProperty("--custom-bg-image");
+        }
+    }
+    body.classList.toggle("has-custom-bg", hasCustomBackground);
 
     root.classList.remove("light-mode", "dark-mode");
     body.classList.remove("light-mode", "dark-mode");
@@ -148,12 +183,12 @@ const applyTheme = (payload: PreviewPayload) => {
 
     body.classList.add("compact-preview");
 
-    if (payload.clipboardItemFontSize) {
-        root.style.setProperty("--clipboard-item-font-size", `${payload.clipboardItemFontSize}px`);
-    }
-    if (payload.clipboardTagFontSize) {
-        root.style.setProperty("--clipboard-tag-font-size", `${payload.clipboardTagFontSize}px`);
-    }
+    const itemFontSize = Math.min(18, Math.max(11,
+        Number.isFinite(payload.clipboardItemFontSize) ? payload.clipboardItemFontSize! : 13));
+    const tagFontSize = Math.min(14, Math.max(8,
+        Number.isFinite(payload.clipboardTagFontSize) ? payload.clipboardTagFontSize! : 10));
+    root.style.setProperty("--clipboard-item-font-size", `${itemFontSize}px`);
+    root.style.setProperty("--clipboard-tag-font-size", `${tagFontSize}px`);
 
     compactPreviewLog("theme applied", {
         theme,

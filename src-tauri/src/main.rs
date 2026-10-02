@@ -82,6 +82,7 @@ fn main() {
             app::commands::set_relay_fetch_hotkey,
             app::commands::set_deduplication,
             app::commands::save_setting,
+            app::commands::save_appearance_settings,
             app::commands::set_ignore_blur,
             app::commands::set_window_pinned,
             app::commands::get_settings,

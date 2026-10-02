@@ -45,6 +45,9 @@ This layer should not contain:
 - `src/styles/themes/mica.css`
 - `src/styles/themes/acrylic.css`
 - `src/styles/themes/sticky-note.css`
+- `src/styles/themes/paper.css`
+- `src/styles/themes/sakura.css`
+- `src/styles/themes/minimal.css`
 
 Each theme file is now independent and is responsible for:
 
@@ -125,7 +128,22 @@ Examples:
 - mica
 - acrylic
 
-Pure CSS themes do not need backend changes.
+Pure CSS themes do not need native material handling. Register their IDs in the appearance-save validation in `src-tauri/src/app/commands/settings_cmd.rs` as well as the frontend registry, so personal presets can save and restore them.
+
+## Personal Appearance Settings
+
+The appearance section stays inside settings; the clipboard popup continues to prioritize search, selection, and paste. The optional `minimal` theme provides a quiet, compact surface without changing the existing default theme or saved user preferences.
+
+`src/shared/lib/appearance.ts` defines the shared profile and applies validated overrides to both `html` and `body`:
+
+- `app.theme_customization` stores a six-digit hex `accentColor` and a `cornerRadius` from 0 to 24 pixels. A `null` value inherits the active theme.
+- `app.appearance_presets` stores up to 20 named local profiles. A profile includes the base theme, color mode, compact mode, both font sizes, background path and opacity, surface opacity, and customization.
+- Changing the accent or radius previews it while the appearance section is open. Apply commits it; leaving the section discards unsaved changes. Restore theme defaults clears only accent and radius overrides.
+- Saving a preset also applies the current appearance. Applying a preset validates and authorizes its background before saving the full profile; a missing background reports an error and leaves the saved settings unchanged.
+
+The registered desktop command `save_appearance_settings` accepts only appearance keys and writes them in one SQLite transaction through the settings repository. It emits `settings-changed` after a successful commit. Single appearance setting changes also emit that event, so the main and advanced-settings windows reload the persisted values.
+
+The main window caches the committed customization, background, and opacity values for each compact-preview payload. Compact preview uses the same customization parser and token applicator. It also restores theme defaults when a later payload does not carry overrides. This is local appearance customization; importing arbitrary CSS is not part of the personal editor.
 
 ## Semantic Token Contract
 
@@ -363,6 +381,8 @@ Theme labels belong in:
 Edit:
 
 - `src/shared/config/themes.ts`
+
+Also add the ID to `validate_appearance_theme` in `src-tauri/src/app/commands/settings_cmd.rs`. This save-validation list must stay aligned with built-in theme registration.
 
 Example:
 

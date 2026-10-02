@@ -648,6 +648,7 @@ const SettingsPanel = (props: SettingsPanelProps) => {
 
             {/* Appearance Settings */}
             <AppearanceSettingsGroup
+                appSettings={appSettings}
                 t={t}
                 collapsed={collapsedGroups['appearance']}
                 onToggle={() => toggleGroup('appearance')}

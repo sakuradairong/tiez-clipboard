@@ -11,6 +11,8 @@ import {
 import type { Locale } from "../../../../shared/types";
 import type { SettingsSubpage } from "../../../app/types";
 import { FORK_SERVICES } from "../../../../shared/config/fork";
+import ThemeCustomizationSettings from "../ThemeCustomizationSettings";
+import { parseThemeCustomization } from "../../../../shared/lib/appearance";
 
 interface LabelWithHintProps {
     label: string;
@@ -19,6 +21,7 @@ interface LabelWithHintProps {
 }
 
 interface AppearanceSettingsGroupProps {
+    appSettings: Record<string, string>;
     t: (key: string) => string;
     collapsed: boolean;
     onToggle: () => void;
@@ -63,6 +66,7 @@ const buildRangeStyle = (value: number, min: number, max: number) =>
     }) as CSSProperties;
 
 const AppearanceSettingsGroup = ({
+    appSettings,
     t,
     collapsed,
     onToggle,
@@ -175,6 +179,22 @@ const AppearanceSettingsGroup = ({
                         ))}
                     </div>
                 </div>
+
+                <ThemeCustomizationSettings
+                    language={language}
+                    presetsJson={appSettings["app.appearance_presets"]}
+                    profile={{
+                        theme,
+                        colorMode: colorMode === "dark" || colorMode === "light" ? colorMode : "system",
+                        compactMode,
+                        clipboardItemFontSize,
+                        clipboardTagFontSize,
+                        customBackground,
+                        customBackgroundOpacity,
+                        surfaceOpacity,
+                        customization: parseThemeCustomization(appSettings["app.theme_customization"])
+                    }}
+                />
 
                 <div className="setting-item column no-border">
                     <div className="item-label-group" style={{ marginBottom: '8px' }}>

@@ -8,6 +8,7 @@ const LEGACY_PLAIN_PREFIX: &str = "plain:";
 
 pub trait SettingsRepository {
     fn set(&self, key: &str, value: &str) -> Result<()>;
+    fn set_many(&self, settings: &HashMap<String, String>) -> Result<()>;
     fn get(&self, key: &str) -> Result<Option<String>>;
     fn get_all(&self) -> Result<HashMap<String, String>>;
     fn clear(&self) -> Result<()>;
@@ -133,6 +134,20 @@ impl SettingsRepository for SqliteSettingsRepository {
         Ok(())
     }
 
+    fn set_many(&self, settings: &HashMap<String, String>) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let transaction = conn.transaction()?;
+        let mut entries: Vec<_> = settings.iter().collect();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (key, value) in entries {
+            transaction.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                params![key, self.maybe_encrypt(key, value)],
+            )?;
+        }
+        transaction.commit()
+    }
+
     fn get(&self, key: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?")?;
@@ -210,5 +225,56 @@ impl SettingsRepository for SqliteSettingsRepository {
         conn.execute("DELETE FROM settings", [])?;
         // Note: seed_defaults should probably be called by the caller or we move it here
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_batch_rolls_back_when_a_later_write_fails() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO settings VALUES ('app.color_mode', 'light');
+                 INSERT INTO settings VALUES ('app.theme', 'mica');
+                 CREATE TRIGGER reject_theme BEFORE INSERT ON settings
+                 WHEN NEW.key = 'app.theme' AND NEW.value = 'minimal'
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .unwrap();
+        let repository = SqliteSettingsRepository::new(Arc::new(Mutex::new(connection)));
+        let settings = HashMap::from([
+            ("app.color_mode".to_string(), "dark".to_string()),
+            ("app.theme".to_string(), "minimal".to_string()),
+        ]);
+
+        assert!(repository.set_many(&settings).is_err());
+        assert_eq!(
+            repository.get("app.color_mode").unwrap().as_deref(),
+            Some("light")
+        );
+        assert_eq!(
+            repository.get("app.theme").unwrap().as_deref(),
+            Some("mica")
+        );
+    }
+
+    #[test]
+    fn settings_batch_commits_all_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        let repository = SqliteSettingsRepository::new(Arc::new(Mutex::new(connection)));
+        let settings = HashMap::from([
+            ("app.color_mode".to_string(), "dark".to_string()),
+            ("app.theme".to_string(), "minimal".to_string()),
+        ]);
+
+        repository.set_many(&settings).unwrap();
+        assert_eq!(repository.get_all().unwrap(), settings);
     }
 }

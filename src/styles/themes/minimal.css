@@ -1,0 +1,203 @@
+/* A quiet, compact surface for finding and pasting clipboard history. */
+:root.theme-minimal,
+body.theme-minimal {
+  color-scheme: light;
+  --bg-body: #f4f5f7;
+  --bg-window: #ffffff;
+  --bg-content: #ffffff;
+  --bg-toolbar: #ffffff;
+  --bg-panel: #f7f8fa;
+  --bg-input: #f4f5f7;
+  --bg-element: #ffffff;
+  --bg-button: #f4f5f7;
+
+  --text-primary: #20252d;
+  --text-secondary: #616d7c;
+  --text-muted: #778291;
+  --accent-color: #346ddb;
+  --accent-color-rgb: 52, 109, 219;
+  --accent-hover: #285bc1;
+  --accent-contrast-color: #ffffff;
+  --line-soft: #e4e7ec;
+  --line-strong: #cbd1da;
+  --border-dark: var(--line-strong);
+  --border-light: #ffffff;
+  --shadow-color: rgba(20, 28, 40, 0.08);
+  --shadow-xs: none;
+  --shadow-sm: 0 2px 6px var(--shadow-color);
+  --shadow-md: 0 4px 12px var(--shadow-color);
+  --shadow-lg: 0 6px 18px var(--shadow-color);
+  --shadow-inset: none;
+
+  --font-main: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", monospace;
+  --radius-window: 10px;
+  --radius-panel: 8px;
+  --radius-card: 6px;
+  --radius-control: 6px;
+  --spacing-md: 12px;
+  --spacing-sm: 6px;
+
+  --shell-background: var(--bg-window);
+  --shell-border: 1px solid var(--line-strong);
+  --shell-radius: var(--radius-window);
+  --shell-shadow: var(--shadow-md);
+  --shell-backdrop-filter: none;
+  --toolbar-border: 1px solid var(--line-soft);
+  --toolbar-shadow: none;
+  --title-font-size: 16px;
+  --title-font-weight: 600;
+
+  --input-border: 1px solid var(--line-soft);
+  --input-radius: var(--radius-control);
+  --input-shadow: none;
+  --input-focus-shadow: 0 0 0 2px var(--accent-soft);
+  --button-border: 1px solid transparent;
+  --button-radius: var(--radius-control);
+  --button-shadow: none;
+  --button-hover-shadow: none;
+  --button-hover-transform: none;
+  --button-active-shadow: none;
+  --button-active-transform: none;
+  --button-active-filled-color: var(--accent-contrast-color);
+  --button-active-filled-shadow: none;
+
+  --card-border: 1px solid var(--line-soft);
+  --card-radius: var(--radius-card);
+  --card-shadow: none;
+  --card-hover-shadow: none;
+  --card-hover-transform: none;
+  --card-active-shadow: none;
+  --card-active-transform: none;
+  --card-selected-background: rgba(var(--accent-color-rgb), 0.08);
+  --card-selected-border-color: var(--accent-color);
+  --card-selected-shadow: none;
+  --card-selected-outline: 1px solid var(--accent-color);
+  --card-selected-outline-offset: -1px;
+
+  --panel-border: 1px solid var(--line-soft);
+  --panel-radius: var(--radius-panel);
+  --panel-shadow: none;
+  --panel-divider-color: var(--line-soft);
+  --data-panel-border: 1px solid var(--line-soft);
+  --data-panel-radius: var(--radius-control);
+  --data-panel-shadow: none;
+  --data-panel-hover-background: var(--bg-input);
+  --range-track-shadow: none;
+  --range-thumb-shadow: none;
+  --range-thumb-active-shadow: none;
+  --switch-track-shadow: none;
+  --switch-thumb-shadow: none;
+  --keycap-radius: var(--radius-control);
+  --keycap-shadow: none;
+  --keycap-active-shadow: none;
+
+  --segmented-radius: var(--radius-control);
+  --segmented-shadow: none;
+  --segment-radius: 4px;
+  --segment-active-background: var(--bg-window);
+  --segment-active-shadow: none;
+  --modal-border: 1px solid var(--line-strong);
+  --modal-radius: var(--radius-panel);
+  --modal-shadow: var(--shadow-lg);
+  --dialog-button-radius: var(--radius-control);
+  --dialog-button-shadow: none;
+  --dialog-button-hover-shadow: none;
+  --dialog-button-hover-transform: none;
+  --dialog-button-active-shadow: none;
+  --dialog-button-active-transform: none;
+  --tags-radius: var(--radius-control);
+  --tags-shadow: none;
+  --tag-chip-radius: 4px;
+  --tag-chip-shadow: none;
+  --tag-chip-hover-shadow: none;
+  --tag-chip-hover-transform: none;
+  --tag-chip-active-shadow: none;
+  --tag-chip-active-transform: none;
+  --menu-radius: var(--radius-panel);
+  --menu-shadow: var(--shadow-md);
+  --menu-item-hover-color: var(--accent-contrast-color);
+
+  --scrollbar-size: 6px;
+  --scrollbar-size-thin: 4px;
+  --scrollbar-thumb-color: var(--line-strong);
+  --scrollbar-thumb-hover-color: var(--text-muted);
+  --content-line-height: 1.4;
+  --queue-radius: var(--radius-panel);
+  --queue-shadow: var(--shadow-sm);
+  --queue-count-shadow: none;
+  --queue-action-shadow: none;
+  --reset-button-radius: var(--radius-control);
+  --reset-button-shadow: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root.theme-minimal:not(.light-mode),
+  body.theme-minimal:not(.light-mode) {
+    color-scheme: dark;
+    --bg-body: #161a20;
+    --bg-window: #191d23;
+    --bg-content: #191d23;
+    --bg-toolbar: #191d23;
+    --bg-panel: #20252d;
+    --bg-input: #242b34;
+    --bg-element: #20252d;
+    --bg-button: #242b34;
+    --text-primary: #eef1f5;
+    --text-secondary: #acb5c1;
+    --text-muted: #8994a3;
+    --accent-color: #a5c4ff;
+    --accent-color-rgb: 165, 196, 255;
+    --accent-hover: #bbd2ff;
+    --accent-contrast-color: #18243b;
+    --line-soft: #303844;
+    --line-strong: #485261;
+    --border-light: #303844;
+    --shadow-color: rgba(0, 0, 0, 0.2);
+    --card-selected-background: rgba(var(--accent-color-rgb), 0.14);
+  }
+}
+
+:root.dark-mode.theme-minimal,
+body.dark-mode.theme-minimal {
+  color-scheme: dark;
+  --bg-body: #161a20;
+  --bg-window: #191d23;
+  --bg-content: #191d23;
+  --bg-toolbar: #191d23;
+  --bg-panel: #20252d;
+  --bg-input: #242b34;
+  --bg-element: #20252d;
+  --bg-button: #242b34;
+  --text-primary: #eef1f5;
+  --text-secondary: #acb5c1;
+  --text-muted: #8994a3;
+  --accent-color: #a5c4ff;
+  --accent-color-rgb: 165, 196, 255;
+  --accent-hover: #bbd2ff;
+  --accent-contrast-color: #18243b;
+  --line-soft: #303844;
+  --line-strong: #485261;
+  --border-light: #303844;
+  --shadow-color: rgba(0, 0, 0, 0.2);
+  --card-selected-background: rgba(var(--accent-color-rgb), 0.14);
+}
+
+/* Legacy preview/segmented selectors carry their own visual values. */
+.theme-minimal .compact-popover-portal,
+.compact-popover-portal.theme-minimal {
+  background: var(--bg-window);
+  border: var(--panel-border);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
+}
+
+.theme-minimal .segmented-control {
+  box-shadow: var(--segmented-shadow);
+}
+
+.theme-minimal .segment-btn.active {
+  background: var(--segment-active-background);
+  color: var(--segment-active-color);
+}

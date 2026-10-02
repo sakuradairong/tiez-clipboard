@@ -44,6 +44,12 @@ git_log_out.txt
 
 # Agent session artifacts
 .zcode/
+.mimosa/
+
+# WinUI experiment dependencies and generated build files
+/experiments/winui3-main-window/packages/
+/experiments/winui3-main-window/rust-core/target/
+/experiments/winui3-main-window/winui-app/Generated Files/
 
 # Sub-projects
 mobile-app/

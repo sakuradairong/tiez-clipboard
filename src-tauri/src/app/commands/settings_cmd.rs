@@ -2,6 +2,7 @@ use crate::app_state::SettingsState;
 use crate::database::DbState;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::repository::settings_repo::SettingsRepository;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -296,12 +297,205 @@ pub fn save_setting(
         .set(&key, &value)
         .map_err(AppError::from)?;
 
-    if key == "app.custom_background" {
-        // Keep the main and advanced-settings webviews in sync, but only
-        // after both authorization and persistence have succeeded.
+    if is_appearance_setting(&key) {
+        // Notify all webviews only after persistence (and background authorization).
         let _ = app_handle.emit("settings-changed", ());
     }
 
+    Ok(())
+}
+
+fn is_appearance_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "app.theme"
+            | "app.color_mode"
+            | "app.compact_mode"
+            | "app.clipboard_item_font_size"
+            | "app.clipboard_tag_font_size"
+            | "app.surface_opacity"
+            | "app.custom_background"
+            | "app.custom_background_opacity"
+            | "app.theme_customization"
+            | "app.appearance_presets"
+    )
+}
+
+fn appearance_validation_error(key: &str) -> AppError {
+    AppError::Validation(format!("外观设置无效: {key}"))
+}
+
+fn validate_appearance_theme(theme: &str) -> bool {
+    matches!(
+        theme,
+        "retro" | "sticky-note" | "mica" | "acrylic" | "paper" | "sakura" | "minimal"
+    ) || (theme.starts_with("store-")
+        && theme.len() > 6
+        && theme.len() <= 128
+        && theme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+}
+
+fn validate_appearance_number(key: &str, value: &str, min: u16, max: u16) -> AppResult<()> {
+    match value.parse::<u16>() {
+        Ok(number) if (min..=max).contains(&number) => Ok(()),
+        _ => Err(appearance_validation_error(key)),
+    }
+}
+
+fn validate_customization(value: &serde_json::Value) -> AppResult<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| appearance_validation_error("customization"))?;
+    if let Some(accent) = object.get("accentColor").filter(|value| !value.is_null()) {
+        let valid = accent
+            .as_str()
+            .map(|color| {
+                color.len() == 7
+                    && color.starts_with('#')
+                    && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+            })
+            .unwrap_or(false);
+        if !valid {
+            return Err(appearance_validation_error("accentColor"));
+        }
+    }
+    if let Some(radius) = object.get("cornerRadius").filter(|value| !value.is_null()) {
+        if !radius
+            .as_f64()
+            .map(|number| (0.0..=24.0).contains(&number))
+            .unwrap_or(false)
+        {
+            return Err(appearance_validation_error("cornerRadius"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_preset_profile(value: &serde_json::Value) -> AppResult<()> {
+    let profile = value
+        .as_object()
+        .ok_or_else(|| appearance_validation_error("profile"))?;
+    let fields = [
+        ("theme", "app.theme"),
+        ("colorMode", "app.color_mode"),
+        ("compactMode", "app.compact_mode"),
+        ("clipboardItemFontSize", "app.clipboard_item_font_size"),
+        ("clipboardTagFontSize", "app.clipboard_tag_font_size"),
+        ("surfaceOpacity", "app.surface_opacity"),
+        ("customBackground", "app.custom_background"),
+        ("customBackgroundOpacity", "app.custom_background_opacity"),
+    ];
+    for (field, key) in fields {
+        let value = profile
+            .get(field)
+            .ok_or_else(|| appearance_validation_error(field))?;
+        let serialized = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Bool(boolean) => boolean.to_string(),
+            serde_json::Value::Number(number) => number.to_string(),
+            _ => return Err(appearance_validation_error(field)),
+        };
+        validate_appearance_value(key, &serialized)?;
+    }
+    validate_customization(
+        profile
+            .get("customization")
+            .ok_or_else(|| appearance_validation_error("customization"))?,
+    )
+}
+
+fn validate_appearance_value(key: &str, value: &str) -> AppResult<()> {
+    match key {
+        "app.theme" if validate_appearance_theme(value) => Ok(()),
+        "app.color_mode" if matches!(value, "system" | "light" | "dark") => Ok(()),
+        "app.compact_mode" if matches!(value, "true" | "false") => Ok(()),
+        "app.clipboard_item_font_size" => validate_appearance_number(key, value, 11, 18),
+        "app.clipboard_tag_font_size" => validate_appearance_number(key, value, 8, 14),
+        "app.surface_opacity" | "app.custom_background_opacity" => {
+            validate_appearance_number(key, value, 0, 100)
+        }
+        "app.custom_background"
+            if value.len() <= 4096 && !value.chars().any(|character| character <= '\u{1f}') =>
+        {
+            Ok(())
+        }
+        "app.theme_customization" if value.len() <= 4096 => {
+            let parsed: serde_json::Value =
+                serde_json::from_str(value).map_err(|_| appearance_validation_error(key))?;
+            validate_customization(&parsed)
+        }
+        "app.appearance_presets" if value.len() <= 128 * 1024 => {
+            let parsed: serde_json::Value =
+                serde_json::from_str(value).map_err(|_| appearance_validation_error(key))?;
+            let presets = parsed
+                .as_array()
+                .filter(|items| items.len() <= 20)
+                .ok_or_else(|| appearance_validation_error(key))?;
+            let mut ids = HashSet::new();
+            for preset in presets {
+                let id = preset
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| appearance_validation_error("id"))?;
+                let name = preset
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| appearance_validation_error("name"))?;
+                if id.is_empty()
+                    || id.len() > 80
+                    || !id.as_bytes()[0].is_ascii_alphanumeric()
+                    || !id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                    || !ids.insert(id)
+                {
+                    return Err(appearance_validation_error("id"));
+                }
+                if name.trim().is_empty() || name.chars().count() > 60 {
+                    return Err(appearance_validation_error("name"));
+                }
+                validate_preset_profile(
+                    preset
+                        .get("profile")
+                        .ok_or_else(|| appearance_validation_error("profile"))?,
+                )?;
+            }
+            Ok(())
+        }
+        _ => Err(appearance_validation_error(key)),
+    }
+}
+
+fn validate_appearance_settings(settings: &HashMap<String, String>) -> AppResult<()> {
+    if settings.is_empty() || settings.len() > 10 {
+        return Err(appearance_validation_error("settings"));
+    }
+    for (key, value) in settings {
+        if !is_appearance_setting(key) {
+            return Err(appearance_validation_error(key));
+        }
+        validate_appearance_value(key, value)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_appearance_settings(
+    app_handle: AppHandle,
+    db_state: State<'_, DbState>,
+    settings: HashMap<String, String>,
+) -> AppResult<()> {
+    validate_appearance_settings(&settings)?;
+    if let Some(background) = settings.get("app.custom_background") {
+        crate::app::asset_scope::authorize_custom_background_file(&app_handle, background)?;
+    }
+    db_state
+        .settings_repo
+        .set_many(&settings)
+        .map_err(AppError::from)?;
+    let _ = app_handle.emit("settings-changed", ());
     Ok(())
 }
 
@@ -758,4 +952,107 @@ pub fn set_follow_mouse(
         .settings_repo
         .set("app.follow_mouse", &enabled.to_string())
         .map_err(AppError::from)
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+
+    #[test]
+    fn appearance_batch_rejects_non_visual_keys_and_invalid_values() {
+        for (key, value) in [
+            ("mqtt_password", "secret"),
+            ("app.theme", "unknown"),
+            ("app.color_mode", "auto"),
+            ("app.compact_mode", "1"),
+            ("app.clipboard_item_font_size", "19"),
+            ("app.clipboard_tag_font_size", "7"),
+            ("app.surface_opacity", "101"),
+            ("app.custom_background_opacity", "-1"),
+            ("app.theme_customization", "not-json"),
+            ("app.theme_customization", "[]"),
+            (
+                "app.theme_customization",
+                r##"{"accentColor":"url(example)"}"##,
+            ),
+            ("app.theme_customization", r##"{"cornerRadius":25}"##),
+            ("app.appearance_presets", "{}"),
+        ] {
+            let settings = HashMap::from([(key.to_string(), value.to_string())]);
+            assert!(
+                validate_appearance_settings(&settings).is_err(),
+                "accepted {key}={value}"
+            );
+        }
+        let oversized = HashMap::from([("app.theme_customization".to_string(), " ".repeat(4097))]);
+        assert!(validate_appearance_settings(&oversized).is_err());
+    }
+
+    #[test]
+    fn appearance_batch_accepts_a_complete_profile_and_named_preset() {
+        let profile = serde_json::json!({
+            "theme": "minimal",
+            "colorMode": "system",
+            "compactMode": false,
+            "clipboardItemFontSize": 13,
+            "clipboardTagFontSize": 10,
+            "surfaceOpacity": 50,
+            "customBackground": "C:\\old-background.png",
+            "customBackgroundOpacity": 45,
+            "customization": {"accentColor": "#2F6FED", "cornerRadius": 12}
+        });
+        let settings = HashMap::from([
+            ("app.theme".to_string(), "minimal".to_string()),
+            ("app.color_mode".to_string(), "system".to_string()),
+            ("app.compact_mode".to_string(), "false".to_string()),
+            ("app.clipboard_item_font_size".to_string(), "13".to_string()),
+            ("app.clipboard_tag_font_size".to_string(), "10".to_string()),
+            ("app.surface_opacity".to_string(), "50".to_string()),
+            ("app.custom_background".to_string(), String::new()),
+            (
+                "app.custom_background_opacity".to_string(),
+                "45".to_string(),
+            ),
+            (
+                "app.theme_customization".to_string(),
+                r##"{"accentColor":null,"cornerRadius":null}"##.to_string(),
+            ),
+            (
+                "app.appearance_presets".to_string(),
+                serde_json::json!([
+                    {"id": "local-1", "name": "专注工作", "profile": profile}
+                ])
+                .to_string(),
+            ),
+        ]);
+
+        assert!(validate_appearance_settings(&settings).is_ok());
+        // Saving a preset may retain an old background path; applying it validates the file separately.
+        assert!(validate_appearance_value(
+            "app.appearance_presets",
+            settings.get("app.appearance_presets").unwrap()
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn appearance_presets_reject_duplicate_ids_and_invalid_profiles() {
+        let profile = serde_json::json!({
+            "theme": "mica", "colorMode": "dark", "compactMode": true,
+            "clipboardItemFontSize": 13, "clipboardTagFontSize": 10,
+            "surfaceOpacity": 50, "customBackground": "", "customBackgroundOpacity": 45,
+            "customization": {"accentColor": null, "cornerRadius": null}
+        });
+        let duplicate = serde_json::json!([
+            {"id": "same", "name": "A", "profile": profile},
+            {"id": "same", "name": "B", "profile": profile}
+        ]);
+        assert!(
+            validate_appearance_value("app.appearance_presets", &duplicate.to_string()).is_err()
+        );
+        let mut invalid = profile;
+        invalid["clipboardItemFontSize"] = serde_json::json!(100);
+        let invalid = serde_json::json!([{"id": "valid", "name": "工作", "profile": invalid}]);
+        assert!(validate_appearance_value("app.appearance_presets", &invalid.to_string()).is_err());
+    }
 }
