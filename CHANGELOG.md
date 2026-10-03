@@ -6,6 +6,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-10-03
+
 ### Added
 
 - 新增适合快捷剪贴板浮窗的「极简」主题，支持明暗和紧凑列表；外观设置增加强调色、圆角实时预览和本地个人预设，保存或应用预设时原子更新外观设置，不改变现有默认主题与复制粘贴行为。
@@ -22,7 +24,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 - 恢复条目操作按钮的主题与自定义圆角：移除条目操作按钮固定的 `4px` 圆角，恢复使用 `--button-radius` token 与主题按钮 token（`--bg-button`、`--button-border`、`--button-shadow`），确保自定义 `0px`、`6px`、`24px` 圆角均能对操作按钮生效；极简专属透明效果收敛至 `minimal.css`，统一普通列表与紧凑模式的表现。
 - 修复极简主题下已激活图标按钮（如窗口置顶、条目置顶）在悬停时背景变成浅灰底导致白色图标不可见的问题：在共享 `buttons.css` 与 `minimal.css` 中为 `.btn-icon.active:hover` 明确保留强调色悬停背景（`--accent-hover`）与对比色图标（`--button-active-filled-color`），确保深浅色模式下悬停均具备清晰对比度。
 - 主窗口、高级设置与紧凑预览同步自定义主题参数、背景及透明度；修复樱花主题未使用自定义背景、纸质主题暗色选中状态对比不足，以及标题栏按钮和紧凑置顶标识绕过主题变量的问题。样式与设置实现影响所有平台，构建与行为验证以 Windows 为准。
-
 - 修复动态 WebP 被转成静态 PNG 的问题：采集时按真实字节签名保留动画 WebP（含被标成 `.jpg`/`.png` 的缓存文件），粘贴时不再附带 PNG 剪贴板格式，并写入 `image/webp` 与 `.webp` 文件剪贴板，避免目标应用优先取第一帧。静态 WebP 仍走原来的 PNG 兼容路径。
 - Windows 默认 URL 打开改用经过协议校验的原生处理程序，避免查询参数被命令解释器执行或截断。
 - 备份恢复拒绝 Windows 根路径、盘符路径、备用数据流、设备名及重复路径，避免文件逃出恢复暂存目录。
@@ -36,7 +37,6 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Changed
 
-- 更新应用版本为 `0.3.13`，同步前端、Tauri 与 Rust 清单和锁文件，用于 Windows 本地构建验证。
 - 忽略 WinUI 实验下载的依赖包、Rust 构建目录和生成代码，以及本地 `.mimosa/` 会话产物，避免误提交大文件阻塞 GitHub 推送。
 - 更新应用图标为方案 A「Z-折角」v2（蓝渐变 + 白几何 Z）：Windows 安装器/磁贴、主窗口与文档用图同步替换；托盘改为透明底单色 Z，并按系统任务栏浅/深主题切换墨蓝 / 白色 glyph（含高分屏 `@2x` 墨蓝资源）。未覆盖未随包提供的 `ios/`、`android/` 移动端图标树。
 - GitNexus 索引排除本地实验和诊断目录，避免生成或第三方源码阻塞项目调用图更新。
