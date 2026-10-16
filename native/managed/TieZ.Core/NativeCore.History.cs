@@ -31,6 +31,11 @@ public sealed partial class NativeCore
     public Task<HistoryMutation> DeleteEntryAsync(long id, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<HistoryMutation>(new { op = "history_delete", handle, id }, cancellationToken);
 
+    public Task<HistoryMutation> DeleteEntriesAsync(IReadOnlyList<long> ids, ulong expectedRevision,
+        CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<HistoryMutation>(new { op = "history_delete_many", handle, ids,
+            expected_revision = expectedRevision }, cancellationToken);
+
     private async Task<T> HistoryRequestAsync<T>(object request, CancellationToken cancellationToken)
     {
         VerifyAccess();

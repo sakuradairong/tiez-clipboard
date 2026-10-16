@@ -66,7 +66,20 @@ internal static class HistorySmoke
             catch (InvalidOperationException) { return true; }
         }).GetAwaiter().GetResult();
         Check(rejected, "History API owner thread guard");
-        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete, conflicts, change feed, cancellation");
+        long batchFirst = Read(core.AddManualAsync("batch first")).Id;
+        long batchSecond = Read(core.AddManualAsync("batch second")).Id;
+        ulong batchRevision = Read(core.GetHistoryAsync(new())).Revision;
+        Expect("history_conflict", () => Read(core.DeleteEntriesAsync([batchFirst, batchSecond], batchRevision - 1)));
+        Expect("not_found", () => Read(core.DeleteEntriesAsync([batchFirst, long.MaxValue], batchRevision)));
+        Check(Read(core.GetEntryAsync(batchFirst)).Content == "batch first", "Rejected batch partially deleted");
+        var deleted = Read(core.DeleteEntriesAsync([batchSecond, batchFirst, batchFirst], batchRevision));
+        Check(deleted.Changed && deleted.Revision == batchRevision + 1
+            && deleted.RemovedIds.Order().SequenceEqual(new[] { batchFirst, batchSecond }), "Atomic batch result");
+        Check(Read(core.GetHistoryChangesAsync(batchRevision)).Changes.Count == 1, "Batch emitted multiple revisions");
+        Expect("not_found", () => Read(core.GetEntryAsync(batchFirst)));
+        Expect("not_found", () => Read(core.GetEntryAsync(batchSecond)));
+        Check(!Read(core.DeleteEntriesAsync([], deleted.Revision)).Changed, "Empty batch changed history");
+        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch, conflicts, change feed, cancellation");
         return saved.Id;
     }
 

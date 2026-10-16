@@ -11,6 +11,29 @@ impl CleanupPlan {
     pub fn removed_ids(&self) -> &[i64] {
         &self.removed_ids
     }
+    /// Include removed session attachments while protecting surviving in-memory references.
+    /// This only builds a plan; it never touches files before the owner commits.
+    pub fn include_session<'a>(
+        &mut self,
+        repository: &SqliteClipboardRepository,
+        directory: &Path,
+        removed: impl IntoIterator<Item = &'a crate::domain::models::ClipboardEntry>,
+        retained: impl IntoIterator<Item = &'a crate::domain::models::ClipboardEntry>,
+    ) {
+        let attachments = directory.join("attachments");
+        let collect = |entry: &crate::domain::models::ClipboardEntry| {
+            repository.collect_attachment_paths_for_cleanup(
+                &entry.content,
+                entry.html_content.as_deref(),
+                entry.is_external,
+                &attachments,
+            )
+        };
+        self.paths.extend(removed.into_iter().flat_map(&collect));
+        let protected: std::collections::HashSet<_> =
+            retained.into_iter().flat_map(collect).collect();
+        self.paths.retain(|path| !protected.contains(path));
+    }
     /// Must be called after the owner's transaction committed on this connection.
     pub fn finish(
         self,
@@ -41,6 +64,20 @@ pub fn prune(
         return Err("Retention requires an owner transaction".into());
     }
     let removed_ids = repository.limit_candidates_with_conn(connection)?;
+    delete_selected(repository, connection, directory, removed_ids)
+}
+
+/// Prepares explicit deletions in the owner's transaction; filesystem cleanup is
+/// deferred until CleanupPlan::finish after commit, just as for retention.
+pub fn delete_selected(
+    repository: &SqliteClipboardRepository,
+    connection: &Connection,
+    directory: &Path,
+    removed_ids: Vec<i64>,
+) -> Result<CleanupPlan, String> {
+    if connection.is_autocommit() {
+        return Err("Deletion requires an owner transaction".into());
+    }
     let mut paths = Vec::new();
     for id in &removed_ids {
         if let Some(entry) = repository.get_entry_by_id_with_conn(connection, *id)? {

@@ -14,7 +14,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private int phase;
     private bool ticking;
     private HotkeyProbe? hotkeyProbe;
-    private long entryId, invalidImageId, pasteGuardId;
+    private long entryId, invalidImageId, pasteGuardId, batchFirst, batchSecond, batchKept;
+    private ulong batchRevision;
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
@@ -287,6 +288,54 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         && !(await core.PollShellAsync()).Status.MainHotkeyActive, "Disabled shortcut remained registered.");
                     using (var released = new HotkeyProbe()) { }
                     main.CloseSettings();
+                    batchFirst = (await core.AddManualAsync("多选删除一")).Id;
+                    batchSecond = (await core.AddManualAsync("多选删除二")).Id;
+                    batchKept = (await core.AddManualAsync("多选保留")).Id;
+                    await view.ReloadAsync();
+                    batchRevision = (await core.GetHistoryAsync(new())).Revision;
+                    view.SelectMany(batchFirst, batchSecond);
+                    Require(view.Detail == "" && !view.CanCopy && !view.CanPaste && view.CanDelete,
+                        "Multiple selection exposed single-entry content/actions.");
+                    view.Invoke("delete");
+                    break;
+                case 54:
+                    Require(view.HasDialog, "Batch delete skipped confirmation.");
+                    view.CancelDialog();
+                    break;
+                case 55:
+                    Require(!view.HasDialog && (await core.GetHistoryAsync(new())).Revision == batchRevision,
+                        "Cancelling batch changed history.");
+                    Require((await core.GetEntryAsync(batchFirst)).Content == "多选删除一", "Cancelled batch removed an entry.");
+                    view.Invoke("delete");
+                    break;
+                case 56:
+                    Require(view.HasDialog, "Second batch confirmation missing."); view.ConfirmDialog();
+                    break;
+                case 57:
+                    Require(!view.HasDialog && view.Rows.All(row => row.Id != batchFirst && row.Id != batchSecond)
+                        && !view.CanDelete, "Accepted batch left stale rows or selection.");
+                    var batchChanges = await core.GetHistoryChangesAsync(batchRevision);
+                    Require(batchChanges.Revision == batchRevision + 1 && batchChanges.Changes.Count == 1
+                        && batchChanges.Changes[0].RemovedIds.Order().SequenceEqual(new[] { batchFirst, batchSecond }),
+                        "Window batch did not produce one complete removal event.");
+                    Require((await core.GetEntryAsync(batchKept)).Content == "多选保留", "Batch removed an unselected entry.");
+                    batchFirst = (await core.AddManualAsync("过期选择")).Id;
+                    await view.ReloadAsync(); view.SelectMany(batchFirst, batchKept); view.Invoke("delete");
+                    break;
+                case 58:
+                    Require(view.HasDialog, "Stale-selection confirmation missing.");
+                    await core.EditEntryAsync(batchKept, "外部更新保留");
+                    view.ConfirmDialog();
+                    break;
+                case 59:
+                    Require(!view.HasDialog && view.HasError, "Changed history was not rejected during confirmation.");
+                    Require((await core.GetEntryAsync(batchFirst)).Content == "过期选择"
+                        && (await core.GetEntryAsync(batchKept)).Content == "外部更新保留", "Rejected batch partially deleted history.");
+                    await view.ReloadAsync(); view.SelectMany(batchFirst, batchKept);
+                    view.Search("多选保留");
+                    Require(!view.CanDelete && !view.CanCopy && view.Detail == "", "Filter change kept multi-selection actions/content.");
+                    break;
+                case 60:
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

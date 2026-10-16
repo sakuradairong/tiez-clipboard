@@ -54,7 +54,7 @@
         </CommandBar>
         <Grid Grid.Row="4" ColumnSpacing="16">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
-            <ListView x:Name="HistoryList" SelectionMode="Single"
+            <ListView x:Name="HistoryList" SelectionMode="Extended"
                       HorizontalContentAlignment="Stretch" IsItemClickEnabled="False"
                       AutomationProperties.Name="剪贴板历史记录">
                 <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>

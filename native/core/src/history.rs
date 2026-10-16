@@ -672,6 +672,59 @@ impl HistoryService {
         }
         Ok(self.committed(revision, id, None, vec![id], id > 0))
     }
+    /// Deletes an explicit selection as one revision. Session rows and attachments remain
+    /// untouched until the entire persistent transaction has committed.
+    pub fn delete_many(
+        &mut self,
+        ids: Vec<i64>,
+        expected_revision: u64,
+    ) -> CoreResult<HistoryMutation> {
+        if expected_revision != self.revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; refresh before deleting",
+            ));
+        }
+        if ids.len() > 1000 || ids.contains(&0) {
+            return Err(CoreError::new(
+                "invalid_batch",
+                "Select at most 1000 nonzero entry IDs",
+            ));
+        }
+        let ids: BTreeSet<_> = ids.into_iter().collect();
+        let Some(first) = ids.first().copied() else {
+            return Ok(self.unchanged(0));
+        };
+        for id in &ids {
+            self.entry(*id)?;
+        }
+        let revision = self.next_revision()?;
+        let stored: Vec<_> = ids.iter().copied().filter(|id| *id > 0).collect();
+        let persisted = !stored.is_empty();
+        {
+            let mut connection = self.connection.lock().map_err(failure)?;
+            let transaction = connection.transaction().map_err(failure)?;
+            let mut cleanup = tiez_storage::retention::delete_selected(
+                &self.repository,
+                &transaction,
+                &self.data_dir,
+                stored,
+            )
+            .map_err(failure)?;
+            cleanup.include_session(
+                &self.repository,
+                &self.data_dir,
+                self.session.iter().filter(|entry| ids.contains(&entry.id)),
+                self.session.iter().filter(|entry| !ids.contains(&entry.id)),
+            );
+            transaction.commit().map_err(failure)?;
+            cleanup
+                .finish(&self.repository, &connection, &self.data_dir)
+                .map_err(failure)?;
+        }
+        self.session.retain(|entry| !ids.contains(&entry.id));
+        Ok(self.committed(revision, first, None, ids.into_iter().collect(), persisted))
+    }
     pub fn set_tags(&mut self, id: i64, tags: Vec<String>) -> CoreResult<HistoryMutation> {
         let mut e = self.entry(id)?;
         let mut seen = BTreeSet::new();
@@ -1136,5 +1189,186 @@ mod tests {
             )
             .unwrap()
             .starts_with(database::ENCRYPT_PREFIX));
+    }
+
+    #[test]
+    fn batch_delete_mixed_ids_deduplicates_and_publishes_one_revision() {
+        let mut s = service();
+        let stored = add(&mut s, "batch stored");
+        s.set_tags(stored, vec!["work".into()]).unwrap();
+        let session = s
+            .record_capture(processed("batch session"), false, true, false)
+            .unwrap()
+            .id;
+        let before = s.revision;
+        let result = s
+            .delete_many(vec![stored, session, stored], before)
+            .unwrap();
+        assert_eq!(result.revision, before + 1);
+        assert_eq!(result.removed_ids, vec![session, stored]);
+        assert!(result.persistent_sync_pending);
+        assert!(s.entry(stored).is_err() && s.entry(session).is_err());
+        let changes = s.changes(before).unwrap();
+        assert_eq!(changes.changes.len(), 1);
+        assert_eq!(changes.changes[0].removed_ids, result.removed_ids);
+        let c = s.connection.lock().unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM entry_tags WHERE entry_id=?1",
+                [stored],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn batch_delete_rejects_stale_missing_zero_and_oversize_without_mutation() {
+        let mut s = service();
+        let id = add(&mut s, "keep");
+        let revision = s.revision;
+        assert_eq!(
+            s.delete_many(vec![id], revision - 1).unwrap_err().code,
+            "history_conflict"
+        );
+        assert_eq!(
+            s.delete_many(vec![id, i64::MAX], revision)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+        assert_eq!(
+            s.delete_many(vec![id, 0], revision).unwrap_err().code,
+            "invalid_batch"
+        );
+        assert_eq!(
+            s.delete_many(vec![id; 1001], revision).unwrap_err().code,
+            "invalid_batch"
+        );
+        assert!(!s.delete_many(Vec::new(), revision).unwrap().changed);
+        assert!(s.entry(id).is_ok());
+        assert_eq!(s.revision, revision);
+        assert!(s.changes(revision).unwrap().changes.is_empty());
+    }
+    #[test]
+    fn batch_session_only_does_not_request_persistent_sync() {
+        let mut s = service();
+        let id = s
+            .record_capture(processed("session only"), false, true, false)
+            .unwrap()
+            .id;
+        let result = s.delete_many(vec![id], s.revision).unwrap();
+        assert!(!result.persistent_sync_pending);
+        assert!(s.entry(id).is_err());
+    }
+    #[test]
+    fn batch_later_delete_failure_keeps_rows_session_and_tombstones() {
+        let mut s = service();
+        let first = add(&mut s, "first");
+        let second = add(&mut s, "second");
+        let session = s
+            .record_capture(processed("session"), false, true, false)
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        s.connection.lock().unwrap().execute_batch(&format!("CREATE TRIGGER reject_batch BEFORE DELETE ON clipboard_history WHEN OLD.id={second} BEGIN SELECT RAISE(ABORT,'batch fixture'); END;")).unwrap();
+        assert!(s
+            .delete_many(vec![first, second, session], revision)
+            .is_err());
+        for id in [first, second, session] {
+            assert!(s.entry(id).is_ok());
+        }
+        assert_eq!(s.revision, revision);
+        assert!(s.changes(revision).unwrap().changes.is_empty());
+        assert_eq!(
+            s.connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn batch_failed_commit_keeps_session_and_database() {
+        let mut s = service();
+        let stored = add(&mut s, "stored");
+        let session = s
+            .record_capture(processed("session"), false, true, false)
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        s.connection.lock().unwrap().execute_batch("PRAGMA foreign_keys=ON;
+            CREATE TABLE batch_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE batch_child(id INTEGER REFERENCES batch_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER reject_batch_commit AFTER DELETE ON clipboard_history BEGIN INSERT INTO batch_child VALUES(999); END;").unwrap();
+        assert!(s.delete_many(vec![stored, session], revision).is_err());
+        assert!(s.entry(stored).is_ok() && s.entry(session).is_ok());
+        assert_eq!(s.revision, revision);
+    }
+
+    #[test]
+    fn batch_attachments_keep_surviving_session_refs_then_clean_last_reference() {
+        let mut s = service();
+        let root =
+            std::env::temp_dir().join(format!("TieZ-batch-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        let path = root.join("attachments/shared.png");
+        std::fs::write(&path, b"fixture").unwrap();
+        s.data_dir = root.clone();
+        let mut entry = processed(path.to_str().unwrap());
+        entry.content_type = "image".into();
+        entry.is_external = true;
+        let session = s.record_capture(entry, false, false, false).unwrap().id;
+        s.connection.lock().unwrap().execute("INSERT INTO clipboard_history
+            (id,content_type,content,source_app,timestamp,preview,content_hash,content_hash_version,tags,is_external)
+            VALUES (1,'image',?1,'fixture',1,'image',1,2,'[]',1)", [path.to_str().unwrap()]).unwrap();
+        s.delete_many(vec![1], s.revision).unwrap();
+        assert!(
+            path.exists(),
+            "Surviving session still references attachment"
+        );
+        assert!(s.entry(session).is_ok());
+        s.delete_many(vec![session], s.revision).unwrap();
+        assert!(
+            !path.exists(),
+            "Last session attachment reference was not cleaned"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn batch_failed_commit_never_cleans_selected_session_attachment() {
+        let mut s = service();
+        let root = std::env::temp_dir().join(format!(
+            "TieZ-batch-rollback-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        let path = root.join("attachments/session.png");
+        std::fs::write(&path, b"fixture").unwrap();
+        s.data_dir = root.clone();
+        let mut entry = processed(path.to_str().unwrap());
+        entry.content_type = "image".into();
+        entry.is_external = true;
+        let session = s.record_capture(entry, false, false, false).unwrap().id;
+        let stored = add(&mut s, "must roll back");
+        let revision = s.revision;
+        s.connection.lock().unwrap().execute_batch("PRAGMA foreign_keys=ON;
+            CREATE TABLE file_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE file_child(id INTEGER REFERENCES file_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER fail_file_commit AFTER DELETE ON clipboard_history BEGIN INSERT INTO file_child VALUES(999); END;").unwrap();
+        assert!(s.delete_many(vec![stored, session], revision).is_err());
+        assert!(path.exists());
+        assert!(s.entry(stored).is_ok() && s.entry(session).is_ok());
+        assert_eq!(s.revision, revision);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

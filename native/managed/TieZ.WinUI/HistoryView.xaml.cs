@@ -54,7 +54,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 compositions.Remove(input);
                 ScheduleSearch();
             };
-            input.TextChanged += (_, _) => ScheduleSearch();
+            // Invalidate selection synchronously; debounce only the query itself.
+            input.TextChanging += (_, _) => ScheduleSearch();
         }
         TypeFilter.SelectionChanged += (_, _) => ScheduleSearch();
         PinnedOnly.Checked += (_, _) => ScheduleSearch();
@@ -206,7 +207,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!started || disposed) return;
         generation++;
         loadCancellation?.Cancel();
-        HistoryList.SelectedItem = null;
+        HistoryList.SelectedItems.Clear();
         loading = false;
         filterPending = true;
         UpdateCommands();
@@ -351,9 +352,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
         DetailText.Text = "";
         RevealButton.Visibility = Visibility.Collapsed;
         if (disposed) return;
-        if (HistoryList.SelectedItem is not HistoryRow row)
+        if (HistoryList.SelectedItems.Count != 1 || HistoryList.SelectedItem is not HistoryRow row)
         {
-            DetailTitle.Text = "选择一条记录";
+            DetailTitle.Text = HistoryList.SelectedItems.Count > 1 ? $"已选择 {HistoryList.SelectedItems.Count} 条" : "选择一条记录";
             DetailMetadata.Text = "";
             UpdateCommands();
             return;
@@ -388,7 +389,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed) return;
         bool busy = loading || mutating || filterPending || targetBusy;
-        var selected = HistoryList.SelectedItem as HistoryRow;
+        var selected = HistoryList.SelectedItems.Count == 1 ? HistoryList.SelectedItem as HistoryRow : null;
         bool available = !busy && activeDialog is null;
         ReturnTargetButton.IsEnabled = available && targetStatus?.HasTarget == true;
         StartTargetButton.IsEnabled = available;
@@ -396,7 +397,10 @@ public sealed partial class HistoryView : UserControl, IDisposable
         EditButton.IsEnabled = available && !externalPending && selectedEntry is not null;
         CopyButton.IsEnabled = CopyPlainButton.IsEnabled = available && !externalPending && selectedEntry is not null && selected is { IsStale: false };
         PasteButton.IsEnabled = PastePlainButton.IsEnabled = CopyButton.IsEnabled && targetStatus is { Running: true, HasTarget: true };
-        PinButton.IsEnabled = TagsButton.IsEnabled = DeleteButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
+        PinButton.IsEnabled = TagsButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
+        DeleteButton.IsEnabled = available && !externalPending && HistoryList.SelectedItems.Count > 0
+            && HistoryList.SelectedItems.Cast<HistoryRow>().All(row => !row.IsStale);
+        DeleteButton.Label = HistoryList.SelectedItems.Count > 1 ? $"删除所选（{HistoryList.SelectedItems.Count}）" : "删除";
         PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
         RefreshButton.IsEnabled = available;
         MoreButton.IsEnabled = available && hasMore;
@@ -544,8 +548,13 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private async Task DeleteSelectedAsync()
     {
-        if (disposed || activeDialog is not null || HistoryList.SelectedItem is not HistoryRow row) return;
-        var dialog = new ContentDialog { Title = "删除这条记录？", Content = "删除后无法撤销。",
+        if (disposed || activeDialog is not null || mutating || loading || filterPending || externalPending
+            || revision is not { } selectedRevision) return;
+        long[] ids = HistoryList.SelectedItems.Cast<HistoryRow>().Select(row => row.Id).ToArray();
+        if (ids.Length == 0) return;
+        if (ids.Length > 1000) { ShowError("一次最多删除 1000 条，请缩小选择范围。"); return; }
+        var dialog = new ContentDialog { Title = ids.Length == 1 ? "删除这条记录？" : $"删除所选 {ids.Length} 条记录？",
+            Content = "删除后无法撤销。置顶或带标签的所选记录也会删除。",
             PrimaryButtonText = "删除", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
             XamlRoot = XamlRoot };
         activeDialog = dialog;
@@ -555,7 +564,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             var result = await dialog.ShowAsync();
             activeDialog = null;
             if (!disposed && result == ContentDialogResult.Primary)
-                await MutateAsync(() => core!.DeleteEntryAsync(row.Id));
+                await MutateAsync(() => core!.DeleteEntriesAsync(ids, selectedRevision));
         }
         catch (Exception error) { if (!disposed) ShowError(error.Message); }
         finally { activeDialog = null; if (!disposed) UpdateCommands(); }
@@ -626,7 +635,13 @@ public sealed partial class HistoryView : UserControl, IDisposable
         TagFilter.Text = tag;
         PinnedOnly.IsChecked = pinned;
     }
-    internal void Select(long id) => HistoryList.SelectedItem = rows.First(row => row.Id == id);
+    internal void Select(long id) => SelectMany(id);
+    internal void SelectMany(params long[] ids)
+    {
+        HistoryList.SelectedItems.Clear();
+        foreach (long id in ids) HistoryList.SelectedItems.Add(rows.First(row => row.Id == id));
+    }
+    internal bool CanDelete => DeleteButton.IsEnabled;
     internal void ScrollToEnd() => listScroll?.ChangeView(null, listScroll.ScrollableHeight, null, true);
     internal void Invoke(string name)
     {
@@ -643,6 +658,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
         ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)).Invoke();
     }
     internal void SetDialogText(string text) => (dialogInput ?? throw new InvalidOperationException("No text dialog.")).Text = text;
+    internal void CancelDialog()
+    {
+        var button = Descendants<Button>(activeDialog ?? throw new InvalidOperationException("No dialog."))
+            .First(button => button.Name == "CloseButton");
+        ((IInvokeProvider)FrameworkElementAutomationPeer.CreatePeerForElement(button).GetPattern(PatternInterface.Invoke)).Invoke();
+    }
     internal void ConfirmDialog()
     {
         var button = Descendants<Button>(activeDialog ?? throw new InvalidOperationException("No dialog."))
