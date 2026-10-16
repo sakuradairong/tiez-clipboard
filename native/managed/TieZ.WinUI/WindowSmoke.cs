@@ -563,7 +563,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 88:
                     Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Document hover failed.");
                     if (!main.CompactPreview.Visible) return;
-                    Require(main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1, "Compact table preview did not reuse the native window.");
+                    Require(main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1,
+                        $"Compact table preview did not reuse the native window: expected={compactDocumentId}, {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
                     await core.SetTagsAsync(compactDocumentId, ["sensitive"]);
                     break;
                 case 89:

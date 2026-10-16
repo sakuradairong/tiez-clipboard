@@ -25,6 +25,7 @@ internal sealed class CompactPreviewController : IDisposable
     internal nint WindowHandle => window is null ? 0 : WinRT.Interop.WindowNative.GetWindowHandle(window);
     internal bool Visible => window?.AppWindow.IsVisible == true;
     internal bool HasPending => pending is not null;
+    internal string StateDiagnostic => $"generation={generation}, pending={pending?.Summary.Id}, displayed={DisplayedId}, visible={Visible}, image={HasImage}, document={HasDocument}, windows={WindowsCreated}";
     internal long? DisplayedId => window?.DisplayedId;
     internal bool HasImage => window?.HasImage == true;
     internal bool HasDocument => window?.HasDocument == true;
