@@ -57,8 +57,8 @@ Normal runs use `%LOCALAPPDATA%/TieZ.Native.Prototype/settings.db`, separate fro
 $exe = Resolve-Path native/managed/TieZ.WinUI/bin/Debug/net10.0-windows10.0.19041.0/win-x64/TieZ.WinUI.exe
 $report = Join-Path $PWD .tmp/winui-smoke.json
 # Create the report's parent directory first if it does not exist.
-Start-Process -FilePath $exe -ArgumentList @('--smoke', $report) -Wait
+Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--smoke', $report) -Wait
 Get-Content $report
 ```
 
-The check invokes the native Save button through its automation peer and verifies shared settings, duplicate-open handling, main-view updates, reopen without writes, teardown and cleanup, and absence of WebView2 in loaded modules/assemblies. It uses a temporary Unicode data directory. This is functional automation, not manual visual or accessibility acceptance. Running on a machine with WebView2 installed does not establish acceptance on a clean machine without its runtime. The Windows App SDK transitively restores WebView2 SDK assets even though this host does not use them.
+The check invokes the native Save button through its automation peer and verifies shared settings, duplicate-open handling, main-view updates, reopen without writes, teardown and cleanup, and absence of WebView2 in loaded modules/assemblies. It uses a temporary Unicode data directory. This is functional automation, not manual visual or accessibility acceptance. Running on a machine with WebView2 installed does not establish acceptance on a clean machine without its runtime. The Windows App SDK transitively restores the WebView2 package, but the host explicitly excludes all of its assets. A fresh output contains no WebView2 files or runtime dependency entries; the window smoke check also passes from that output. Existing output folders from older builds may still contain stale files; clean before checking deployment contents. SDK package restore and application runtime requirements are separate.

@@ -13,6 +13,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260710003" />
+    <!-- WinUI restores this SDK transitively; this host uses no WebView controls or APIs. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3179.45" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.8249" />
     <ProjectReference Include="../TieZ.Core/TieZ.Core.csproj" />
   </ItemGroup>
