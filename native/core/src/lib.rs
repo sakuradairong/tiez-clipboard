@@ -1,5 +1,6 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
 mod capture;
+mod cleanup_preview;
 mod paste;
 pub use capture::{CaptureService, CaptureStatus};
 mod history;
@@ -44,6 +45,11 @@ enum Request {
         handle: u64,
         expected_revision: u64,
         patch: BTreeMap<String, String>,
+    },
+    CleanupPreview {
+        handle: u64,
+        rules: String,
+        text: String,
     },
     HistoryPage {
         handle: u64,
@@ -217,6 +223,18 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         Request::Snapshot { handle } => {
             let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
             Ok(json!({ "snapshot": service.settings.snapshot()? }))
+        }
+        Request::CleanupPreview {
+            handle,
+            rules,
+            text,
+        } => {
+            if !registry.services.contains_key(&handle) {
+                return Err(invalid_handle());
+            }
+            // No borrowed service state: release the registry before compiling draft regexes.
+            drop(registry);
+            Ok(json!(cleanup_preview::preview(&rules, &text)?))
         }
         Request::Update {
             handle,
@@ -659,6 +677,26 @@ mod tests {
         let opened = call(json!({"op":"open", "database_path":path}));
         assert_eq!(opened["ok"], true, "{opened}");
         let handle = opened["result"]["handle"].as_u64().unwrap();
+        let preview = call(
+            json!({"op":"cleanup_preview","handle":handle,"rules":"foo => bar","text":"  foo\r\n "}),
+        );
+        assert_eq!(preview["result"]["text"], "  bar\n ");
+        assert_eq!(preview["result"]["matches"], 1);
+        assert_eq!(
+            call(json!({"op":"snapshot","handle":handle}))["result"]["snapshot"]["revision"],
+            0
+        );
+        assert_eq!(
+            call(json!({"op":"cleanup_preview","handle":0,"rules":"","text":""}))["error"]["code"],
+            "invalid_handle"
+        );
+        assert_eq!(
+            call(
+                json!({"op":"cleanup_preview","handle":handle,"rules":"[ => bad","text":"secret sample"})
+            )["error"]["code"],
+            "invalid_rule"
+        );
+
         assert_eq!(
             call(json!({"op":"open", "database_path":path}))["error"]["code"],
             "already_open"

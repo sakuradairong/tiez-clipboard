@@ -12,6 +12,9 @@ internal sealed class AppPolicyEditor : UserControl
 {
     private static readonly string[] Types = ["text", "code", "url", "rich_text", "image", "file", "video"];
     private static readonly string[] TypeLabels = ["文本", "代码", "链接", "富文本", "图片", "文件", "视频"];
+    private readonly CleanupPreviewView preview;
+    internal CleanupPreviewView RulePreview => preview;
+    internal void Initialize(TieZ.Core.NativeCore core) => preview.Initialize(core);
     private readonly StackPanel root = new() { Spacing = 12 };
     private readonly StackPanel fields = new() { Spacing = 10 };
     private readonly ComboBox selection = new() { Header = "应用策略（按执行顺序）", HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -38,12 +41,13 @@ internal sealed class AppPolicyEditor : UserControl
     internal int Count => policies?.Count ?? 0;
     internal bool StructuredAvailable => policies is not null;
     internal bool HasRetainedData => policies is not null || acceptedPolicies is not null || originals.Count > 0
-        || acceptedText.Length > 0 || raw.Text.Length > 0 || name.Text.Length > 0 || path.Text.Length > 0 || rules.Text.Length > 0;
+        || preview.HasRetainedData || acceptedText.Length > 0 || raw.Text.Length > 0 || name.Text.Length > 0 || path.Text.Length > 0 || rules.Text.Length > 0;
     private JsonObject? Selected => policies is not null && selection.SelectedIndex >= 0
         && selection.SelectedIndex < policies.Count ? policies[selection.SelectedIndex] as JsonObject : null;
 
     internal AppPolicyEditor()
     {
+        preview = new CleanupPreviewView(() => Selected is { } policy ? String(policy, "cleanupRules", "") : "");
         root.Children.Add(new TextBlock { Text = "按应用清理策略", FontSize = 20 });
         root.Children.Add(new TextBlock { Text = "先按顺序执行匹配的应用策略，再执行全局清理；清理可累加，忽略会立即停止采集。名称和路径任一匹配即可；支持可执行文件名、应用 ID 和 /正则/。", TextWrapping = TextWrapping.Wrap });
         root.Children.Add(selection);
@@ -61,7 +65,7 @@ internal sealed class AppPolicyEditor : UserControl
         }
         fields.Children.Add(new ScrollViewer { Content = typePanel, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        fields.Children.Add(extraTypes); fields.Children.Add(rules); fields.Children.Add(semantics);
+        fields.Children.Add(extraTypes); fields.Children.Add(rules); fields.Children.Add(semantics); fields.Children.Add(preview);
         root.Children.Add(fields);
         root.Children.Add(new Expander { Header = "兼容配置 · 查看或编辑 JSON", Content = raw, HorizontalAlignment = HorizontalAlignment.Stretch });
         Content = root;
@@ -87,7 +91,7 @@ internal sealed class AppPolicyEditor : UserControl
 
     internal void Clear()
     {
-        acceptedText = ""; acceptedPolicies = null;
+        preview.Dispose(); acceptedText = ""; acceptedPolicies = null;
         Text = "";
     }
     internal void Load(string value)
@@ -163,6 +167,8 @@ internal sealed class AppPolicyEditor : UserControl
     }
     private void ShowSelected()
     {
+        preview.Invalidate();
+        if (Selected is null) preview.Reset();
         loading = true;
         try
         {
@@ -196,6 +202,7 @@ internal sealed class AppPolicyEditor : UserControl
     }
     private void Publish()
     {
+        preview.Invalidate();
         loading = true;
         try { raw.Text = JsonNode.DeepEquals(policies, acceptedPolicies) ? acceptedText : policies!.ToJsonString(); }
         finally { loading = false; }

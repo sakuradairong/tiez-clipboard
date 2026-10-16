@@ -38,6 +38,7 @@ try
             catch (InvalidOperationException) { return true; }
         }).GetAwaiter().GetResult();
         Check(threadRejected, "Thread ownership");
+        CleanupSmoke.Run(core);
         historyId = HistorySmoke.Run(core);
         CaptureSmoke.Run(core);
         TargetSmoke.Run(core);

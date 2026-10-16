@@ -16,6 +16,8 @@ portable = ["tiez-storage/portable", "tiez-content/portable"]
 tiez-content = { path = "../content" }
 tiez-native-platform = { path = "../platform" }
 regex = "1.12.2"
+# Same interpolation parser used by regex; count expansion before allocating preview output.
+regex-automata = "0.4.18"
 tiez-storage = { path = "../storage" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

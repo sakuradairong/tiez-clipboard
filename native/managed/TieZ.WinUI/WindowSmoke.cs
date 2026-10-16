@@ -854,11 +854,95 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     advancedWindow.InvokeReload(); main.ShowMain(); await view.ReloadAsync(compactTextId);
                     break;
                 case 117:
+                    if (!advancedWindow!.RulePreview.IsContentReady) { advancedWindow.RulePreview.Expand(); return; }
+                    advancedWindow.RulePreview.Sample = "  foo\r\n ";
+                    advancedWindow.RulePreview.InvokeRun();
+                    Require(!advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Sample preview created a settings draft or wrote configuration.");
+                    break;
+                case 118:
+                    if (advancedWindow!.RulePreview.IsBusy) return;
+                    Require(advancedWindow.RulePreview.HasResult && !advancedWindow.RulePreview.HasError
+                        && !advancedWindow.RulePreview.Ignored && Lines(advancedWindow.RulePreview.Output) == "  bar\n "
+                        && core.Snapshot.Revision == advancedRevision, "Global cleanup preview changed whitespace/settings or failed.");
+                    advancedWindow.InvokeReload();
+                    Require(!advancedWindow.RulePreview.HasResult && !advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Explicit settings reload retained old sample output or wrote configuration.");
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        "[ => invalid", advancedWindow.PolicyDraft);
+                    Require(!advancedWindow.RulePreview.HasResult, "Rule edit retained stale sample output.");
+                    advancedWindow.RulePreview.Sample = "private sample"; advancedWindow.RulePreview.InvokeRun();
+                    break;
+                case 119:
+                    if (advancedWindow!.RulePreview.IsBusy) return;
+                    Require(advancedWindow.RulePreview.HasError && !advancedWindow.RulePreview.HasResult
+                        && advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Invalid preview rule wrote configuration or did not show an error.");
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        core.Snapshot.Values["app.cleanup_rules"], advancedWindow.PolicyDraft);
+                    advancedWindow.RulePreview.Sample = "foo"; advancedWindow.RulePreview.InvokeRun();
+                    advancedWindow.RulePreview.Sample = "changed while pending";
+                    Require(!advancedWindow.RulePreview.HasResult && !advancedWindow.RulePreview.IsBusy,
+                        "Sample edit did not cancel pending preview.");
+                    break;
+                case 120:
+                    Require(!advancedWindow!.RulePreview.HasResult && !advancedWindow.RulePreview.HasError,
+                        "Cancelled native sample published late.");
+                    advancedWindow.RulePreview.Sample = "foo"; advancedWindow.RulePreview.InvokeRun();
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        "foo => __IGNORE_CAPTURE__", advancedWindow.PolicyDraft);
+                    Require(!advancedWindow.RulePreview.HasResult && !advancedWindow.RulePreview.IsBusy,
+                        "Rule replacement did not cancel pending preview.");
+                    advancedWindow.RulePreview.InvokeRun();
+                    break;
+                case 121:
+                    if (advancedWindow!.RulePreview.IsBusy) return;
+                    Require(advancedWindow.RulePreview.HasResult && advancedWindow.RulePreview.Ignored
+                        && advancedWindow.RulePreview.Output == "__IGNORE_CAPTURE__"
+                        && core.Snapshot.Revision == advancedRevision, "Ignored sample result was lost or persisted.");
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        core.Snapshot.Values["app.cleanup_rules"], advancedWindow.PolicyDraft);
+                    Require(!advancedWindow.HasDraft && !advancedWindow.RulePreview.HasResult,
+                        "Restoring saved rules retained a preview/draft.");
+                    advancedWindow.PolicyEditor.Select(1); advancedWindow.PolicyEditor.RulePreview.Expand();
+                    break;
+                case 122:
+                    if (!advancedWindow!.PolicyEditor.RulePreview.IsContentReady) return;
+                    advancedWindow.PolicyEditor.RulePreview.Sample = "foo";
+                    advancedWindow.PolicyEditor.RulePreview.InvokeRun();
+                    break;
+                case 123:
+                    if (advancedWindow!.PolicyEditor.RulePreview.IsBusy) return;
+                    Require(advancedWindow.PolicyEditor.RulePreview.HasResult
+                        && advancedWindow.PolicyEditor.RulePreview.Output == "bar" && !advancedWindow.HasDraft
+                        && core.Snapshot.Revision == advancedRevision, "Per-app cleanup group preview did not use the selected rule group.");
+                    advancedWindow.PolicyEditor.Select(0);
+                    Require(!advancedWindow.PolicyEditor.RulePreview.HasResult, "Policy switch retained previous sample output.");
+                    advancedWindow.PolicyEditor.RulePreview.Sample = "pending on close";
+                    advancedWindow.PolicyEditor.RulePreview.InvokeRun();
+                    main.CloseAdvancedSettings();
+                    Require(!advancedWindow.RulePreview.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData,
+                        "Closing advanced settings retained sample requests/data.");
+                    break;
+                case 124:
+                    Require(!advancedWindow!.RulePreview.HasResult && !advancedWindow.PolicyEditor.RulePreview.HasResult,
+                        "Closed window accepted late native sample output.");
+                    main.OpenAdvancedSettings();
+                    break;
+                case 125:
+                    if (main.AdvancedSettings?.IsContentReady != true) return;
+                    advancedWindow = main.AdvancedSettings;
+                    Require(!advancedWindow.HasDraft && !advancedWindow.RulePreview.HasRetainedData
+                        && !advancedWindow.PolicyEditor.RulePreview.HasRetainedData && core.Snapshot.Revision == advancedRevision,
+                        "Reopened rule samples retained closed-window data or wrote settings.");
+                    main.ShowMain(); await view.ReloadAsync(compactTextId);
+                    break;
+                case 126:
                     Require(main.AdvancedSettings is not null && (await core.GetCaptureStatusAsync()) is { Running: true, Starts: 2 },
                         "Independent advanced lifecycle changed core ownership.");
                     view.Invoke("preview");
                     break;
-                case 118:
+                case 127:
                     Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Quit fixture lost the pending preview.");
                     // Close with advanced settings, capture and a pending preview still active.
                     view.Search("关闭时取消");
@@ -946,7 +1030,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         {
             main.Quit();
             if (passed && advancedWindow is not null)
-                Require(!advancedWindow.PolicyEditor.HasRetainedData, "Quit retained policy snapshots or rule text.");
+                Require(!advancedWindow.PolicyEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData, "Quit retained policy snapshots, sample data or rule text.");
             if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending
                 && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == ""
                 && main.Settings is null && main.AdvancedSettings is null, "Quit retained native windows/resources.");

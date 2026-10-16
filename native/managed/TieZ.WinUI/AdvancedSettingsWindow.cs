@@ -17,6 +17,7 @@ public sealed class AdvancedSettingsWindow : Window
     private readonly TextBox privacy = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
     private readonly TextBox cleanup = new() { Header = "清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
     private readonly AppPolicyEditor policies = new();
+    private readonly CleanupPreviewView cleanupPreview;
     private readonly Button save = new() { Content = "保存高级设置", IsEnabled = false };
     private readonly Button reload = new() { Content = "放弃草稿并重新载入" };
     private readonly InfoBar feedback = new() { IsOpen = false, IsClosable = true };
@@ -31,12 +32,15 @@ public sealed class AdvancedSettingsWindow : Window
     internal string PrivacyDraft => privacy.Text;
     internal string PolicyDraft => policies.Text;
     internal AppPolicyEditor PolicyEditor => policies;
+    internal CleanupPreviewView RulePreview => cleanupPreview;
     internal string KindsDraft => kinds.Text;
     internal ElementTheme CurrentTheme => surface.RequestedTheme;
 
     public AdvancedSettingsWindow(NativeCore core)
     {
         this.core = core;
+        cleanupPreview = new CleanupPreviewView(() => cleanup.Text);
+        cleanupPreview.Initialize(core); policies.Initialize(core);
         Title = "TieZ · 高级设置";
         AppWindow.Resize(new SizeInt32(640, 800));
         panel.Children.Add(new TextBlock { Text = "高级设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
@@ -45,6 +49,7 @@ public sealed class AdvancedSettingsWindow : Window
         panel.Children.Add(new TextBlock { Text = "敏感规则使用正则表达式，一行一条；留空表示不添加自定义规则。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
         panel.Children.Add(cleanup);
         panel.Children.Add(new TextBlock { Text = "例如：foo => bar。空行和以 # 开头的注释行会忽略。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
+        panel.Children.Add(cleanupPreview);
         panel.Children.Add(policies);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         actions.Children.Add(save); actions.Children.Add(reload);
@@ -54,6 +59,7 @@ public sealed class AdvancedSettingsWindow : Window
         Content = surface;
         foreach (var input in new[] { kinds, privacy, cleanup })
             input.TextChanging += (_, _) => MarkDirty();
+        cleanup.TextChanging += (_, _) => cleanupPreview.Invalidate();
         policies.Changed += MarkDirty;
         save.Click += (_, _) => Save();
         reload.Click += (_, _) => Reload();
@@ -62,7 +68,7 @@ public sealed class AdvancedSettingsWindow : Window
         {
             closed = true; core.Changed -= OnChanged; policies.Changed -= MarkDirty; loaded = null;
             loading = true; kinds.Text = privacy.Text = cleanup.Text = "";
-            policies.Clear();
+            cleanupPreview.Dispose(); policies.Clear();
         };
         Load(core.Snapshot);
     }
@@ -86,6 +92,7 @@ public sealed class AdvancedSettingsWindow : Window
     private void Load(SettingsSnapshot snapshot)
     {
         if (closed) return;
+        cleanupPreview.Invalidate();
         loading = true;
         try
         {

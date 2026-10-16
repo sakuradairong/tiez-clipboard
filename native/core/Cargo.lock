@@ -1791,6 +1791,7 @@ name = "tiez-native-core"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "regex-automata",
  "rusqlite",
  "serde",
  "serde_json",
