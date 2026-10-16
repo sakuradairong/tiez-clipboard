@@ -27,6 +27,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private string compactInvalidation = "none", compactActivation = "none";
     private AdvancedSettingsWindow? advancedWindow;
     private ulong advancedRevision;
+    private string acceptedPolicyJson = "";
+    private const string PolicyFixture = "[ {\"id\":\"first\",\"appName\":\"native-policy-fixture\",\"cleanupRules\":\"one => two\\r\\nthree => four\",\"contentTypes\":[\"text\",\"TEXT\",\"future-type\"],\"extension\":{\"version\":7}}, {\"appName\":\"native-fallback\",\"future\":null} ]";
     private const string OriginalAdvancedRules = "first => one\r\nsecond => two";
     private const string CompactText = "  紧凑文本\r\n  ";
     private const string DocumentHtml = "<h2>原生文档</h2><p><b>bold</b> &amp; 中文 <i>italic</i> <a href='https://example.invalid/native'>link</a></p><table><tr><th rowspan=2>H<th colspan=2>top<tr><td>one<td>two</table><img src='https://example.invalid/no-request' alt='logo'><script>never-render-script</script>";
@@ -726,11 +728,137 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     await view.ReloadAsync(compactTextId);
                     break;
                 case 110:
+                    advancedWindow!.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        advancedWindow.CleanupDraft, PolicyFixture);
+                    Require(advancedWindow.PolicyEditor.StructuredAvailable && advancedWindow.PolicyEditor.Count == 2
+                        && advancedWindow.HasDraft, "Compatible policies did not populate native controls.");
+                    advancedWindow.InvokeSave(); advancedRevision = core.Snapshot.Revision;
+                    Require(!advancedWindow.HasError && !advancedWindow.HasDraft
+                        && core.Snapshot.Values["app.app_cleanup_policies"] == PolicyFixture,
+                        "Loading policies rewrote their original JSON.");
+                    break;
+                case 111:
+                    var policyEditor = advancedWindow!.PolicyEditor;
+                    policyEditor.Select(1); policyEditor.Select(0);
+                    Require(!advancedWindow.HasDraft && advancedWindow.PolicyDraft == PolicyFixture,
+                        "Selecting a policy wrote materialized defaults.");
+                    policyEditor.Edit("temporary", "", false, true, "changed => draft");
+                    policyEditor.Edit("native-policy-fixture", "", true, false, "one => two\r\nthree => four");
+                    policyEditor.SetType(0, false); policyEditor.SetType(0, true);
+                    Require(!advancedWindow.HasDraft && advancedWindow.PolicyDraft == PolicyFixture,
+                        "Reverting native fields did not restore original JSON/defaults/types/CRLF.");
+                    policyEditor.Edit("native-policy-renamed", "native-policy-fixture.exe", true, false, "one => two\r\nthree => four");
+                    using (var editedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                    {
+                        var firstPolicy = editedPolicy.RootElement[0];
+                        Require(firstPolicy.GetProperty("cleanupRules").GetString() == "one => two\r\nthree => four"
+                            && firstPolicy.GetProperty("extension").GetProperty("version").GetInt32() == 7
+                            && firstPolicy.GetProperty("id").GetString() == "first"
+                            && !firstPolicy.TryGetProperty("enabled", out _) && !firstPolicy.TryGetProperty("action", out _),
+                            "Editing a policy dropped extensions, normalized unchanged rules or materialized defaults.");
+                    }
+                    policyEditor.SetType(0, false); policyEditor.SetType(4, true);
+                    using (var typedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                        Require(typedPolicy.RootElement[0].GetProperty("contentTypes").EnumerateArray()
+                            .Select(kind => kind.GetString()).SequenceEqual(new[] { "future-type", "image" }),
+                            "Type controls dropped unknown types or retained case-insensitive duplicates.");
+                    advancedWindow.InvokeSave();
+                    Require(!advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1,
+                        "Native policy fields did not save through core validation.");
+                    advancedRevision = core.Snapshot.Revision;
+                    break;
+                case 112:
+                    advancedWindow!.PolicyEditor.Edit("native-policy-renamed", "native-policy-fixture.exe", true, false, "[( => broken");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasError, "Invalid structured regex did not report an error.");
+                    Require(advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        $"Invalid structured regex changed storage/draft: dirty={advancedWindow.HasDraft}, expected={advancedRevision}, actual={core.Snapshot.Revision}.");
+                    using (var rejectedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                        Require(rejectedPolicy.RootElement[0].GetProperty("cleanupRules").GetString() == "[( => broken",
+                            "Rejected structured regex draft was lost.");
+                    advancedWindow.PolicyEditor.Edit("native-policy-renamed", "native-policy-fixture.exe", false, true, "foo => bar");
+                    advancedWindow.InvokeSave();
+                    Require(!advancedWindow.HasError && !advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision + 1,
+                        "Corrected disabled/ignore policy failed to save.");
+                    advancedRevision = core.Snapshot.Revision;
+                    break;
+                case 113:
+                    advancedWindow!.PolicyEditor.Invoke("add");
+                    Require(advancedWindow.PolicyEditor.Count == 3 && core.Snapshot.Revision == advancedRevision,
+                        "Adding a policy persisted before Save.");
+                    advancedWindow.PolicyEditor.Edit("native-new-fixture", "native-new.exe", true, true, "retained => rules");
+                    for (int type = 0; type < 7; type++) advancedWindow.PolicyEditor.SetType(type, false);
+                    using (var addedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                    {
+                        var added = addedPolicy.RootElement[2];
+                        Require(!string.IsNullOrEmpty(added.GetProperty("id").GetString())
+                            && added.GetProperty("action").GetString() == "ignore"
+                            && added.GetProperty("contentTypes").GetArrayLength() == 0
+                            && added.GetProperty("cleanupRules").GetString() == "retained => rules",
+                            "Added ignore policy did not retain its identity, empty-type semantics or cleanup rules.");
+                    }
+                    advancedWindow.PolicyEditor.Invoke("up"); advancedWindow.PolicyEditor.Invoke("up");
+                    advancedWindow.PolicyEditor.Invoke("down");
+                    using (var orderedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                        Require(orderedPolicy.RootElement[1].GetProperty("appName").GetString() == "native-new-fixture",
+                            "Policy order controls changed the wrong item.");
+                    advancedWindow.InvokeSave();
+                    Require(!advancedWindow.HasError && advancedWindow.PolicyEditor.Count == 3
+                        && core.Snapshot.Revision == advancedRevision + 1, "Ordered policies did not save atomically.");
+                    advancedRevision = core.Snapshot.Revision;
+                    break;
+                case 114:
+                    advancedWindow!.PolicyEditor.Select(1); advancedWindow.PolicyEditor.Invoke("remove");
+                    advancedWindow.PolicyEditor.Select(0); advancedWindow.PolicyEditor.Invoke("down");
+                    using (var removedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
+                    {
+                        Require(removedPolicy.RootElement.GetArrayLength() == 2
+                            && removedPolicy.RootElement[1].GetProperty("id").GetString() == "first"
+                            && removedPolicy.RootElement[0].TryGetProperty("future", out _)
+                            && !removedPolicy.RootElement[0].TryGetProperty("id", out _)
+                            && !removedPolicy.RootElement[0].TryGetProperty("enabled", out _),
+                            "Deleting/reordering altered the remaining legacy policy fields.");
+                    }
+                    advancedWindow.InvokeSave();
+                    Require(!advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1,
+                        "Deleting/reordering did not persist through Save.");
+                    advancedRevision = core.Snapshot.Revision;
+                    acceptedPolicyJson = core.Snapshot.Values["app.app_cleanup_policies"];
+                    main.CloseAdvancedSettings();
+                    Require(!advancedWindow.PolicyEditor.HasRetainedData, "Closed policy editor retained draft/snapshot data.");
+                    main.OpenAdvancedSettings();
+                    break;
+                case 115:
+                    if (main.AdvancedSettings?.IsContentReady != true) return;
+                    advancedWindow = main.AdvancedSettings;
+                    Require(advancedWindow.PolicyEditor.Count == 2 && !advancedWindow.HasDraft
+                        && advancedWindow.PolicyDraft == acceptedPolicyJson && core.Snapshot.Revision == advancedRevision,
+                        "Reopening structured policies changed accepted storage.");
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft, advancedWindow.CleanupDraft, "{}");
+                    Require(!advancedWindow.PolicyEditor.StructuredAvailable && advancedWindow.PolicyDraft == "{}",
+                        "Invalid raw configuration was silently reset.");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasError && advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Invalid raw configuration overwrote accepted policies.");
+                    advancedWindow.InvokeReload();
+                    Require(advancedWindow.PolicyEditor.Count == 2 && !advancedWindow.HasDraft
+                        && advancedWindow.PolicyDraft == acceptedPolicyJson, "Reload failed to restore structured policies.");
+                    break;
+                case 116:
+                    advancedWindow!.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
+                        advancedWindow.CleanupDraft, "[{\"enabled\":\"true\"}]");
+                    Require(!advancedWindow.PolicyEditor.StructuredAvailable, "Wrong-typed known field was coerced.");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasError && core.Snapshot.Revision == advancedRevision,
+                        "Wrong-typed raw configuration reached storage.");
+                    advancedWindow.InvokeReload(); main.ShowMain(); await view.ReloadAsync(compactTextId);
+                    break;
+                case 117:
                     Require(main.AdvancedSettings is not null && (await core.GetCaptureStatusAsync()) is { Running: true, Starts: 2 },
                         "Independent advanced lifecycle changed core ownership.");
                     view.Invoke("preview");
                     break;
-                case 111:
+                case 118:
                     Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Quit fixture lost the pending preview.");
                     // Close with advanced settings, capture and a pending preview still active.
                     view.Search("关闭时取消");
@@ -817,6 +945,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         try
         {
             main.Quit();
+            if (passed && advancedWindow is not null)
+                Require(!advancedWindow.PolicyEditor.HasRetainedData, "Quit retained policy snapshots or rule text.");
             if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending
                 && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == ""
                 && main.Settings is null && main.AdvancedSettings is null, "Quit retained native windows/resources.");

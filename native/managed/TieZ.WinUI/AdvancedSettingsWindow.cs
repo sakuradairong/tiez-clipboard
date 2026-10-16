@@ -16,7 +16,7 @@ public sealed class AdvancedSettingsWindow : Window
     private readonly TextBox kinds = new() { Header = "敏感匹配类别（逗号分隔）", PlaceholderText = "phone,idcard,email,secret" };
     private readonly TextBox privacy = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
     private readonly TextBox cleanup = new() { Header = "清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
-    private readonly TextBox policies = new() { Header = "按应用清理策略（JSON 数组）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100 };
+    private readonly AppPolicyEditor policies = new();
     private readonly Button save = new() { Content = "保存高级设置", IsEnabled = false };
     private readonly Button reload = new() { Content = "放弃草稿并重新载入" };
     private readonly InfoBar feedback = new() { IsOpen = false, IsClosable = true };
@@ -30,6 +30,7 @@ public sealed class AdvancedSettingsWindow : Window
     internal string CleanupDraft => cleanup.Text;
     internal string PrivacyDraft => privacy.Text;
     internal string PolicyDraft => policies.Text;
+    internal AppPolicyEditor PolicyEditor => policies;
     internal string KindsDraft => kinds.Text;
     internal ElementTheme CurrentTheme => surface.RequestedTheme;
 
@@ -45,22 +46,23 @@ public sealed class AdvancedSettingsWindow : Window
         panel.Children.Add(cleanup);
         panel.Children.Add(new TextBlock { Text = "例如：foo => bar。空行和以 # 开头的注释行会忽略。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
         panel.Children.Add(policies);
-        panel.Children.Add(new TextBlock { Text = "使用 JSON 策略数组；不设置应用策略时填 []。无效规则不会保存，当前草稿会保留。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         actions.Children.Add(save); actions.Children.Add(reload);
         panel.Children.Add(actions); panel.Children.Add(revision); panel.Children.Add(feedback);
         surface.Child = new ScrollViewer { Content = panel };
         surface.Style = (Style)Application.Current.Resources["NativeSettingsSurfaceStyle"];
         Content = surface;
-        foreach (var input in new[] { kinds, privacy, cleanup, policies })
+        foreach (var input in new[] { kinds, privacy, cleanup })
             input.TextChanging += (_, _) => MarkDirty();
+        policies.Changed += MarkDirty;
         save.Click += (_, _) => Save();
         reload.Click += (_, _) => Reload();
         core.Changed += OnChanged;
         Closed += (_, _) =>
         {
-            closed = true; core.Changed -= OnChanged; loaded = null;
-            loading = true; kinds.Text = privacy.Text = cleanup.Text = policies.Text = "";
+            closed = true; core.Changed -= OnChanged; policies.Changed -= MarkDirty; loaded = null;
+            loading = true; kinds.Text = privacy.Text = cleanup.Text = "";
+            policies.Clear();
         };
         Load(core.Snapshot);
     }
@@ -69,7 +71,8 @@ public sealed class AdvancedSettingsWindow : Window
         ["app.privacy_protection_kinds"] = StoredDraft(kinds, "app.privacy_protection_kinds"),
         ["app.privacy_protection_custom_rules"] = StoredDraft(privacy, "app.privacy_protection_custom_rules"),
         ["app.cleanup_rules"] = StoredDraft(cleanup, "app.cleanup_rules"),
-        ["app.app_cleanup_policies"] = StoredDraft(policies, "app.app_cleanup_policies"),
+        ["app.app_cleanup_policies"] = loaded is not null && Lines(policies.Text) == Lines(loaded.Values["app.app_cleanup_policies"])
+            ? loaded.Values["app.app_cleanup_policies"] : policies.Text,
     };
     private static string Lines(string value) => value.Replace("\r\n", "\n").Replace("\r", "\n");
     private string StoredDraft(TextBox input, string key) => loaded is not null
@@ -90,7 +93,7 @@ public sealed class AdvancedSettingsWindow : Window
             kinds.Text = snapshot.Values["app.privacy_protection_kinds"];
             privacy.Text = snapshot.Values["app.privacy_protection_custom_rules"];
             cleanup.Text = snapshot.Values["app.cleanup_rules"];
-            policies.Text = snapshot.Values["app.app_cleanup_policies"];
+            policies.Load(snapshot.Values["app.app_cleanup_policies"]);
             surface.RequestedTheme = ViewTheme.From(snapshot);
             revision.Text = $"已保存配置版本 {snapshot.Revision}";
             dirty = false; save.IsEnabled = false;
