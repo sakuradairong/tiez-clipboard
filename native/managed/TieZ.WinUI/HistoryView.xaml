@@ -1,0 +1,86 @@
+<UserControl
+    x:Class="TieZ.Native.HistoryView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:TieZ.Native">
+    <Grid RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Text="剪贴板历史" FontSize="28" FontWeight="SemiBold"/>
+        <InfoBar Grid.Row="1" IsOpen="True" IsClosable="False" Severity="Informational"
+                 Title="使用独立数据"
+                 Message="当前可管理历史记录，剪贴板监听与粘贴仍在迁移。"/>
+        <StackPanel Grid.Row="2" Spacing="8">
+            <TextBox x:Name="SearchText" PlaceholderText="搜索内容、来源、标签或识别结果"
+                     AutomationProperties.Name="搜索剪贴板历史"/>
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <ComboBox x:Name="TypeFilter" SelectedIndex="0" Width="140"
+                          AutomationProperties.Name="内容类型">
+                    <ComboBoxItem Content="全部类型"/><ComboBoxItem Content="文本"/>
+                    <ComboBoxItem Content="代码"/><ComboBoxItem Content="链接"/>
+                    <ComboBoxItem Content="富文本"/><ComboBoxItem Content="图片"/>
+                    <ComboBoxItem Content="文件"/><ComboBoxItem Content="视频"/>
+                </ComboBox>
+                <TextBox x:Name="TagFilter" Width="140" PlaceholderText="精确标签"
+                         AutomationProperties.Name="按精确标签筛选"/>
+                <CheckBox x:Name="PinnedOnly" Content="仅置顶"/>
+                <CheckBox x:Name="TagOnly" Content="仅搜索标签"/>
+            </StackPanel>
+        </StackPanel>
+        <CommandBar Grid.Row="3" HorizontalContentAlignment="Left" DefaultLabelPosition="Right">
+            <AppBarButton x:Name="AddButton" Label="新增" Icon="Add"/>
+            <AppBarButton x:Name="EditButton" Label="编辑" Icon="Edit"/>
+            <AppBarButton x:Name="PinButton" Label="置顶" Icon="Pin"/>
+            <AppBarButton x:Name="TagsButton" Label="标签">
+                <AppBarButton.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8EC;"/></AppBarButton.Icon>
+            </AppBarButton>
+            <AppBarButton x:Name="DeleteButton" Label="删除" Icon="Delete"/>
+            <AppBarButton x:Name="RefreshButton" Label="刷新" Icon="Refresh"/>
+        </CommandBar>
+        <Grid Grid.Row="4" ColumnSpacing="16">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
+            <ListView x:Name="HistoryList" SelectionMode="Single"
+                      HorizontalContentAlignment="Stretch" IsItemClickEnabled="False"
+                      AutomationProperties.Name="剪贴板历史记录">
+                <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:HistoryRow">
+                        <StackPanel Spacing="6" Padding="8,10">
+                            <TextBlock Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="3"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{x:Bind Metadata}" FontSize="12" MaxLines="1"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+            <Border Grid.Column="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="16">
+                <Grid RowSpacing="10">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <TextBlock x:Name="DetailTitle" Text="选择一条记录" FontSize="20"/>
+                    <TextBlock x:Name="DetailMetadata" Grid.Row="1" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <Button x:Name="RevealButton" Grid.Row="2" Content="显示敏感内容" Visibility="Collapsed"/>
+                    <TextBox x:Name="DetailText" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True"
+                             TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             AutomationProperties.Name="所选记录的原始文本"/>
+                </Grid>
+            </Border>
+        </Grid>
+        <StackPanel Grid.Row="5" Spacing="8">
+            <InfoBar x:Name="Feedback" IsOpen="False" IsClosable="True"/>
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="ListStatus" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                <ProgressRing x:Name="LoadingIndicator" Grid.Column="1" Width="24" Height="24" IsActive="False"/>
+                <Button x:Name="MoreButton" Grid.Column="2" Content="载入更多"/>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</UserControl>
