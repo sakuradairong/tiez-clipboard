@@ -15,3 +15,5 @@ pub mod target;
 #[path = "../../../src-tauri/src/services/paste_input_rules.rs"]
 mod paste_input_rules;
 pub mod keyboard;
+
+pub mod shell;

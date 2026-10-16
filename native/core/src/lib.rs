@@ -24,6 +24,7 @@ struct CoreRuntime {
     history: Arc<Mutex<HistoryService>>,
     capture: capture::CaptureService,
     target: tiez_native_platform::target::TargetTracker,
+    shell: tiez_native_platform::shell::ShellService,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
@@ -97,6 +98,16 @@ enum Request {
         #[serde(default)]
         allow_sensitive: bool,
     },
+    ShellStart {
+        handle: u64,
+        show_tray: bool,
+    },
+    ShellPoll {
+        handle: u64,
+    },
+    ShellStop {
+        handle: u64,
+    },
     TargetStart {
         handle: u64,
     },
@@ -159,6 +170,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     history,
                     capture,
                     target: Default::default(),
+                    shell: Default::default(),
                 },
             );
             Ok(json!({ "handle": handle, "snapshot": snapshot }))
@@ -288,6 +300,37 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 expected_generation
             )?))
         }
+        Request::ShellStart { handle, show_tray } => {
+            let service = registry
+                .services
+                .get_mut(&handle)
+                .ok_or_else(invalid_handle)?;
+            let status = service.shell.start(show_tray).map_err(shell_error)?;
+            Ok(shell_status(status))
+        }
+        Request::ShellPoll { handle } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            use tiez_native_platform::shell::ShellAction;
+            let actions: Vec<_> = service
+                .shell
+                .drain()
+                .into_iter()
+                .map(|action| match action {
+                    ShellAction::ShowMain => "show_main",
+                    ShellAction::OpenSettings => "open_settings",
+                    ShellAction::Quit => "quit",
+                })
+                .collect();
+            Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))
+        }
+        Request::ShellStop { handle } => {
+            let service = registry
+                .services
+                .get_mut(&handle)
+                .ok_or_else(invalid_handle)?;
+            service.shell.stop().map_err(shell_error)?;
+            Ok(shell_status(service.shell.status()))
+        }
         Request::TargetStart { handle } => {
             let service = registry
                 .services
@@ -347,12 +390,24 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .remove(&handle)
                 .ok_or_else(invalid_handle)?;
             // Removed from registry, no history/policy guards held while joining.
+            let _ = service.shell.stop();
+            let shell = shell_status(service.shell.status());
             let capture = service.capture.stop();
             let _ = service.target.stop();
             let target = target_status(service.target.status());
-            Ok(json!({ "closed": true, "capture": capture, "target": target }))
+            Ok(json!({ "closed": true, "capture": capture, "target": target, "shell": shell }))
         }
     }
+}
+fn shell_error(code: &'static str) -> CoreError {
+    CoreError::new(
+        code,
+        "Native tray/message service unavailable; keep the main window accessible",
+    )
+}
+fn shell_status(status: tiez_native_platform::shell::ShellStatus) -> Value {
+    json!({ "running": status.running, "starts": status.starts,
+        "tray_visible": status.tray_visible, "last_error": status.last_error })
 }
 fn target_error(code: &'static str) -> CoreError {
     CoreError::new(

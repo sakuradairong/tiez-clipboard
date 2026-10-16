@@ -16,10 +16,18 @@
                 </NavigationViewItem>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
-                <TextBlock Text="原生迁移版&#xA;使用独立数据" TextWrapping="Wrap"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="16"/>
+                <StackPanel Spacing="8" Margin="12">
+                    <Button x:Name="HideButton" Content="隐藏到托盘" IsEnabled="False"/>
+                    <Button x:Name="QuitButton" Content="退出 TieZ"/>
+                    <TextBlock Text="原生迁移版&#xA;使用独立数据" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
             </NavigationView.PaneFooter>
-            <local:HistoryView x:Name="HistoryWorkspace" Margin="16"/>
+            <Grid Margin="16" RowSpacing="8">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="托盘不可用"/>
+                <local:HistoryView x:Name="HistoryWorkspace" Grid.Row="1"/>
+            </Grid>
         </NavigationView>
     </Grid>
 </Window>

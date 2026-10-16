@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
@@ -47,6 +48,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
             {
                 case 0:
                     Require(core.Snapshot.Revision == 0, "Initial window binding wrote configuration.");
+                    Require((await core.PollShellAsync()).Status is { Running: true, Starts: 1, TrayVisible: true }
+                        && main.ResidentMode, "Native tray did not register or resident close is unavailable.");
                     Require(!view.CaptureRunning && (await core.GetCaptureStatusAsync()).Starts == 0, "Smoke capture must be explicitly controlled.");
                     Require((await core.GetTargetStatusAsync()) is { Running: true, Starts: 1 }, "Main startup did not own one target hook.");
                     main.OpenSettings();
@@ -67,6 +70,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(main.Settings.CaptureOptionsLoaded, "Capture settings did not reload accepted values.");
                     main.CloseSettings();
                     Require((await core.GetTargetStatusAsync()).Starts == 1, "Settings lifetime restarted target tracking.");
+                    Require((await core.PollShellAsync()).Status.Starts == 1, "Settings lifetime restarted native shell.");
                     core.Update(new Dictionary<string, string> { ["app.show_search_box"] = "true" }, 1);
                     break;
                 case 4: view.Invoke("add"); break;
@@ -226,6 +230,21 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 43:
                     if (!view.TargetTrackingRunning) return;
                     Require((await core.GetTargetStatusAsync()).Starts == 2 && !view.CanPaste, "Target restart or empty-selection paste guard failed.");
+                    // SC_CLOSE follows the same native close path as the title-bar button.
+                    if (!PostMessageW(WinRT.Interop.WindowNative.GetWindowHandle(main), 0x112, 0xF060, 0))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    break;
+                case 44:
+                    Require(!main.AppWindow.IsVisible && main.ResidentMode && view.CaptureRunning, "Native close did not preserve background capture.");
+                    Require((await core.PollShellAsync()).Status is { Running: true, Starts: 1, TrayVisible: true }, "Close-to-tray stopped native shell.");
+                    main.OpenSettings();
+                    break;
+                case 45:
+                    Require(main.Settings is not null && main.Settings.DisplayedRevision == core.Snapshot.Revision, "Settings did not open independently while main was hidden.");
+                    main.CloseSettings(); main.ShowMain();
+                    break;
+                case 46:
+                    Require(main.AppWindow.IsVisible && main.ResidentMode && core.Refresh().Revision == 3, "Show from resident mode failed or wrote settings.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
@@ -240,11 +259,14 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         finally { ticking = false; }
     }
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessageW(nint window, uint message, nuint wparam, nint lparam);
+
     private void Finish(bool passed, string? error)
     {
         timer!.Stop();
         ulong revision = core.Snapshot.Revision;
-        try { main.Close(); Directory.Delete(directory, recursive: true); }
+        try { main.Quit(); Directory.Delete(directory, recursive: true); }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, phases = phase + 1,
             framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,

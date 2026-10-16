@@ -7,6 +7,7 @@ namespace TieZ.Native;
 public sealed partial class MainWindow : Window
 {
     private readonly NativeCore core;
+    private bool residentMode, quitting;
     internal SettingsWindow? Settings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
     internal ElementTheme CurrentTheme => MainRoot.RequestedTheme;
@@ -18,6 +19,12 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         Title = "TieZ · 原生迁移版";
         AppWindow.Resize(new SizeInt32(1080, 760));
+        AppWindow.Closing += (_, args) =>
+        {
+            if (residentMode && !quitting) { args.Cancel = true; HideToTray(); }
+        };
+        HideButton.Click += (_, _) => HideToTray();
+        QuitButton.Click += (_, _) => Quit();
         Navigation.SelectedItem = HistoryNav;
         Navigation.ItemInvoked += (_, args) =>
         {
@@ -33,6 +40,33 @@ public sealed partial class MainWindow : Window
         };
         Apply(core.Snapshot);
     }
+
+    internal void SetResidentMode(bool enabled)
+    {
+        residentMode = enabled;
+        HideButton.IsEnabled = enabled;
+    }
+    internal void SetShellUnavailable(string message)
+    {
+        ShellError.Message = message; ShellError.IsOpen = true;
+    }
+    internal void HideToTray()
+    {
+        if (residentMode && !quitting) AppWindow.Hide();
+    }
+    internal void ShowMain()
+    {
+        if (quitting) return;
+        if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
+            && presenter.State == Microsoft.UI.Windowing.OverlappedPresenterState.Minimized) presenter.Restore();
+        AppWindow.Show(); Activate();
+    }
+    internal void Quit()
+    {
+        if (quitting) return;
+        quitting = true; CloseSettings(); Close();
+    }
+    internal bool ResidentMode => residentMode;
 
     internal void OpenSettings()
     {

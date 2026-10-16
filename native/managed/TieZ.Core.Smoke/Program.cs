@@ -41,6 +41,7 @@ try
         historyId = HistorySmoke.Run(core);
         CaptureSmoke.Run(core);
         TargetSmoke.Run(core);
+        ShellSmoke.Run(core);
         revision = core.Snapshot.Revision;
     }
     disposed.Dispose();
@@ -54,6 +55,7 @@ try
     HistorySmoke.DisposeQueued(database);
     CaptureSmoke.DisposeActive(database);
     TargetSmoke.DisposeActive(database);
+    ShellSmoke.DisposeActive(database);
     Console.WriteLine("PASS: real Rust DLL interop, Unicode path, shared ownership, validation, conflicts, no-op events, thread/dispose guards, persistence, native capture lifecycle and policy");
 }
 finally { Directory.Delete(directory, recursive: true); }

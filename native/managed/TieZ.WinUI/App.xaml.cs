@@ -8,6 +8,7 @@ public partial class App : Application
 {
     private NativeCore? core;
     private MainWindow? main;
+    private ShellController? shell;
     public App() => InitializeComponent();
 
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
@@ -27,8 +28,11 @@ public partial class App : Application
             catch (CoreException error) { targetError = error.Message; }
             main = new MainWindow(core, directory, captureOnStartup: report is null);
             if (targetError is not null) main.History.SetTargetError(targetError);
+            shell = new ShellController(main, core);
+            await shell.StartAsync();
             main.Closed += (_, _) =>
             {
+                shell.Dispose();
                 main.CloseSettings();
                 core.Dispose();
                 Exit();
@@ -38,6 +42,7 @@ public partial class App : Application
         }
         catch (Exception e)
         {
+            shell?.Dispose();
             core?.Dispose();
             if (report is not null)
             {
