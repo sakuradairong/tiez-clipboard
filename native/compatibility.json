@@ -1,0 +1,1360 @@
+{
+  "format": 1,
+  "reference": "Legacy sources in this branch; no runtime equivalence implied",
+  "registered_commands": [
+    {
+      "name": "toggle_window_cmd",
+      "registry_path": "app::window_manager::toggle_window_cmd",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "hide_window_cmd",
+      "registry_path": "app::window_manager::hide_window_cmd",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "activate_window_focus",
+      "registry_path": "app::window_manager::activate_window_focus",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "focus_clipboard_window",
+      "registry_path": "app::window_manager::focus_clipboard_window",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "set_navigation_enabled",
+      "registry_path": "app::window_manager::set_navigation_enabled",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "set_navigation_mode",
+      "registry_path": "app::window_manager::set_navigation_mode",
+      "declarations": [
+        "src-tauri/src/app/window_manager.rs"
+      ]
+    },
+    {
+      "name": "set_recording_mode",
+      "registry_path": "app::hooks::set_recording_mode",
+      "declarations": [
+        "src-tauri/src/app/hooks/mod.rs"
+      ]
+    },
+    {
+      "name": "open_content",
+      "registry_path": "services::content_handler::open_content",
+      "declarations": [
+        "src-tauri/src/services/content_handler.rs"
+      ]
+    },
+    {
+      "name": "copy_to_clipboard",
+      "registry_path": "services::clipboard_ops::copy_to_clipboard",
+      "declarations": [
+        "src-tauri/src/services/clipboard_ops.rs"
+      ]
+    },
+    {
+      "name": "paste_latest_rich",
+      "registry_path": "services::clipboard_ops::paste_latest_rich",
+      "declarations": [
+        "src-tauri/src/services/clipboard_ops.rs"
+      ]
+    },
+    {
+      "name": "paste_latest_plain",
+      "registry_path": "services::clipboard_ops::paste_latest_plain",
+      "declarations": [
+        "src-tauri/src/services/clipboard_ops.rs"
+      ]
+    },
+    {
+      "name": "get_clipboard_history",
+      "registry_path": "app::commands::get_clipboard_history",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "search_clipboard_history",
+      "registry_path": "app::commands::search_clipboard_history",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "delete_clipboard_entry",
+      "registry_path": "app::commands::delete_clipboard_entry",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "clear_clipboard_history",
+      "registry_path": "app::commands::clear_clipboard_history",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_tag_items",
+      "registry_path": "app::commands::get_tag_items",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_all_tags_info",
+      "registry_path": "app::commands::get_all_tags_info",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "rename_tag_globally",
+      "registry_path": "app::commands::rename_tag_globally",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "delete_tag_from_all",
+      "registry_path": "app::commands::delete_tag_from_all",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "create_new_tag",
+      "registry_path": "app::commands::create_new_tag",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "update_pinned_order",
+      "registry_path": "app::commands::update_pinned_order",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_db_count",
+      "registry_path": "app::commands::get_db_count",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_clipboard_content",
+      "registry_path": "app::commands::get_clipboard_content",
+      "declarations": [
+        "src-tauri/src/app/commands/history_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_sequential_mode",
+      "registry_path": "app::commands::set_sequential_mode",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_sequential_hotkey",
+      "registry_path": "app::commands::set_sequential_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_rich_paste_hotkey",
+      "registry_path": "app::commands::set_rich_paste_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_plain_paste_hotkey",
+      "registry_path": "app::commands::set_plain_paste_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_search_hotkey",
+      "registry_path": "app::commands::set_search_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_relay_send_hotkey",
+      "registry_path": "app::commands::set_relay_send_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_relay_fetch_hotkey",
+      "registry_path": "app::commands::set_relay_fetch_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_deduplication",
+      "registry_path": "app::commands::set_deduplication",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_setting",
+      "registry_path": "app::commands::save_setting",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_appearance_settings",
+      "registry_path": "app::commands::save_appearance_settings",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_ignore_blur",
+      "registry_path": "app::commands::set_ignore_blur",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_window_pinned",
+      "registry_path": "app::commands::set_window_pinned",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_settings",
+      "registry_path": "app::commands::get_settings",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_file_server_auto_close",
+      "registry_path": "app::commands::set_file_server_auto_close",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_persistence",
+      "registry_path": "app::commands::set_persistence",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_capture_files",
+      "registry_path": "app::commands::set_capture_files",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_capture_rich_text",
+      "registry_path": "app::commands::set_capture_rich_text",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_auto_copy_file",
+      "registry_path": "app::commands::set_auto_copy_file",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_silent_start",
+      "registry_path": "app::commands::set_silent_start",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_delete_after_paste",
+      "registry_path": "app::commands::set_delete_after_paste",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_privacy_protection",
+      "registry_path": "app::commands::set_privacy_protection",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_privacy_protection_kinds",
+      "registry_path": "app::commands::set_privacy_protection_kinds",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_privacy_protection_custom_rules",
+      "registry_path": "app::commands::set_privacy_protection_custom_rules",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_cleanup_rules",
+      "registry_path": "app::commands::set_cleanup_rules",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_app_cleanup_policies",
+      "registry_path": "app::commands::set_app_cleanup_policies",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "reset_settings",
+      "registry_path": "app::commands::reset_settings",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_mqtt_status",
+      "registry_path": "app::commands::get_mqtt_status",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_mqtt_running",
+      "registry_path": "app::commands::get_mqtt_running",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "restart_mqtt_client",
+      "registry_path": "app::commands::restart_mqtt_client",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_cloud_sync_status",
+      "registry_path": "app::commands::get_cloud_sync_status",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "restart_cloud_sync_client",
+      "registry_path": "app::commands::restart_cloud_sync_client",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "stop_cloud_sync_client",
+      "registry_path": "services::cloud_sync::stop_cloud_sync_client",
+      "declarations": [
+        "src-tauri/src/services/cloud_sync.rs"
+      ]
+    },
+    {
+      "name": "request_cloud_sync",
+      "registry_path": "app::commands::request_cloud_sync",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "cloud_sync_now",
+      "registry_path": "app::commands::cloud_sync_now",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_send_clipboard",
+      "registry_path": "app::commands::relay_send_clipboard",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_fetch_to_clipboard",
+      "registry_path": "app::commands::relay_fetch_to_clipboard",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_shared_key_status",
+      "registry_path": "app::commands::relay_shared_key_status",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_set_shared_key",
+      "registry_path": "app::commands::relay_set_shared_key",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_generate_shared_key",
+      "registry_path": "app::commands::relay_generate_shared_key",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "relay_clear_shared_key",
+      "registry_path": "app::commands::relay_clear_shared_key",
+      "declarations": [
+        "src-tauri/src/app/commands/relay_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_sound_enabled",
+      "registry_path": "app::commands::set_sound_enabled",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_file_transfer_auto_open",
+      "registry_path": "app::commands::set_file_transfer_auto_open",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_arrow_key_selection",
+      "registry_path": "app::commands::set_arrow_key_selection",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_tray_visible",
+      "registry_path": "app::commands::set_tray_visible",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_edge_docking",
+      "registry_path": "app::commands::set_edge_docking",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_follow_mouse",
+      "registry_path": "app::commands::set_follow_mouse",
+      "declarations": [
+        "src-tauri/src/app/commands/settings_cmd.rs"
+      ]
+    },
+    {
+      "name": "is_app_ready",
+      "registry_path": "app::commands::is_app_ready",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_data_path",
+      "registry_path": "app::commands::get_data_path",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "open_folder",
+      "registry_path": "app::commands::open_folder",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "open_data_folder",
+      "registry_path": "app::commands::open_data_folder",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "open_file_with_default_app",
+      "registry_path": "app::commands::open_file_with_default_app",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "open_file_location",
+      "registry_path": "app::commands::open_file_location",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_data_path",
+      "registry_path": "app::commands::set_data_path",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "toggle_autostart",
+      "registry_path": "app::commands::toggle_autostart",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "is_autostart_enabled",
+      "registry_path": "app::commands::is_autostart_enabled",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_windows_clipboard_history",
+      "registry_path": "app::commands::set_windows_clipboard_history",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_windows_clipboard_history",
+      "registry_path": "app::commands::get_windows_clipboard_history",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_win_clipboard_disabled",
+      "registry_path": "app::commands::set_win_clipboard_disabled",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "trigger_registry_win_v_optimization",
+      "registry_path": "app::commands::trigger_registry_win_v_optimization",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "is_registry_win_v_optimized",
+      "registry_path": "app::commands::is_registry_win_v_optimized",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "restart_explorer",
+      "registry_path": "app::commands::restart_explorer",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "restart_as_admin",
+      "registry_path": "app::commands::restart_as_admin",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "check_is_admin",
+      "registry_path": "app::commands::check_is_admin",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "quit",
+      "registry_path": "app::commands::quit",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "relaunch",
+      "registry_path": "app::commands::relaunch",
+      "declarations": [
+        "src-tauri/src/app/commands/system_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_theme",
+      "registry_path": "app::commands::set_theme",
+      "declarations": [
+        "src-tauri/src/app/commands/ui_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_platform_info",
+      "registry_path": "app::commands::get_platform_info",
+      "declarations": [
+        "src-tauri/src/app/commands/ui_cmd.rs"
+      ]
+    },
+    {
+      "name": "send_system_notification",
+      "registry_path": "app::commands::send_system_notification",
+      "declarations": [
+        "src-tauri/src/app/commands/ui_cmd.rs"
+      ]
+    },
+    {
+      "name": "register_hotkey",
+      "registry_path": "app::commands::register_hotkey",
+      "declarations": [
+        "src-tauri/src/app/commands/hotkey_cmd.rs"
+      ]
+    },
+    {
+      "name": "test_hotkey_available",
+      "registry_path": "app::commands::test_hotkey_available",
+      "declarations": [
+        "src-tauri/src/app/commands/hotkey_cmd.rs"
+      ]
+    },
+    {
+      "name": "toggle_clipboard_pin",
+      "registry_path": "app::commands::toggle_clipboard_pin",
+      "declarations": [
+        "src-tauri/src/app/commands/clipboard_cmd.rs"
+      ]
+    },
+    {
+      "name": "update_tags",
+      "registry_path": "app::commands::update_tags",
+      "declarations": [
+        "src-tauri/src/app/commands/clipboard_cmd.rs"
+      ]
+    },
+    {
+      "name": "add_manual_item",
+      "registry_path": "app::commands::add_manual_item",
+      "declarations": [
+        "src-tauri/src/app/commands/clipboard_cmd.rs"
+      ]
+    },
+    {
+      "name": "update_item_content",
+      "registry_path": "app::commands::update_item_content",
+      "declarations": [
+        "src-tauri/src/app/commands/clipboard_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_emoji_favorite",
+      "registry_path": "app::commands::save_emoji_favorite",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "remove_emoji_favorite",
+      "registry_path": "app::commands::remove_emoji_favorite",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "list_emoji_favorites",
+      "registry_path": "app::commands::list_emoji_favorites",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_emoji_favorite_data_url",
+      "registry_path": "app::commands::save_emoji_favorite_data_url",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_emoji_favorite_url",
+      "registry_path": "app::commands::save_emoji_favorite_url",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "get_file_size",
+      "registry_path": "app::commands::get_file_size",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "save_file_copy",
+      "registry_path": "app::commands::save_file_copy",
+      "declarations": [
+        "src-tauri/src/app/commands/file_cmd.rs"
+      ]
+    },
+    {
+      "name": "paste_text_directly",
+      "registry_path": "services::clipboard_ops::paste_text_directly",
+      "declarations": [
+        "src-tauri/src/services/clipboard_ops.rs"
+      ]
+    },
+    {
+      "name": "paste_content_transiently",
+      "registry_path": "services::clipboard_ops::paste_content_transiently",
+      "declarations": [
+        "src-tauri/src/services/clipboard_ops.rs"
+      ]
+    },
+    {
+      "name": "analyze_image_entry",
+      "registry_path": "services::image_analysis::analyze_image_entry",
+      "declarations": [
+        "src-tauri/src/services/image_analysis.rs"
+      ]
+    },
+    {
+      "name": "get_image_analysis",
+      "registry_path": "services::image_analysis::get_image_analysis",
+      "declarations": [
+        "src-tauri/src/services/image_analysis.rs"
+      ]
+    },
+    {
+      "name": "create_backup",
+      "registry_path": "services::backup::create_backup",
+      "declarations": [
+        "src-tauri/src/services/backup.rs"
+      ]
+    },
+    {
+      "name": "inspect_backup",
+      "registry_path": "services::backup::inspect_backup",
+      "declarations": [
+        "src-tauri/src/services/backup.rs"
+      ]
+    },
+    {
+      "name": "schedule_backup_restore",
+      "registry_path": "services::backup::schedule_backup_restore",
+      "declarations": [
+        "src-tauri/src/services/backup.rs"
+      ]
+    },
+    {
+      "name": "send_chat_message",
+      "registry_path": "services::file_transfer::send_chat_message",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_chat_history",
+      "registry_path": "services::file_transfer::get_chat_history",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "send_file_to_client",
+      "registry_path": "services::file_transfer::send_file_to_client",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_app_logo",
+      "registry_path": "services::file_transfer::get_app_logo",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_local_ip_addr",
+      "registry_path": "services::file_transfer::get_local_ip_addr",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_available_ips",
+      "registry_path": "services::file_transfer::get_available_ips",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/utils.rs"
+      ]
+    },
+    {
+      "name": "get_file_server_status",
+      "registry_path": "services::file_transfer::get_file_server_status",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "toggle_file_server",
+      "registry_path": "services::file_transfer::toggle_file_server",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_active_file_transfer_path",
+      "registry_path": "services::file_transfer::get_active_file_transfer_path",
+      "declarations": [
+        "src-tauri/src/services/file_transfer/mod.rs"
+      ]
+    },
+    {
+      "name": "get_paste_queue",
+      "registry_path": "services::paste_queue::get_paste_queue",
+      "declarations": [
+        "src-tauri/src/services/paste_queue.rs"
+      ]
+    },
+    {
+      "name": "set_paste_queue",
+      "registry_path": "services::paste_queue::set_paste_queue",
+      "declarations": [
+        "src-tauri/src/services/paste_queue.rs"
+      ]
+    },
+    {
+      "name": "paste_next_step",
+      "registry_path": "services::paste_queue::paste_next_step",
+      "declarations": [
+        "src-tauri/src/services/paste_queue.rs"
+      ]
+    },
+    {
+      "name": "get_tag_colors",
+      "registry_path": "app::commands::get_tag_colors",
+      "declarations": [
+        "src-tauri/src/app/commands/tag_color_cmd.rs"
+      ]
+    },
+    {
+      "name": "set_tag_color",
+      "registry_path": "app::commands::set_tag_color",
+      "declarations": [
+        "src-tauri/src/app/commands/tag_color_cmd.rs"
+      ]
+    },
+    {
+      "name": "call_ai",
+      "registry_path": "app::commands::call_ai",
+      "declarations": []
+    },
+    {
+      "name": "check_ai_connectivity",
+      "registry_path": "app::commands::check_ai_connectivity",
+      "declarations": []
+    },
+    {
+      "name": "get_system_default_app",
+      "registry_path": "infrastructure::windows_api::apps::get_system_default_app",
+      "declarations": [
+        "src-tauri/src/infrastructure/mod.rs",
+        "src-tauri/src/infrastructure/windows_api/apps.rs"
+      ]
+    },
+    {
+      "name": "get_executable_icon",
+      "registry_path": "infrastructure::windows_api::apps::get_executable_icon",
+      "declarations": [
+        "src-tauri/src/infrastructure/mod.rs",
+        "src-tauri/src/infrastructure/windows_api/apps.rs"
+      ]
+    },
+    {
+      "name": "get_file_icon",
+      "registry_path": "infrastructure::windows_api::apps::get_file_icon",
+      "declarations": [
+        "src-tauri/src/infrastructure/mod.rs",
+        "src-tauri/src/infrastructure/windows_api/apps.rs"
+      ]
+    },
+    {
+      "name": "scan_installed_apps",
+      "registry_path": "infrastructure::windows_api::apps::scan_installed_apps",
+      "declarations": [
+        "src-tauri/src/infrastructure/mod.rs",
+        "src-tauri/src/infrastructure/windows_api/apps.rs"
+      ]
+    },
+    {
+      "name": "get_associated_apps",
+      "registry_path": "infrastructure::windows_api::apps::get_associated_apps",
+      "declarations": [
+        "src-tauri/src/infrastructure/mod.rs",
+        "src-tauri/src/infrastructure/windows_api/apps.rs"
+      ]
+    }
+  ],
+  "declared_unregistered_commands": [
+    "get_download_url",
+    "greet",
+    "restore_last_focus",
+    "save_temp_image",
+    "set_display_ip"
+  ],
+  "frontend_literal_invocations": [
+    "activate_window_focus",
+    "add_manual_item",
+    "analyze_image_entry",
+    "call_ai",
+    "check_ai_connectivity",
+    "clear_clipboard_history",
+    "cloud_sync_now",
+    "copy_to_clipboard",
+    "create_backup",
+    "create_new_tag",
+    "delete_clipboard_entry",
+    "delete_tag_from_all",
+    "focus_clipboard_window",
+    "get_active_file_transfer_path",
+    "get_all_tags_info",
+    "get_app_logo",
+    "get_available_ips",
+    "get_chat_history",
+    "get_clipboard_history",
+    "get_cloud_sync_status",
+    "get_data_path",
+    "get_download_url",
+    "get_executable_icon",
+    "get_file_icon",
+    "get_file_server_status",
+    "get_file_size",
+    "get_mqtt_running",
+    "get_mqtt_status",
+    "get_settings",
+    "get_system_default_app",
+    "get_tag_colors",
+    "get_tag_items",
+    "hide_window_cmd",
+    "inspect_backup",
+    "is_app_ready",
+    "is_autostart_enabled",
+    "list_emoji_favorites",
+    "open_content",
+    "open_data_folder",
+    "open_file_location",
+    "open_folder",
+    "paste_content_transiently",
+    "paste_text_directly",
+    "register_hotkey",
+    "relaunch",
+    "relay_clear_shared_key",
+    "relay_generate_shared_key",
+    "relay_set_shared_key",
+    "relay_shared_key_status",
+    "remove_emoji_favorite",
+    "rename_tag_globally",
+    "request_cloud_sync",
+    "reset_settings",
+    "restart_cloud_sync_client",
+    "restart_explorer",
+    "restart_mqtt_client",
+    "restore_last_focus",
+    "save_appearance_settings",
+    "save_emoji_favorite",
+    "save_emoji_favorite_data_url",
+    "save_emoji_favorite_url",
+    "save_file_copy",
+    "save_setting",
+    "save_temp_image",
+    "schedule_backup_restore",
+    "search_clipboard_history",
+    "send_chat_message",
+    "send_file_to_client",
+    "send_system_notification",
+    "set_app_cleanup_policies",
+    "set_arrow_key_selection",
+    "set_auto_copy_file",
+    "set_capture_files",
+    "set_capture_rich_text",
+    "set_cleanup_rules",
+    "set_data_path",
+    "set_deduplication",
+    "set_display_ip",
+    "set_dock_visible",
+    "set_edge_docking",
+    "set_file_server_auto_close",
+    "set_file_transfer_auto_open",
+    "set_ignore_blur",
+    "set_navigation_enabled",
+    "set_navigation_mode",
+    "set_persistence",
+    "set_plain_paste_hotkey",
+    "set_privacy_protection",
+    "set_privacy_protection_custom_rules",
+    "set_privacy_protection_kinds",
+    "set_recording_mode",
+    "set_rich_paste_hotkey",
+    "set_search_hotkey",
+    "set_sequential_hotkey",
+    "set_sequential_mode",
+    "set_silent_start",
+    "set_sound_enabled",
+    "set_tag_color",
+    "set_theme",
+    "set_tray_visible",
+    "set_window_pinned",
+    "stop_cloud_sync_client",
+    "test_hotkey_available",
+    "toggle_autostart",
+    "toggle_clipboard_pin",
+    "toggle_file_server",
+    "toggle_window_cmd",
+    "trigger_registry_win_v_optimization",
+    "update_item_content",
+    "update_pinned_order",
+    "update_tags"
+  ],
+  "unregistered_frontend_literal_invocations": [
+    "get_download_url",
+    "restore_last_focus",
+    "save_temp_image",
+    "set_display_ip",
+    "set_dock_visible"
+  ],
+  "seeded_setting_keys": [
+    "ai_enable_thinking",
+    "ai_enabled",
+    "ai_target_lang",
+    "ai_thinking_budget",
+    "app.app_cleanup_policies",
+    "app.arrow_key_selection",
+    "app.autostart",
+    "app.capture_files",
+    "app.capture_rich_text",
+    "app.cleanup_rules",
+    "app.color_mode",
+    "app.custom_background",
+    "app.deduplicate",
+    "app.delete_after_paste",
+    "app.edge_docking",
+    "app.hide_dock_icon",
+    "app.hide_tray_icon",
+    "app.hotkey",
+    "app.move_to_top_after_paste",
+    "app.notice_v028_shown",
+    "app.persistent",
+    "app.persistent_limit",
+    "app.persistent_limit_enabled",
+    "app.plain_paste_hotkey",
+    "app.privacy_protection",
+    "app.privacy_protection_custom_rules",
+    "app.privacy_protection_kinds",
+    "app.quick_paste_modifier",
+    "app.quick_paste_when_edge_hidden",
+    "app.relay_fetch_hotkey",
+    "app.relay_send_hotkey",
+    "app.rich_paste_hotkey",
+    "app.rich_text_snapshot_preview",
+    "app.search_hotkey",
+    "app.sequential_hotkey",
+    "app.sequential_mode",
+    "app.show_app_border",
+    "app.silent_start",
+    "app.sound_enabled",
+    "app.sound_paste_enabled",
+    "app.surface_opacity",
+    "app.theme",
+    "app.window_pinned",
+    "cloud_sync_api_key",
+    "cloud_sync_auto",
+    "cloud_sync_content_prefs",
+    "cloud_sync_cursor",
+    "cloud_sync_enabled",
+    "cloud_sync_interval_sec",
+    "cloud_sync_provider",
+    "cloud_sync_server",
+    "cloud_sync_settings_applied_at",
+    "cloud_sync_snapshot_interval_min",
+    "cloud_sync_webdav_base_path",
+    "cloud_sync_webdav_blob_cache",
+    "cloud_sync_webdav_last_head_rebuild_at",
+    "cloud_sync_webdav_last_snapshot_pull_at",
+    "cloud_sync_webdav_last_snapshot_push_at",
+    "cloud_sync_webdav_local_seq",
+    "cloud_sync_webdav_op_cursor_map",
+    "cloud_sync_webdav_password",
+    "cloud_sync_webdav_url",
+    "cloud_sync_webdav_username",
+    "file_server_enabled",
+    "file_server_port",
+    "file_transfer_auto_close",
+    "file_transfer_auto_copy",
+    "mqtt_client_id",
+    "mqtt_enabled",
+    "mqtt_notification_enabled",
+    "mqtt_password",
+    "mqtt_port",
+    "mqtt_protocol",
+    "mqtt_server",
+    "mqtt_ssl",
+    "mqtt_topic",
+    "mqtt_username",
+    "mqtt_ws_path"
+  ],
+  "setting_literal_candidates": [
+    "ai_add_model",
+    "ai_assigned_profile_mouthpiece",
+    "ai_assigned_profile_task",
+    "ai_assigned_profile_translate",
+    "ai_assistant",
+    "ai_edit_model",
+    "ai_enable_thinking",
+    "ai_enabled",
+    "ai_model_library",
+    "ai_profiles",
+    "ai_save_profile",
+    "ai_settings",
+    "ai_strategy_mouthpiece",
+    "ai_strategy_settings",
+    "ai_strategy_task",
+    "ai_strategy_translate",
+    "ai_target_lang",
+    "ai_thinking_budget",
+    "ai_thinking_enabled",
+    "app.anon_id",
+    "app.app_cleanup_policies",
+    "app.appearance_presets",
+    "app.arrow_key_selection",
+    "app.autostart",
+    "app.capture_files",
+    "app.capture_rich_text",
+    "app.cleanup_rules",
+    "app.clipboard_item_font_size",
+    "app.clipboard_tag_font_size",
+    "app.color_mode",
+    "app.compact_mode",
+    "app.custom_background",
+    "app.custom_background_opacity",
+    "app.deduplicate",
+    "app.delete_after_paste",
+    "app.edge_docking",
+    "app.emoji_favorites",
+    "app.emoji_panel_enabled",
+    "app.emoji_panel_tab",
+    "app.follow_mouse",
+    "app.hide_dock_icon",
+    "app.hide_tray_icon",
+    "app.hotkey",
+    "app.language",
+    "app.last_ping_date",
+    "app.move_to_top_after_paste",
+    "app.notice_v028_shown",
+    "app.paste_method",
+    "app.persistent",
+    "app.persistent_limit",
+    "app.persistent_limit_enabled",
+    "app.pinned_collapsed",
+    "app.plain_paste_hotkey",
+    "app.pre_win_v_hotkey",
+    "app.privacy_protection",
+    "app.privacy_protection_custom_rules",
+    "app.privacy_protection_kinds",
+    "app.quick_paste_modifier",
+    "app.quick_paste_when_edge_hidden",
+    "app.relay_fetch_hotkey",
+    "app.relay_send_hotkey",
+    "app.rich_paste_hotkey",
+    "app.rich_text_snapshot_preview",
+    "app.search_hotkey",
+    "app.sensitive_mask_email_domain",
+    "app.sensitive_mask_prefix_visible",
+    "app.sensitive_mask_suffix_visible",
+    "app.sequential_hotkey",
+    "app.sequential_mode",
+    "app.show_app_border",
+    "app.show_scroll_top_button",
+    "app.show_search_box",
+    "app.show_source_app_icon",
+    "app.silent_start",
+    "app.sound_enabled",
+    "app.sound_paste_enabled",
+    "app.sound_volume",
+    "app.surface_opacity",
+    "app.tag_manager_enabled",
+    "app.tag_manager_size",
+    "app.text",
+    "app.theme",
+    "app.theme_customization",
+    "app.use_win_v_shortcut",
+    "app.window_height",
+    "app.window_pinned",
+    "app.window_width",
+    "cloud_sync_actions",
+    "cloud_sync_api_key",
+    "cloud_sync_api_key_placeholder",
+    "cloud_sync_auto",
+    "cloud_sync_auto_hint",
+    "cloud_sync_content_prefs",
+    "cloud_sync_content_scope",
+    "cloud_sync_content_scope_hint",
+    "cloud_sync_cursor",
+    "cloud_sync_enable",
+    "cloud_sync_enable_hint",
+    "cloud_sync_enabled",
+    "cloud_sync_interval",
+    "cloud_sync_interval_hint",
+    "cloud_sync_interval_sec",
+    "cloud_sync_last_error",
+    "cloud_sync_last_sync",
+    "cloud_sync_local_index",
+    "cloud_sync_provider",
+    "cloud_sync_received",
+    "cloud_sync_server",
+    "cloud_sync_settings",
+    "cloud_sync_settings_applied_at",
+    "cloud_sync_snapshot_interval",
+    "cloud_sync_snapshot_interval_hint",
+    "cloud_sync_snapshot_interval_min",
+    "cloud_sync_status_disabled",
+    "cloud_sync_status_error",
+    "cloud_sync_status_idle",
+    "cloud_sync_status_label",
+    "cloud_sync_status_syncing",
+    "cloud_sync_sync_emoji",
+    "cloud_sync_sync_emoji_hint",
+    "cloud_sync_sync_file_path",
+    "cloud_sync_sync_file_path_hint",
+    "cloud_sync_sync_image",
+    "cloud_sync_sync_image_hint",
+    "cloud_sync_sync_text",
+    "cloud_sync_sync_text_hint",
+    "cloud_sync_tombstones",
+    "cloud_sync_uploaded",
+    "cloud_sync_webdav_base_path",
+    "cloud_sync_webdav_base_path_hint",
+    "cloud_sync_webdav_blob_cache",
+    "cloud_sync_webdav_last_head_rebuild_at",
+    "cloud_sync_webdav_last_snapshot_pull_at",
+    "cloud_sync_webdav_last_snapshot_push_at",
+    "cloud_sync_webdav_local_seq",
+    "cloud_sync_webdav_op_cursor_map",
+    "cloud_sync_webdav_password",
+    "cloud_sync_webdav_password_hint",
+    "cloud_sync_webdav_url",
+    "cloud_sync_webdav_username",
+    "file_server_auto_close",
+    "file_server_enabled",
+    "file_server_port",
+    "file_transfer_auto_close",
+    "file_transfer_auto_copy",
+    "file_transfer_auto_open",
+    "file_transfer_path",
+    "mqtt_client_id",
+    "mqtt_enabled",
+    "mqtt_host",
+    "mqtt_notification_enabled",
+    "mqtt_notification_enabled_hint",
+    "mqtt_notification_title",
+    "mqtt_password",
+    "mqtt_port",
+    "mqtt_protocol",
+    "mqtt_protocol_hint",
+    "mqtt_restart_hint",
+    "mqtt_server",
+    "mqtt_ssl",
+    "mqtt_tls_insecure",
+    "mqtt_topic",
+    "mqtt_tutorial_hint",
+    "mqtt_user",
+    "mqtt_username",
+    "mqtt_ws_path",
+    "relay_fetch_hotkey_hint",
+    "relay_fetch_hotkey_label",
+    "relay_send_hotkey_hint",
+    "relay_send_hotkey_label"
+  ],
+  "builtin_themes": [
+    "minimal",
+    "retro",
+    "sticky-note",
+    "mica",
+    "acrylic",
+    "paper",
+    "sakura"
+  ],
+  "ui_modules": [
+    "src/App.tsx",
+    "src/features/app/components/AppHeader.tsx",
+    "src/features/app/components/AppMainContent.tsx",
+    "src/features/clipboard/components/ClipboardItem.tsx",
+    "src/features/clipboard/components/CompactPreviewWindow.tsx",
+    "src/features/clipboard/components/VirtualClipboardList.tsx",
+    "src/features/emoji/components/EmojiPanel.tsx",
+    "src/features/file-transfer/components/FileTransferChatView.tsx",
+    "src/features/settings/components/AdvancedSettingsWindow.tsx",
+    "src/features/settings/components/AiProfileModal.tsx",
+    "src/features/settings/components/AppSelector.tsx",
+    "src/features/settings/components/AppSelectorModal.tsx",
+    "src/features/settings/components/SettingsFooter.tsx",
+    "src/features/settings/components/SettingsPanel.tsx",
+    "src/features/settings/components/ThemeCustomizationSettings.tsx",
+    "src/features/settings/components/groups/AdvancedSettingsGroup.tsx",
+    "src/features/settings/components/groups/AiSettingsGroup.tsx",
+    "src/features/settings/components/groups/AppearanceSettingsGroup.tsx",
+    "src/features/settings/components/groups/ClipboardSettingsGroup.tsx",
+    "src/features/settings/components/groups/CloudSyncSettingsGroup.tsx",
+    "src/features/settings/components/groups/DataSettingsGroup.tsx",
+    "src/features/settings/components/groups/DefaultAppsSettingsGroup.tsx",
+    "src/features/settings/components/groups/FileTransferSettingsGroup.tsx",
+    "src/features/settings/components/groups/GeneralSettingsGroup.tsx",
+    "src/features/settings/components/groups/SyncSettingsGroup.tsx",
+    "src/features/tag/components/TagManager.tsx",
+    "src/features/theme-store/components/ThemeAuthModal.tsx",
+    "src/features/theme-store/components/ThemeCard.tsx",
+    "src/features/theme-store/components/ThemeCategoryFilter.tsx",
+    "src/features/theme-store/components/ThemeDetailModal.tsx",
+    "src/features/theme-store/components/ThemeRatingStars.tsx",
+    "src/features/theme-store/components/ThemeSearchBar.tsx",
+    "src/features/theme-store/components/ThemeStorePanel.tsx",
+    "src/features/theme-store/components/ThemeUploadModal.tsx",
+    "src/shared/components/Announcement.tsx",
+    "src/shared/components/ConfirmDialog.tsx",
+    "src/shared/components/HtmlContent.tsx",
+    "src/shared/components/ToastContainer.tsx",
+    "src/shared/components/UpdateDialog.tsx"
+  ]
+}
