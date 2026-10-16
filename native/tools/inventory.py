@@ -20,7 +20,7 @@ def inventory():
         raise ValueError("Command registry format changed; review the extractor.")
     declarations = {}
     for path in rust:
-        for match in re.finditer(r"#\[tauri::command[^\]]*\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", texts[path]):
+        for match in re.finditer(r"#\[(?:tauri::)?command[^\]]*\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)", texts[path]):
             declarations.setdefault(match.group(1), []).append(path.relative_to(ROOT).as_posix())
     commands = [{"name": name.rsplit("::", 1)[-1], "registry_path": name,
                  "declarations": declarations.get(name.rsplit("::", 1)[-1], [])}

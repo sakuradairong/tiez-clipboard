@@ -880,12 +880,16 @@
     {
       "name": "call_ai",
       "registry_path": "app::commands::call_ai",
-      "declarations": []
+      "declarations": [
+        "src-tauri/src/app/commands/ai_cmd.rs"
+      ]
     },
     {
       "name": "check_ai_connectivity",
       "registry_path": "app::commands::check_ai_connectivity",
-      "declarations": []
+      "declarations": [
+        "src-tauri/src/app/commands/ai_cmd.rs"
+      ]
     },
     {
       "name": "get_system_default_app",
