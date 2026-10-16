@@ -1,0 +1,88 @@
+using TieZ.Core;
+
+internal static class HistorySmoke
+{
+    private static T Read<T>(Task<T> task) => task.GetAwaiter().GetResult();
+    private static void Check(bool value, string message)
+    {
+        if (!value) throw new InvalidOperationException(message);
+    }
+    private static void Expect(string code, Action action)
+    {
+        try { action(); }
+        catch (CoreException e) when (e.Code == code) { return; }
+        throw new InvalidOperationException($"Expected {code}");
+    }
+
+    internal static long Run(NativeCore core)
+    {
+        string body = " managed 中文 %_ \r\n ";
+        var saved = Read(core.AddManualAsync(body));
+        var rich = Read(core.AddManualAsync("managed rich", "rich_text", "<b>managed rich</b>"));
+        Check(saved.Id > 0 && rich.Id > saved.Id && saved.PersistentSyncPending, "Mutation contract");
+        var page = Read(core.GetHistoryAsync(new(Limit: 1, Search: "managed")));
+        Check(page.Items.Count == 1 && page.Items[0].Id == rich.Id && page.HasMore, "First page");
+        var next = Read(core.GetHistoryAsync(new(Limit: 1, Offset: page.NextOffset,
+            ExpectedRevision: page.Revision, Search: "managed")));
+        Check(next.Items[0].Id == saved.Id, "Page continuation");
+        var entry = Read(core.GetEntryAsync(saved.Id));
+        Check(entry.Content == body && Read(core.GetEntryAsync(rich.Id)).HtmlContent == "<b>managed rich</b>", "Original formats");
+        Check(!Read(core.EditEntryAsync(saved.Id, body)).Changed, "No-op edit");
+        Read(core.SetPinnedAsync(saved.Id, true));
+        Expect("history_conflict", () => Read(core.GetHistoryAsync(new(Limit: 1, Offset: page.NextOffset,
+            ExpectedRevision: page.Revision))));
+        Read(core.SetTagsAsync(saved.Id, ["密码", "work"]));
+        var sensitive = Read(core.GetHistoryAsync(new(Search: "%_", Tag: "work")));
+        Check(sensitive.Items.Count == 1 && sensitive.Items[0].IsSensitive, "Sensitive metadata and literal search");
+        Read(core.EditEntryAsync(rich.Id, "managed plain"));
+        var edited = Read(core.GetEntryAsync(rich.Id));
+        Check(edited.ContentType == "text" && edited.HtmlContent is null, "Rich to plain transition");
+        Read(core.DeleteEntryAsync(rich.Id));
+        Expect("not_found", () => Read(core.GetEntryAsync(rich.Id)));
+        Expect("invalid_page", () => Read(core.GetHistoryAsync(new(Limit: 201))));
+        var changes = Read(core.GetHistoryChangesAsync(0));
+        Check(changes.Revision >= 6 && changes.PersistentSyncPending &&
+            changes.Changes.Any(c => c.RemovedIds.Contains(rich.Id)), "Change feed");
+
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        try { Read(core.AddManualAsync("must not save", cancellationToken: cancelled.Token)); throw new Exception("Cancelled work ran"); }
+        catch (OperationCanceledException) { }
+        Check(Read(core.GetHistoryAsync(new(Search: "must not save"))).Items.Count == 0, "Cancelled mutation persisted");
+
+        using var racing = new CancellationTokenSource();
+        var task = core.AddManualAsync("managed cancellation race", cancellationToken: racing.Token);
+        racing.Cancel();
+        bool accepted;
+        try { Read(task); accepted = true; }
+        catch (OperationCanceledException) { accepted = false; }
+        var raced = Read(core.GetHistoryAsync(new(Search: "managed cancellation race")));
+        Check((raced.Items.Count == 1) == accepted, "Cancellation hid a committed mutation");
+        if (accepted) Read(core.DeleteEntryAsync(raced.Items[0].Id));
+
+        bool rejected = Task.Run(() =>
+        {
+            try { Read(core.GetHistoryAsync(new())); return false; }
+            catch (InvalidOperationException) { return true; }
+        }).GetAwaiter().GetResult();
+        Check(rejected, "History API owner thread guard");
+        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete, conflicts, change feed, cancellation");
+        return saved.Id;
+    }
+
+    internal static void DisposeQueued(string database)
+    {
+        using var core = new NativeCore(database);
+        var queued = Enumerable.Range(0, 32).Select(_ => core.GetHistoryAsync(new())).ToArray();
+        core.Dispose();
+        foreach (var task in queued)
+        {
+            try { Read(task); }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        }
+        using var reopened = new NativeCore(database);
+        Check(Read(reopened.GetHistoryAsync(new())).StoredCount > 0, "Reopen after queued disposal");
+        Console.WriteLine("PASS: queued reads finish or cancel before native close; immediate reopen succeeds");
+    }
+}

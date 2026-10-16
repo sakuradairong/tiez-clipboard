@@ -17,6 +17,7 @@ try
 {
     string database = Path.Combine(directory, "设置.db");
     ulong revision;
+    long historyId;
     NativeCore disposed;
     using (var core = new NativeCore(database))
     {
@@ -36,13 +37,18 @@ try
             catch (InvalidOperationException) { return true; }
         }).GetAwaiter().GetResult();
         Check(threadRejected, "Thread ownership");
+        historyId = HistorySmoke.Run(core);
         revision = core.Snapshot.Revision;
     }
     disposed.Dispose();
     try { disposed.Refresh(); throw new Exception("Disposed handle accepted"); }
     catch (ObjectDisposedException) { }
     using (var reopened = new NativeCore(database))
+    {
         Check(reopened.Snapshot.Revision == revision && reopened.Snapshot.Values["app.language"] == "tw", "Reopen persistence");
+        Check(reopened.GetEntryAsync(historyId).GetAwaiter().GetResult().Content == " managed 中文 %_ \r\n ", "History reopen persistence");
+    }
+    HistorySmoke.DisposeQueued(database);
     Console.WriteLine("PASS: real Rust DLL interop, Unicode path, shared ownership, validation, conflicts, no-op events, thread/dispose guards, persistence");
 }
 finally { Directory.Delete(directory, recursive: true); }

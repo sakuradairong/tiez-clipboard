@@ -12,10 +12,13 @@ public sealed class CoreException(string code, string message) : Exception(messa
 }
 
 // Owned by the application's UI thread. Views borrow this client; only the app disposes it.
-public sealed class NativeCore : IDisposable
+public sealed partial class NativeCore : IDisposable
 {
     private readonly int ownerThread = Environment.CurrentManagedThreadId;
     private ulong handle;
+    private readonly SemaphoreSlim requestGate = new(1, 1);
+    private readonly CancellationTokenSource shutdown = new();
+    private static readonly JsonSerializerOptions WireJson = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     public SettingsSnapshot Snapshot { get; private set; }
     public event Action<SettingsSnapshot>? Changed;
 
@@ -34,9 +37,15 @@ public sealed class NativeCore : IDisposable
     public bool Update(IReadOnlyDictionary<string, string> patch, ulong expectedRevision)
     {
         VerifyAccess();
-        var result = Request(new { op = "update", handle, expected_revision = expectedRevision, patch });
-        Snapshot = ReadSnapshot(result);
-        bool changed = result.GetProperty("changed").GetBoolean();
+        requestGate.Wait();
+        bool changed;
+        try
+        {
+            var result = Request(new { op = "update", handle, expected_revision = expectedRevision, patch });
+            Snapshot = ReadSnapshot(result);
+            changed = result.GetProperty("changed").GetBoolean();
+        }
+        finally { requestGate.Release(); }
         if (changed) Changed?.Invoke(Snapshot);
         return changed;
     }
@@ -44,9 +53,16 @@ public sealed class NativeCore : IDisposable
     public SettingsSnapshot Refresh()
     {
         VerifyAccess();
-        var snapshot = ReadSnapshot(Request(new { op = "snapshot", handle }));
-        bool changed = snapshot.Revision != Snapshot.Revision;
-        Snapshot = snapshot;
+        requestGate.Wait();
+        SettingsSnapshot snapshot;
+        bool changed;
+        try
+        {
+            snapshot = ReadSnapshot(Request(new { op = "snapshot", handle }));
+            changed = snapshot.Revision != Snapshot.Revision;
+            Snapshot = snapshot;
+        }
+        finally { requestGate.Release(); }
         if (changed) Changed?.Invoke(snapshot);
         return snapshot;
     }
@@ -55,9 +71,17 @@ public sealed class NativeCore : IDisposable
     {
         VerifyThread();
         if (handle == 0) return;
-        Request(new { op = "close", handle });
-        handle = 0;
-        Changed = null;
+        shutdown.Cancel();
+        requestGate.Wait();
+        try
+        {
+            Request(new { op = "close", handle });
+            handle = 0;
+            Changed = null;
+        }
+        finally { requestGate.Release(); }
+        // Cancelled waiters may still be unwinding. These managed-only gates own no OS
+        // wait handles; retain them until the client and its outstanding tasks are collected.
         GC.SuppressFinalize(this);
     }
 
@@ -82,10 +106,17 @@ public sealed class NativeCore : IDisposable
             new ReadOnlyDictionary<string, string>(values));
     }
 
-    private static JsonElement Request(object request)
+    private static byte[] SerializeRequest(object request)
     {
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(request);
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(request, WireJson);
         if (bytes.Length > 65536) throw new ArgumentException("Native request exceeds 64 KiB.");
+        return bytes;
+    }
+
+    private static JsonElement Request(object request) => RequestBytes(SerializeRequest(request));
+
+    private static JsonElement RequestBytes(byte[] bytes)
+    {
         nint response = NativeMethods.Request(bytes, (nuint)bytes.Length);
         if (response == 0) throw new CoreException("internal", "Native core returned no response.");
         try
