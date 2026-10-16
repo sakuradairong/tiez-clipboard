@@ -10,7 +10,7 @@ using Microsoft.UI.Windowing;
 namespace TieZ.Native;
 
 // Real native controls and DLL, with a disposable isolated database. No production data.
-internal sealed class WindowSmoke(MainWindow main, NativeCore core, string directory, string report)
+internal sealed class WindowSmoke(MainWindow main, NativeCore core, string directory, string report, bool rulesOnly = false)
 {
     private DispatcherQueueTimer? timer;
     private int phase;
@@ -29,6 +29,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private ulong advancedRevision;
     private string acceptedPolicyJson = "";
     private const string PolicyFixture = "[ {\"id\":\"first\",\"appName\":\"native-policy-fixture\",\"cleanupRules\":\"one => two\\r\\nthree => four\",\"contentTypes\":[\"text\",\"TEXT\",\"future-type\"],\"extension\":{\"version\":7}}, {\"appName\":\"native-fallback\",\"future\":null} ]";
+    private const string RuleEditorFixture = "# shared\r\n# label: 规则一\r\n ^foo$  =>  $1=>x\\n \r\n\r\n# label: 停止\r\nstop => __IGNORE_CAPTURE__\r\nlast => tail";
     private const string OriginalAdvancedRules = "first => one\r\nsecond => two";
     private const string CompactText = "  紧凑文本\r\n  ";
     private const string DocumentHtml = "<h2>原生文档</h2><p><b>bold</b> &amp; 中文 <i>italic</i> <a href='https://example.invalid/native'>link</a></p><table><tr><th rowspan=2>H<th colspan=2>top<tr><td>one<td>two</table><img src='https://example.invalid/no-request' alt='logo'><script>never-render-script</script>";
@@ -44,6 +45,16 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private const string Edited = "  修改后中文 %_ \r\n  ";
     internal void Start()
     {
+        if (rulesOnly)
+        {
+            core.Update(new Dictionary<string, string> {
+                ["app.cleanup_rules"] = "foo => bar",
+                ["app.app_cleanup_policies"] = "[{\"appName\":\"native-primary\"},{\"appName\":\"native-fallback\",\"cleanupRules\":\"foo => bar\"}]",
+            }, core.Snapshot.Revision);
+            advancedRevision = core.Snapshot.Revision;
+            main.OpenAdvancedSettings(); advancedWindow = main.AdvancedSettings;
+            phase = 126;
+        }
         main.History.PreviewInvalidated += OnPreviewInvalidated;
         main.Activated += OnSmokeActivation;
         timer = main.DispatcherQueue.CreateTimer();
@@ -921,7 +932,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     advancedWindow.PolicyEditor.RulePreview.Sample = "pending on close";
                     advancedWindow.PolicyEditor.RulePreview.InvokeRun();
                     main.CloseAdvancedSettings();
-                    Require(!advancedWindow.RulePreview.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData,
+                    Require(!advancedWindow.RulesEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData,
                         "Closing advanced settings retained sample requests/data.");
                     break;
                 case 124:
@@ -938,11 +949,133 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     main.ShowMain(); await view.ReloadAsync(compactTextId);
                     break;
                 case 126:
-                    Require(main.AdvancedSettings is not null && (await core.GetCaptureStatusAsync()) is { Running: true, Starts: 2 },
+                    if (main.AdvancedSettings?.IsContentReady != true) return;
+                    var ruleCapture = await core.GetCaptureStatusAsync();
+                    Require(rulesOnly ? !ruleCapture.Running && ruleCapture.Starts == 0 : ruleCapture is { Running: true, Starts: 2 },
                         "Independent advanced lifecycle changed core ownership.");
-                    view.Invoke("preview");
+                    advancedWindow!.RulesEditor.RawDraft = "broken line";
+                    Require(!advancedWindow.RulesEditor.StructuredAvailable && advancedWindow.CleanupDraft == "broken line",
+                        "Malformed raw rules were dropped or interpreted as a form.");
+                    advancedWindow.RulesEditor.Text = "left => one\rright => two";
+                    Require(!advancedWindow.RulesEditor.StructuredAvailable && advancedWindow.CleanupDraft == "left => one\rright => two",
+                        "Lone CR was interpreted as a Rust rule separator.");
+                    advancedWindow.RulesEditor.Text = "# label: 旧说明\n#LaBeL: 保留说明\nfoo => bar";
+                    advancedWindow.RulesEditor.Edit("foo", "bar", "保留说明");
+                    Require(advancedWindow.CleanupDraft == "# label: 旧说明\n#LaBeL: 保留说明\nfoo => bar", "Legacy label spelling was rewritten.");
+                    advancedWindow.RulesEditor.Edit("foo", "bar", "");
+                    Require(advancedWindow.CleanupDraft == "foo => bar", "Clearing label exposed an older label declaration.");
+                    advancedWindow.RulesEditor.Edit("foo", "bar", "保留说明");
+                    Require(advancedWindow.CleanupDraft.StartsWith("# label: 旧说明\n#LaBeL: 保留说明"), "Reverting label did not restore its original comments.");
+                    advancedWindow.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft, RuleEditorFixture, advancedWindow.PolicyDraft);
+                    var ruleEditor = advancedWindow.RulesEditor;
+                    Require(ruleEditor.Count == 3 && ruleEditor.StructuredAvailable && ruleEditor.Text == RuleEditorFixture,
+                        "Rule editor failed to retain original comments/CRLF/delimiters.");
+                    ruleEditor.Edit("^foo$", "$1=>x\\n", "规则一");
+                    Require(ruleEditor.Text == RuleEditorFixture, "Opening/editing unchanged fields rewrote raw rule bytes.");
+                    ruleEditor.Edit("^bar$", "replacement", "临时");
+                    ruleEditor.Edit("^foo$", "$1=>x\\n", "规则一");
+                    Require(ruleEditor.Text == RuleEditorFixture, "Reverting rule fields lost original spaces, label or CRLF.");
+                    ruleEditor.SetIgnore(true); ruleEditor.SetIgnore(false);
+                    Require(ruleEditor.Text == RuleEditorFixture && ruleEditor.ReplacementDraft == "$1=>x\\n",
+                        "Ignore toggle discarded replacement draft or rule fidelity.");
+                    ruleEditor.Edit("x=>y", "$1=>x\\n", "规则一");
+                    Require(ruleEditor.HasInputWarning && ruleEditor.Text == RuleEditorFixture, "Delimiter pattern was silently reinterpreted.");
+                    ruleEditor.Edit("#literal", "$1=>x\\n", "规则一");
+                    Require(ruleEditor.HasInputWarning && ruleEditor.Text == RuleEditorFixture, "Leading comment pattern was accepted as a rule.");
+                    ruleEditor.Edit("^foo$", "actual\nnewline", "规则一");
+                    Require(ruleEditor.HasInputWarning && ruleEditor.Text == RuleEditorFixture, "Multiline replacement corrupted the line contract.");
+                    ruleEditor.Invoke("down");
                     break;
                 case 127:
+                    Require(advancedWindow!.CleanupDraft.IndexOf("stop =>", StringComparison.Ordinal)
+                        < advancedWindow.CleanupDraft.IndexOf("^foo$", StringComparison.Ordinal), "Rule down action did not change execution order.");
+                    advancedWindow.RulesEditor.Invoke("up");
+                    break;
+                case 128:
+                    Require(advancedWindow!.CleanupDraft == RuleEditorFixture, "Moving rule back lost final newline/comment fidelity.");
+                    advancedWindow.RulesEditor.Invoke("remove");
+                    break;
+                case 129:
+                    Require(advancedWindow!.RulesEditor.Count == 2 && advancedWindow.CleanupDraft.Contains("# shared\r\n")
+                        && !advancedWindow.CleanupDraft.Contains("# label: 规则一"), "Deleting a rule removed unrelated comments or kept its label.");
+                    advancedWindow.RulesEditor.SetIgnore(false);
+                    advancedWindow.RulesEditor.Edit("stop", "keep", "停止");
+                    advancedWindow.RulesEditor.SetIgnore(true); advancedWindow.RulesEditor.SetIgnore(false);
+                    Require(advancedWindow.RulesEditor.ReplacementDraft == "keep" && advancedWindow.CleanupDraft.Contains("stop => keep"),
+                        "Ignore rule failed to retain replacement after action changes.");
+                    advancedWindow.RulesEditor.Invoke("add");
+                    break;
+                case 130:
+                    Require(advancedWindow!.RulesEditor.Count == 3, "Native add-rule button failed.");
+                    advancedWindow.RulesEditor.Edit("new", "$0=>\\n", "新增");
+                    advancedWindow.RulesEditor.Invoke("up");
+                    break;
+                case 131:
+                    Require(advancedWindow!.CleanupDraft.IndexOf("new =>", StringComparison.Ordinal)
+                        < advancedWindow.CleanupDraft.IndexOf("last =>", StringComparison.Ordinal), "New rule did not move with its label.");
+                    advancedWindow.RulePreview.Expand();
+                    break;
+                case 132:
+                    if (!advancedWindow!.RulePreview.IsContentReady) return;
+                    advancedWindow.RulePreview.Sample = "last"; advancedWindow.RulePreview.InvokeRun();
+                    break;
+                case 133:
+                    if (advancedWindow!.RulePreview.IsBusy) return;
+                    Require(advancedWindow.RulePreview.HasResult && advancedWindow.RulePreview.Output == "tail"
+                        && core.Snapshot.Revision == advancedRevision, "Structured rule preview used stale rules or wrote settings.");
+                    advancedWindow.RulesEditor.Select(2); advancedWindow.RulesEditor.Edit("[", "tail2", "");
+                    Require(!advancedWindow.RulePreview.HasResult, "Structured edit retained stale sample result.");
+                    advancedWindow.InvokeSave();
+                    break;
+                case 134:
+                    Require(advancedWindow!.HasError && advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision
+                        && advancedWindow.CleanupDraft.Contains("[ => tail2"), "Invalid structured regex was saved or its draft was discarded.");
+                    advancedWindow.RulesEditor.Edit("last", "tail2", ""); savedText = advancedWindow.CleanupDraft;
+                    advancedWindow.InvokeSave();
+                    break;
+                case 135:
+                    Require(!advancedWindow!.HasDraft && !advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1
+                        && core.Snapshot.Values["app.cleanup_rules"] == savedText, "Structured rule save lost bytes or failed.");
+                    advancedRevision = core.Snapshot.Revision;
+                    advancedWindow.PolicyEditor.Select(1); acceptedPolicyJson = advancedWindow.PolicyDraft;
+                    Require(advancedWindow.PolicyEditor.RulesEditor.Count == 1, "Per-app rule form did not follow policy selection.");
+                    advancedWindow.PolicyEditor.RulesEditor.Edit("foo", "changed=>value", "应用规则");
+                    advancedWindow.PolicyEditor.RulesEditor.SetIgnore(true); advancedWindow.PolicyEditor.RulesEditor.SetIgnore(false);
+                    advancedWindow.PolicyEditor.RulesEditor.Edit("foo", "bar", "");
+                    Require(!advancedWindow.HasDraft && advancedWindow.PolicyDraft == acceptedPolicyJson,
+                        "Reverting structured per-app rule did not restore accepted JSON.");
+                    advancedWindow.PolicyEditor.RulesEditor.Edit("foo", "bar", "应用规则");
+                    advancedWindow.InvokeSave();
+                    break;
+                case 136:
+                    Require(!advancedWindow!.HasDraft && !advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1,
+                        "Per-app structured rule save failed.");
+                    using (var rulesJson = JsonDocument.Parse(core.Snapshot.Values["app.app_cleanup_policies"]))
+                        Require(rulesJson.RootElement[1].GetProperty("cleanupRules").GetString()!.Contains("# label: 应用规则"),
+                            "Policy JSON omitted structured rule label.");
+                    advancedRevision = core.Snapshot.Revision;
+                    main.CloseAdvancedSettings();
+                    Require(!advancedWindow.RulesEditor.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData,
+                        "Closing structured rule editors retained draft/model text.");
+                    main.OpenAdvancedSettings();
+                    break;
+                case 137:
+                    if (main.AdvancedSettings?.IsContentReady != true) return;
+                    advancedWindow = main.AdvancedSettings;
+                    Require(!advancedWindow.HasDraft && advancedWindow.CleanupDraft == savedText
+                        && advancedWindow.RulesEditor.Count == 3 && core.Snapshot.Revision == advancedRevision,
+                        "Reopening structured rules changed stored data or lost rules.");
+                    if (rulesOnly)
+                    {
+                        webView2ModuleLoaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>()
+                            .Select(module => module.ModuleName).Concat(AppDomain.CurrentDomain.GetAssemblies().Select(assembly => assembly.GetName().Name ?? ""))
+                            .Any(name => name.Contains("WebView2", StringComparison.OrdinalIgnoreCase));
+                        Require(webView2ModuleLoaded == false, "WebView2 module loaded during rules-only check.");
+                        Finish(true, null); return;
+                    }
+                    view.Invoke("preview");
+                    break;
+                case 138:
                     Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Quit fixture lost the pending preview.");
                     // Close with advanced settings, capture and a pending preview still active.
                     view.Search("关闭时取消");
@@ -1030,14 +1163,14 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         {
             main.Quit();
             if (passed && advancedWindow is not null)
-                Require(!advancedWindow.PolicyEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData, "Quit retained policy snapshots, sample data or rule text.");
+                Require(!advancedWindow.RulesEditor.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData, "Quit retained policy snapshots, sample data or rule text.");
             if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending
                 && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == ""
                 && main.Settings is null && main.AdvancedSettings is null, "Quit retained native windows/resources.");
             Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
-        File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, phases = phase + 1,
+        File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = rulesOnly ? "rules" : "full", phases = rulesOnly ? phase - 125 : phase + 1,
             framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,
             compactWindowsCreated = main.CompactPreview.WindowsCreated, compactFocusPreserved,
             elapsedSeconds = elapsed.Elapsed.TotalSeconds }));

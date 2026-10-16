@@ -14,6 +14,7 @@ internal sealed class AppPolicyEditor : UserControl
     private static readonly string[] TypeLabels = ["文本", "代码", "链接", "富文本", "图片", "文件", "视频"];
     private readonly CleanupPreviewView preview;
     internal CleanupPreviewView RulePreview => preview;
+    internal CleanupRuleEditor RulesEditor => rules;
     internal void Initialize(TieZ.Core.NativeCore core) => preview.Initialize(core);
     private readonly StackPanel root = new() { Spacing = 12 };
     private readonly StackPanel fields = new() { Spacing = 10 };
@@ -26,7 +27,7 @@ internal sealed class AppPolicyEditor : UserControl
     private readonly TextBox name = new() { Header = "应用名称", PlaceholderText = "例如：notepad" };
     private readonly TextBox path = new() { Header = "路径、可执行文件名或应用 ID", PlaceholderText = "例如：notepad.exe" };
     private readonly ComboBox action = new() { Header = "匹配后执行", ItemsSource = new[] { "清理文字", "忽略采集" } };
-    private readonly TextBox rules = new() { Header = "此应用的清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80 };
+    private readonly CleanupRuleEditor rules = new();
     private readonly TextBlock semantics = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly TextBlock extraTypes = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly InfoBar invalid = new() { Severity = InfoBarSeverity.Warning, IsClosable = false };
@@ -41,7 +42,7 @@ internal sealed class AppPolicyEditor : UserControl
     internal int Count => policies?.Count ?? 0;
     internal bool StructuredAvailable => policies is not null;
     internal bool HasRetainedData => policies is not null || acceptedPolicies is not null || originals.Count > 0
-        || preview.HasRetainedData || acceptedText.Length > 0 || raw.Text.Length > 0 || name.Text.Length > 0 || path.Text.Length > 0 || rules.Text.Length > 0;
+        || rules.HasRetainedData || preview.HasRetainedData || acceptedText.Length > 0 || raw.Text.Length > 0 || name.Text.Length > 0 || path.Text.Length > 0 || rules.Text.Length > 0;
     private JsonObject? Selected => policies is not null && selection.SelectedIndex >= 0
         && selection.SelectedIndex < policies.Count ? policies[selection.SelectedIndex] as JsonObject : null;
 
@@ -76,7 +77,7 @@ internal sealed class AppPolicyEditor : UserControl
         name.TextChanging += (_, _) => SetField("appName", JsonValue.Create(name.Text));
         path.TextChanging += (_, _) => SetField("appPath", JsonValue.Create(path.Text));
         action.SelectionChanged += (_, _) => SetField("action", JsonValue.Create(action.SelectedIndex == 1 ? "ignore" : "clean"));
-        rules.TextChanging += (_, _) =>
+        rules.Changed += () =>
         {
             if (loading || Selected is not { } policy) return;
             string stored = String(policy, "cleanupRules", "");

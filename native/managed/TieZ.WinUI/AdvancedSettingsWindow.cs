@@ -15,7 +15,7 @@ public sealed class AdvancedSettingsWindow : Window
     private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
     private readonly TextBox kinds = new() { Header = "敏感匹配类别（逗号分隔）", PlaceholderText = "phone,idcard,email,secret" };
     private readonly TextBox privacy = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
-    private readonly TextBox cleanup = new() { Header = "清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
+    private readonly CleanupRuleEditor cleanup = new();
     private readonly AppPolicyEditor policies = new();
     private readonly CleanupPreviewView cleanupPreview;
     private readonly Button save = new() { Content = "保存高级设置", IsEnabled = false };
@@ -32,6 +32,7 @@ public sealed class AdvancedSettingsWindow : Window
     internal string PrivacyDraft => privacy.Text;
     internal string PolicyDraft => policies.Text;
     internal AppPolicyEditor PolicyEditor => policies;
+    internal CleanupRuleEditor RulesEditor => cleanup;
     internal CleanupPreviewView RulePreview => cleanupPreview;
     internal string KindsDraft => kinds.Text;
     internal ElementTheme CurrentTheme => surface.RequestedTheme;
@@ -57,9 +58,10 @@ public sealed class AdvancedSettingsWindow : Window
         surface.Child = new ScrollViewer { Content = panel };
         surface.Style = (Style)Application.Current.Resources["NativeSettingsSurfaceStyle"];
         Content = surface;
-        foreach (var input in new[] { kinds, privacy, cleanup })
+        foreach (var input in new[] { kinds, privacy })
             input.TextChanging += (_, _) => MarkDirty();
-        cleanup.TextChanging += (_, _) => cleanupPreview.Invalidate();
+        cleanup.Changed += MarkDirty;
+        cleanup.Changed += cleanupPreview.Invalidate;
         policies.Changed += MarkDirty;
         save.Click += (_, _) => Save();
         reload.Click += (_, _) => Reload();
@@ -67,7 +69,8 @@ public sealed class AdvancedSettingsWindow : Window
         Closed += (_, _) =>
         {
             closed = true; core.Changed -= OnChanged; policies.Changed -= MarkDirty; loaded = null;
-            loading = true; kinds.Text = privacy.Text = cleanup.Text = "";
+            loading = true; kinds.Text = privacy.Text = "";
+            cleanup.Changed -= MarkDirty; cleanup.Changed -= cleanupPreview.Invalidate; cleanup.Clear();
             cleanupPreview.Dispose(); policies.Clear();
         };
         Load(core.Snapshot);
@@ -76,7 +79,8 @@ public sealed class AdvancedSettingsWindow : Window
     {
         ["app.privacy_protection_kinds"] = StoredDraft(kinds, "app.privacy_protection_kinds"),
         ["app.privacy_protection_custom_rules"] = StoredDraft(privacy, "app.privacy_protection_custom_rules"),
-        ["app.cleanup_rules"] = StoredDraft(cleanup, "app.cleanup_rules"),
+        ["app.cleanup_rules"] = loaded is not null && Lines(cleanup.Text) == Lines(loaded.Values["app.cleanup_rules"])
+            ? loaded.Values["app.cleanup_rules"] : cleanup.Text,
         ["app.app_cleanup_policies"] = loaded is not null && Lines(policies.Text) == Lines(loaded.Values["app.app_cleanup_policies"])
             ? loaded.Values["app.app_cleanup_policies"] : policies.Text,
     };
