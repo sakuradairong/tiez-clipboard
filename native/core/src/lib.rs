@@ -85,6 +85,13 @@ enum Request {
         ids: Vec<i64>,
         expected_revision: u64,
     },
+    HistoryClearPreview {
+        handle: u64,
+    },
+    HistoryClear {
+        handle: u64,
+        expected_revision: u64,
+    },
     HistoryChanges {
         handle: u64,
         after_revision: u64,
@@ -315,6 +322,25 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .delete_many(ids, expected_revision)?)),
+        Request::HistoryClearPreview { handle } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .clear_preview()?)),
+        Request::HistoryClear {
+            handle,
+            expected_revision,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .clear(expected_revision)?)),
         Request::ClipboardCopy {
             handle,
             id,

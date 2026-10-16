@@ -16,6 +16,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private HotkeyProbe? hotkeyProbe;
     private long entryId, invalidImageId, pasteGuardId, batchFirst, batchSecond, batchKept;
     private ulong batchRevision;
+    private long clearPinned, clearTagged, clearOrdinary, clearLate;
+    private ulong clearRevision;
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
@@ -336,6 +338,56 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!view.CanDelete && !view.CanCopy && view.Detail == "", "Filter change kept multi-selection actions/content.");
                     break;
                 case 60:
+                    clearPinned = (await core.AddManualAsync("清空保留置顶")).Id;
+                    await core.SetPinnedAsync(clearPinned, true);
+                    clearTagged = (await core.AddManualAsync("清空保留标签", tags: ["保留"])).Id;
+                    clearOrdinary = (await core.AddManualAsync("筛选范围外的普通历史")).Id;
+                    await view.ReloadAsync();
+                    Require(view.Rows.Count == 0, "Clear fixture should have an empty filtered list.");
+                    var clearPreview = await core.GetClearHistoryPreviewAsync();
+                    clearRevision = clearPreview.Revision;
+                    Require(clearPreview.EligibleCount > 0, "Clear preview incorrectly followed the UI filter.");
+                    view.Invoke("clear");
+                    break;
+                case 61:
+                    Require(view.HasDialog, "Clear skipped confirmation."); view.CancelDialog();
+                    break;
+                case 62:
+                    Require(!view.HasDialog && (await core.GetHistoryAsync(new())).Revision == clearRevision,
+                        "Cancelling clear changed history.");
+                    Require((await core.GetEntryAsync(clearOrdinary)).Content == "筛选范围外的普通历史", "Cancel removed history.");
+                    view.Invoke("clear");
+                    break;
+                case 63:
+                    Require(view.HasDialog, "Clear preview confirmation missing.");
+                    clearLate = (await core.AddManualAsync("清空预览期间新增")).Id;
+                    view.ConfirmDialog();
+                    break;
+                case 64:
+                    Require(!view.HasDialog && view.HasError, "Changed preview was not rejected.");
+                    Require((await core.GetEntryAsync(clearOrdinary)).Content == "筛选范围外的普通历史"
+                        && (await core.GetEntryAsync(clearLate)).Content == "清空预览期间新增", "Rejected clear removed history.");
+                    await view.ReloadAsync(); view.Invoke("clear");
+                    break;
+                case 65:
+                    Require(view.HasDialog, "Corrected clear confirmation missing.");
+                    clearRevision = (await core.GetClearHistoryPreviewAsync()).Revision;
+                    view.ConfirmDialog();
+                    break;
+                case 66:
+                    Require(!view.HasDialog && (await core.GetClearHistoryPreviewAsync()).EligibleCount == 0,
+                        "Accepted clear left unprotected history.");
+                    Require((await core.GetEntryAsync(clearPinned)).IsPinned
+                        && (await core.GetEntryAsync(clearTagged)).Tags.Contains("保留"), "Clear removed protected records.");
+                    var clearedChanges = await core.GetHistoryChangesAsync(clearRevision);
+                    Require(clearedChanges.Revision == clearRevision + 1 && clearedChanges.ResyncRequired
+                        && clearedChanges.Changes.Count == 0, "Clear did not create a bounded resync boundary.");
+                    clearRevision = clearedChanges.Revision;
+                    view.Invoke("clear");
+                    break;
+                case 67:
+                    Require(!view.HasDialog && !view.HasError && (await core.GetHistoryAsync(new())).Revision == clearRevision,
+                        "Empty clear showed a confirmation/error or advanced history revision.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

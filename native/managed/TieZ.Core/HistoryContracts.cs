@@ -35,3 +35,11 @@ public sealed record HistoryChanges(
 public sealed record HistoryMutation(
     ulong Revision, bool Changed, long Id, long? ReplacedId,
     IReadOnlyList<long> RemovedIds, bool PersistentSyncPending);
+
+public sealed record HistoryClearPreview(ulong Revision, long StoredCount, int SessionCount)
+{
+    public long EligibleCount => StoredCount + SessionCount;
+}
+
+public sealed record HistoryClearResult(ulong Revision, bool Changed, long RemovedCount, bool PersistentSyncPending,
+    string? CompactionError = null);

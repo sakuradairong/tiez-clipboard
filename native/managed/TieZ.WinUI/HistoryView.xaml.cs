@@ -97,6 +97,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 await MutateAsync(() => core!.SetPinnedAsync(row.Id, !row.Summary.IsPinned));
         };
         DeleteButton.Click += async (_, _) => await DeleteSelectedAsync();
+        ClearButton.Click += async (_, _) => await ShowClearDialogAsync();
         RefreshButton.Click += async (_, _) => await ReloadAsync();
         MoreButton.Click += async (_, _) => await LoadAsync(false);
         RevealButton.Click += async (_, _) => await LoadDetailAsync(true);
@@ -402,6 +403,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             && HistoryList.SelectedItems.Cast<HistoryRow>().All(row => !row.IsStale);
         DeleteButton.Label = HistoryList.SelectedItems.Count > 1 ? $"删除所选（{HistoryList.SelectedItems.Count}）" : "删除";
         PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
+        ClearButton.IsEnabled = available && !externalPending;
         RefreshButton.IsEnabled = available;
         MoreButton.IsEnabled = available && hasMore;
         MoreButton.Visibility = hasMore ? Visibility.Visible : Visibility.Collapsed;
@@ -570,6 +572,50 @@ public sealed partial class HistoryView : UserControl, IDisposable
         finally { activeDialog = null; if (!disposed) UpdateCommands(); }
     }
 
+    private async Task ShowClearDialogAsync()
+    {
+        if (disposed || activeDialog is not null || mutating || loading || filterPending || externalPending) return;
+        mutating = true; UpdateCommands();
+        try
+        {
+            var preview = await core!.GetClearHistoryPreviewAsync(lifetime.Token);
+            if (disposed) return;
+            if (preview.EligibleCount == 0)
+            {
+                Feedback.Title = "没有可清空的普通历史";
+                Feedback.Message = "置顶和带标签的记录已保留。";
+                Feedback.Severity = InfoBarSeverity.Informational; Feedback.IsOpen = true;
+                return;
+            }
+            var dialog = new ContentDialog
+            {
+                Title = "清空普通历史？",
+                Content = $"将删除 {preview.StoredCount} 条本地记录和 {preview.SessionCount} 条会话记录。\n"
+                    + "保留所有置顶和带标签的记录。此操作作用于整个历史，不受搜索或筛选影响，删除后无法撤销。",
+                PrimaryButtonText = "清空", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
+                XamlRoot = XamlRoot
+            };
+            activeDialog = dialog; mutating = false; UpdateCommands();
+            var choice = await dialog.ShowAsync();
+            activeDialog = null;
+            if (disposed || choice != ContentDialogResult.Primary) return;
+            mutating = true; UpdateCommands();
+            var result = await core.ClearHistoryAsync(preview.Revision, lifetime.Token);
+            if (disposed) return;
+            await ReloadAsync(0);
+            if (disposed) return;
+            Feedback.Title = "已清空普通历史";
+            Feedback.Message = $"已删除 {result.RemovedCount} 条记录，置顶和带标签的记录已保留。"
+                + (result.CompactionError is null ? "" : " 数据库空间压缩未完成；历史清空已经生效。");
+            Feedback.Severity = result.CompactionError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+            Feedback.IsOpen = true;
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (Exception error) { if (!disposed) ShowError(error is CoreException { Code: "history_conflict" }
+            ? "历史记录已变化，本次清空未执行。请刷新后重新查看清空范围。" : error.Message); }
+        finally { activeDialog = null; mutating = false; if (!disposed) UpdateCommands(); }
+    }
+
     private static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
     {
         for (int index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
@@ -650,7 +696,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             "capture" => (ButtonBase)CaptureButton, "add" => AddButton,
             "paste" => PasteButton, "paste-plain" => PastePlainButton, "target-start" => StartTargetButton,
             "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
-            "tags" => TagsButton, "delete" => DeleteButton, "more" => MoreButton,
+            "tags" => TagsButton, "delete" => DeleteButton, "clear" => ClearButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
         if (!button.IsEnabled) throw new InvalidOperationException($"{name} is disabled.");

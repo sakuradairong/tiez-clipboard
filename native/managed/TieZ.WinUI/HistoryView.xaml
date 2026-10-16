@@ -50,6 +50,7 @@
                 <AppBarButton.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8EC;"/></AppBarButton.Icon>
             </AppBarButton>
             <AppBarButton x:Name="DeleteButton" Label="删除" Icon="Delete"/>
+            <AppBarButton x:Name="ClearButton" Label="清空普通历史" Icon="Clear"/>
             <AppBarButton x:Name="RefreshButton" Label="刷新" Icon="Refresh"/>
         </CommandBar>
         <Grid Grid.Row="4" ColumnSpacing="16">

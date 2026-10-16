@@ -14,6 +14,8 @@ use tiez_storage::infrastructure::repository::clipboard_repo::{
 const SESSION_LIMIT: usize = 500;
 const CHANGE_LIMIT: usize = 128;
 const SCAN_LIMIT: u32 = 2000;
+const CLEAR_FILTER: &str = "is_pinned = 0 AND NOT EXISTS
+    (SELECT 1 FROM entry_tags WHERE entry_id = clipboard_history.id)";
 fn failure(message: impl ToString) -> CoreError {
     CoreError::new("history", message.to_string())
 }
@@ -112,6 +114,20 @@ pub struct HistoryMutation {
     pub replaced_id: Option<i64>,
     pub removed_ids: Vec<i64>,
     pub persistent_sync_pending: bool,
+}
+#[derive(Debug, Serialize)]
+pub struct HistoryClearPreview {
+    pub revision: u64,
+    pub stored_count: i64,
+    pub session_count: usize,
+}
+#[derive(Debug, Serialize)]
+pub struct HistoryClearResult {
+    pub revision: u64,
+    pub changed: bool,
+    pub removed_count: usize,
+    pub persistent_sync_pending: bool,
+    pub compaction_error: Option<&'static str>,
 }
 pub struct HistoryService {
     connection: Arc<Mutex<Connection>>,
@@ -724,6 +740,106 @@ impl HistoryService {
         }
         self.session.retain(|entry| !ids.contains(&entry.id));
         Ok(self.committed(revision, first, None, ids.into_iter().collect(), persisted))
+    }
+    pub fn clear_preview(&self) -> CoreResult<HistoryClearPreview> {
+        let connection = self.connection.lock().map_err(failure)?;
+        let stored_count = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM clipboard_history WHERE {CLEAR_FILTER}"),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(failure)?;
+        Ok(HistoryClearPreview {
+            revision: self.revision,
+            stored_count,
+            session_count: self
+                .session
+                .iter()
+                .filter(|entry| !entry.is_pinned && entry.tags.is_empty())
+                .count(),
+        })
+    }
+    /// The preview revision authorizes precisely this history state, independently of UI filters.
+    /// A clear invalidates the change feed rather than returning an unbounded list of deleted IDs.
+    pub fn clear(&mut self, expected_revision: u64) -> CoreResult<HistoryClearResult> {
+        if expected_revision != self.revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; review the clear preview again",
+            ));
+        }
+        let removable = |entry: &ClipboardEntry| !entry.is_pinned && entry.tags.is_empty();
+        let session_count = self.session.iter().filter(|entry| removable(entry)).count();
+        let (revision, removed_count, persisted, compaction_error) = {
+            let mut connection = self.connection.lock().map_err(failure)?;
+            let transaction = connection.transaction().map_err(failure)?;
+            let stored = {
+                let mut statement = transaction
+                    .prepare(&format!(
+                        "SELECT id FROM clipboard_history WHERE {CLEAR_FILTER} ORDER BY id"
+                    ))
+                    .map_err(failure)?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, i64>(0))
+                    .map_err(failure)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(failure)?
+            };
+            let removed_count = stored.len() + session_count;
+            if removed_count == 0 {
+                transaction.rollback().map_err(failure)?;
+                return Ok(HistoryClearResult {
+                    revision: self.revision,
+                    changed: false,
+                    removed_count: 0,
+                    persistent_sync_pending: self.persistent_sync_pending,
+                    compaction_error: None,
+                });
+            }
+            let revision = self.next_revision()?;
+            let persisted = !stored.is_empty();
+            let mut cleanup = tiez_storage::retention::delete_selected(
+                &self.repository,
+                &transaction,
+                &self.data_dir,
+                stored,
+            )
+            .map_err(failure)?;
+            cleanup.include_session(
+                &self.repository,
+                &self.data_dir,
+                self.session.iter().filter(|entry| removable(entry)),
+                self.session.iter().filter(|entry| !removable(entry)),
+            );
+            transaction.commit().map_err(failure)?;
+            cleanup
+                .finish(&self.repository, &connection, &self.data_dir)
+                .map_err(failure)?;
+            // Like the legacy clear, attempt to reclaim database space after commit.
+            // This optional maintenance must never turn an accepted deletion into an error.
+            let compaction_error = if persisted {
+                connection
+                    .execute_batch("VACUUM;")
+                    .err()
+                    .map(|_| "history_compaction")
+            } else {
+                None
+            };
+            (revision, removed_count, persisted, compaction_error)
+        };
+        self.session.retain(|entry| !removable(entry));
+        self.revision = revision;
+        self.persistent_sync_pending |= persisted;
+        // changes() uses the current revision as its floor when this deque is empty.
+        // Clients older than the clear must resync, including after subsequent edits.
+        self.changes.clear();
+        Ok(HistoryClearResult {
+            revision,
+            changed: true,
+            removed_count,
+            persistent_sync_pending: self.persistent_sync_pending,
+            compaction_error,
+        })
     }
     pub fn set_tags(&mut self, id: i64, tags: Vec<String>) -> CoreResult<HistoryMutation> {
         let mut e = self.entry(id)?;
@@ -1370,5 +1486,193 @@ mod tests {
         assert!(s.entry(stored).is_ok() && s.entry(session).is_ok());
         assert_eq!(s.revision, revision);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clear_preview_is_read_only_and_preserves_pinned_and_tagged_history() {
+        let mut s = service();
+        let ordinary = add(&mut s, "ordinary");
+        let pinned = add(&mut s, "pinned");
+        s.pin(pinned, true).unwrap();
+        let tagged = add(&mut s, "tagged");
+        s.set_tags(tagged, vec!["work".into()]).unwrap();
+        let session = s
+            .record_capture(processed("session ordinary"), false, true, false)
+            .unwrap()
+            .id;
+        let mut protected = processed("session pinned");
+        protected.is_pinned = true;
+        let session_pinned = s.record_capture(protected, false, true, false).unwrap().id;
+        let mut protected = processed("session tagged");
+        protected.tags = vec!["work".into()];
+        let session_tagged = s.record_capture(protected, false, true, false).unwrap().id;
+        let revision = s.revision;
+        let preview = s.clear_preview().unwrap();
+        assert_eq!(
+            (
+                preview.revision,
+                preview.stored_count,
+                preview.session_count
+            ),
+            (revision, 1, 1)
+        );
+        assert_eq!(s.revision, revision);
+        assert!(s.changes(revision).unwrap().changes.is_empty());
+        let cleared = s.clear(preview.revision).unwrap();
+        assert!(cleared.changed && cleared.persistent_sync_pending);
+        assert_eq!((cleared.removed_count, cleared.revision), (2, revision + 1));
+        assert!(s.entry(ordinary).is_err() && s.entry(session).is_err());
+        for id in [pinned, tagged, session_pinned, session_tagged] {
+            assert!(s.entry(id).is_ok());
+        }
+        assert!(s.changes(revision).unwrap().resync_required);
+        let empty = s.clear_preview().unwrap();
+        assert_eq!(empty.stored_count + empty.session_count as i64, 0);
+        assert!(!s.clear(empty.revision).unwrap().changed);
+        assert_eq!(s.revision, cleared.revision);
+    }
+    #[test]
+    fn clear_delete_failure_rolls_back_every_row_session_tombstone_and_revision() {
+        let mut s = service();
+        let first = add(&mut s, "clear first");
+        let second = add(&mut s, "clear second");
+        let session = s
+            .record_capture(processed("clear session"), false, true, false)
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        s.connection.lock().unwrap().execute_batch(&format!(
+            "CREATE TRIGGER reject_clear BEFORE DELETE ON clipboard_history WHEN OLD.id={second} BEGIN SELECT RAISE(ABORT,'clear fixture'); END;" )).unwrap();
+        assert!(s.clear(revision).is_err());
+        for id in [first, second, session] {
+            assert!(s.entry(id).is_ok());
+        }
+        assert_eq!(s.revision, revision);
+        assert!(!s.changes(revision).unwrap().resync_required);
+        assert_eq!(
+            s.connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM cloud_sync_tombstones", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn clear_failed_commit_preserves_session_attachment_and_database() {
+        let mut s = service();
+        let root = std::env::temp_dir().join(format!(
+            "TieZ-clear-rollback-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(root.join("attachments")).unwrap();
+        let path = root.join("attachments/session.png");
+        std::fs::write(&path, b"fixture").unwrap();
+        s.data_dir = root.clone();
+        let mut entry = processed(path.to_str().unwrap());
+        entry.content_type = "image".into();
+        entry.is_external = true;
+        let session = s.record_capture(entry, false, false, false).unwrap().id;
+        let stored = add(&mut s, "clear roll back");
+        let revision = s.revision;
+        s.connection.lock().unwrap().execute_batch("PRAGMA foreign_keys=ON;
+            CREATE TABLE clear_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE clear_child(id INTEGER REFERENCES clear_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER reject_clear_commit AFTER DELETE ON clipboard_history BEGIN INSERT INTO clear_child VALUES(999); END;").unwrap();
+        assert!(s.clear(revision).is_err());
+        assert!(path.exists() && s.entry(session).is_ok() && s.entry(stored).is_ok());
+        assert_eq!(s.revision, revision);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn clear_has_no_selection_limit_and_keeps_change_payload_bounded() {
+        let mut s = service();
+        s.connection.lock().unwrap().execute_batch("WITH RECURSIVE rows(n) AS
+            (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<1205)
+            INSERT INTO clipboard_history(id,content_type,content,source_app,timestamp,preview,content_hash,tags)
+            SELECT n,'text','clear '||n,'fixture',n,'clear',n,'[]' FROM rows;
+            UPDATE clipboard_history SET is_pinned=1 WHERE id=1;
+            INSERT INTO entry_tags(entry_id,tag) VALUES(2,'work');").unwrap();
+        let preview = s.clear_preview().unwrap();
+        assert_eq!(preview.stored_count, 1203);
+        let cleared = s.clear(preview.revision).unwrap();
+        assert_eq!(cleared.removed_count, 1203);
+        assert!(serde_json::to_string(&cleared).unwrap().len() < 200);
+        let changes = s.changes(preview.revision).unwrap();
+        assert!(changes.resync_required && changes.changes.is_empty());
+        assert!(s.entry(1).is_ok() && s.entry(2).is_ok());
+        add(&mut s, "after clear");
+        assert!(s.changes(preview.revision).unwrap().resync_required);
+        let following = s.changes(cleared.revision).unwrap();
+        assert!(!following.resync_required && following.changes.len() == 1);
+    }
+    #[test]
+    fn clear_rejects_changed_preview_and_session_only_does_not_request_sync() {
+        let mut s = service();
+        let first = s
+            .record_capture(processed("first"), false, true, false)
+            .unwrap()
+            .id;
+        let preview = s.clear_preview().unwrap();
+        let second = s
+            .record_capture(processed("second"), false, true, false)
+            .unwrap()
+            .id;
+        assert_eq!(
+            s.clear(preview.revision).unwrap_err().code,
+            "history_conflict"
+        );
+        assert!(s.entry(first).is_ok() && s.entry(second).is_ok());
+        let cleared = s.clear(s.revision).unwrap();
+        assert_eq!(cleared.removed_count, 2);
+        assert!(!cleared.persistent_sync_pending);
+    }
+
+    #[test]
+    fn clear_compaction_failure_still_reports_committed_deletion() {
+        let mut s = service();
+        let id = add(&mut s, "committed despite compaction failure");
+        let revision = s.revision;
+        struct ActiveStatement(*mut rusqlite::ffi::sqlite3_stmt);
+        impl Drop for ActiveStatement {
+            fn drop(&mut self) {
+                unsafe {
+                    rusqlite::ffi::sqlite3_finalize(self.0);
+                }
+            }
+        }
+        let statement = {
+            let connection = s.connection.lock().unwrap();
+            let mut statement = ActiveStatement(std::ptr::null_mut());
+            let sql = std::ffi::CString::new("SELECT key FROM settings").unwrap();
+            assert_eq!(
+                unsafe {
+                    rusqlite::ffi::sqlite3_prepare_v2(
+                        connection.handle(),
+                        sql.as_ptr(),
+                        -1,
+                        &mut statement.0,
+                        std::ptr::null_mut(),
+                    )
+                },
+                rusqlite::ffi::SQLITE_OK
+            );
+            assert_eq!(
+                unsafe { rusqlite::ffi::sqlite3_step(statement.0) },
+                rusqlite::ffi::SQLITE_ROW
+            );
+            statement
+        };
+        let result = s.clear(revision).unwrap();
+        assert!(result.changed && result.persistent_sync_pending);
+        assert_eq!(result.removed_count, 1);
+        assert_eq!(result.compaction_error, Some("history_compaction"));
+        assert!(s.entry(id).is_err());
+        assert_eq!(s.revision, revision + 1);
+        assert!(s.changes(revision).unwrap().resync_required);
+        drop(statement);
+        assert!(!s.clear(s.revision).unwrap().changed);
     }
 }

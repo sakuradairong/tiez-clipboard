@@ -36,6 +36,13 @@ public sealed partial class NativeCore
         HistoryRequestAsync<HistoryMutation>(new { op = "history_delete_many", handle, ids,
             expected_revision = expectedRevision }, cancellationToken);
 
+    public Task<HistoryClearPreview> GetClearHistoryPreviewAsync(CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<HistoryClearPreview>(new { op = "history_clear_preview", handle }, cancellationToken);
+
+    public Task<HistoryClearResult> ClearHistoryAsync(ulong expectedRevision, CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<HistoryClearResult>(new { op = "history_clear", handle,
+            expected_revision = expectedRevision }, cancellationToken);
+
     private async Task<T> HistoryRequestAsync<T>(object request, CancellationToken cancellationToken)
     {
         VerifyAccess();

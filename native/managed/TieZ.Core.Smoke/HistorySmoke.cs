@@ -79,7 +79,22 @@ internal static class HistorySmoke
         Expect("not_found", () => Read(core.GetEntryAsync(batchFirst)));
         Expect("not_found", () => Read(core.GetEntryAsync(batchSecond)));
         Check(!Read(core.DeleteEntriesAsync([], deleted.Revision)).Changed, "Empty batch changed history");
-        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch, conflicts, change feed, cancellation");
+        long clearCandidate = Read(core.AddManualAsync("clear candidate")).Id;
+        var clearPreview = Read(core.GetClearHistoryPreviewAsync());
+        Check(clearPreview.EligibleCount == 1 && clearPreview.StoredCount == 1 && clearPreview.SessionCount == 0,
+            "Clear preview included protected history");
+        Check(Read(core.GetHistoryAsync(new())).Revision == clearPreview.Revision, "Clear preview mutated history");
+        Read(core.EditEntryAsync(clearCandidate, "clear candidate changed"));
+        Expect("history_conflict", () => Read(core.ClearHistoryAsync(clearPreview.Revision)));
+        var currentPreview = Read(core.GetClearHistoryPreviewAsync());
+        var clearResult = Read(core.ClearHistoryAsync(currentPreview.Revision));
+        Check(clearResult.Changed && clearResult.RemovedCount == 1 && clearResult.Revision == currentPreview.Revision + 1
+            && clearResult.CompactionError is null, "Clear result/compaction contract");
+        Check(Read(core.GetEntryAsync(saved.Id)).Content == body, "Clear removed protected history");
+        Expect("not_found", () => Read(core.GetEntryAsync(clearCandidate)));
+        Check(Read(core.GetHistoryChangesAsync(currentPreview.Revision)).ResyncRequired, "Clear did not invalidate old change feeds");
+        Check(!Read(core.ClearHistoryAsync(clearResult.Revision)).Changed, "Empty clear advanced revision");
+        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch/clear, conflicts, change feed, cancellation");
         return saved.Id;
     }
 
