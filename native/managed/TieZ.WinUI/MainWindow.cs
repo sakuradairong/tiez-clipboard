@@ -7,7 +7,7 @@ namespace TieZ.Native;
 public sealed partial class MainWindow : Window
 {
     private readonly NativeCore core;
-    private bool residentMode, quitting;
+    private bool residentMode, quitting, active;
     internal SettingsWindow? Settings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
     internal ElementTheme CurrentTheme => MainRoot.RequestedTheme;
@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         Title = "TieZ · 原生迁移版";
         AppWindow.Resize(new SizeInt32(1080, 760));
+        Activated += (_, args) => active = args.WindowActivationState != WindowActivationState.Deactivated;
         AppWindow.Closing += (_, args) =>
         {
             if (residentMode && !quitting) { args.Cancel = true; HideToTray(); }
@@ -54,6 +55,11 @@ public sealed partial class MainWindow : Window
     {
         if (residentMode && !quitting) AppWindow.Hide();
     }
+    internal void ToggleMain()
+    {
+        if (AppWindow.IsVisible && active && residentMode) HideToTray(); else ShowMain();
+    }
+    internal void ClearShellWarning() => ShellError.IsOpen = false;
     internal void ShowMain()
     {
         if (quitting) return;

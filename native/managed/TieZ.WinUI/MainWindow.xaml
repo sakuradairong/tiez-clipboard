@@ -25,7 +25,7 @@
             </NavigationView.PaneFooter>
             <Grid Margin="16" RowSpacing="8">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="托盘不可用"/>
+                <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="后台服务状态"/>
                 <local:HistoryView x:Name="HistoryWorkspace" Grid.Row="1"/>
             </Grid>
         </NavigationView>

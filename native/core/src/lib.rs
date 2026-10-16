@@ -14,6 +14,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+fn default_true() -> bool {
+    true
+}
 #[derive(Default)]
 struct Registry {
     next_handle: u64,
@@ -101,6 +104,8 @@ enum Request {
     ShellStart {
         handle: u64,
         show_tray: bool,
+        #[serde(default = "default_true")]
+        bind_main_hotkey: bool,
     },
     ShellPoll {
         handle: u64,
@@ -188,9 +193,29 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .services
                 .get_mut(&handle)
                 .ok_or_else(invalid_handle)?;
-            let change = service.settings.update(expected_revision, patch)?;
+            let shell = &service.shell;
+            let (change, prepared) =
+                service
+                    .settings
+                    .update_with(expected_revision, patch, |current, next| {
+                        if current.values["app.hotkey"] != next.values["app.hotkey"]
+                            && shell.status().running
+                        {
+                            shell
+                                .prepare_hotkey(&next.values["app.hotkey"])
+                                .map(Some)
+                                .map_err(hotkey_error)
+                        } else {
+                            Ok(None)
+                        }
+                    })?;
+            let effect_error = prepared
+                .flatten()
+                .and_then(|prepared| prepared.commit().err());
             service.capture.apply_settings(&change.snapshot);
-            Ok(serde_json::to_value(change).expect("serializable settings"))
+            let mut result = serde_json::to_value(change).expect("serializable settings");
+            result["side_effect_error"] = json!(effect_error);
+            Ok(result)
         }
         Request::HistoryPage { handle, query } => Ok(json!(registry
             .services
@@ -300,13 +325,24 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 expected_generation
             )?))
         }
-        Request::ShellStart { handle, show_tray } => {
+        Request::ShellStart {
+            handle,
+            show_tray,
+            bind_main_hotkey,
+        } => {
             let service = registry
                 .services
                 .get_mut(&handle)
                 .ok_or_else(invalid_handle)?;
-            let status = service.shell.start(show_tray).map_err(shell_error)?;
-            Ok(shell_status(status))
+            service.shell.start(show_tray).map_err(shell_error)?;
+            if bind_main_hotkey {
+                let snapshot = service.settings.snapshot()?;
+                // Conflicts do not take away the tray/visible-window recovery path.
+                if let Ok(prepared) = service.shell.prepare_hotkey(&snapshot.values["app.hotkey"]) {
+                    let _ = prepared.commit();
+                }
+            }
+            Ok(shell_status(service.shell.status()))
         }
         Request::ShellPoll { handle } => {
             let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
@@ -319,6 +355,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     ShellAction::ShowMain => "show_main",
                     ShellAction::OpenSettings => "open_settings",
                     ShellAction::Quit => "quit",
+                    ShellAction::ToggleMain => "toggle_main",
                 })
                 .collect();
             Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))
@@ -399,6 +436,12 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         }
     }
 }
+fn hotkey_error(code: &'static str) -> CoreError {
+    CoreError::new(
+        code,
+        "Shortcut could not be prepared; previous settings and binding retained",
+    )
+}
 fn shell_error(code: &'static str) -> CoreError {
     CoreError::new(
         code,
@@ -407,7 +450,8 @@ fn shell_error(code: &'static str) -> CoreError {
 }
 fn shell_status(status: tiez_native_platform::shell::ShellStatus) -> Value {
     json!({ "running": status.running, "starts": status.starts,
-        "tray_visible": status.tray_visible, "last_error": status.last_error })
+        "tray_visible": status.tray_visible, "last_error": status.last_error,
+        "main_hotkey_active": status.main_hotkey_active, "hotkey_error": status.hotkey_error })
 }
 fn target_error(code: &'static str) -> CoreError {
     CoreError::new(

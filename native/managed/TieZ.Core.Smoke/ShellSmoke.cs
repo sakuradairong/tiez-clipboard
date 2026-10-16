@@ -11,9 +11,9 @@ internal static class ShellSmoke
     {
         var initial = Read(core.PollShellAsync());
         Check(!initial.Status.Running && initial.Status.Starts == 0 && initial.Actions.Count == 0, "Explicit shell startup");
-        var started = Read(core.StartShellAsync(showTray: false));
+        var started = Read(core.StartShellAsync(showTray: false, bindMainHotkey: false));
         Check(started.Running && !started.TrayVisible && started.Starts == 1, "Headless shell message thread start");
-        Check(Read(core.StartShellAsync(false)).Starts == 1, "Idempotent shell start");
+        Check(Read(core.StartShellAsync(false, false)).Starts == 1, "Idempotent shell start");
         try { Read(core.StartShellAsync(true)); throw new InvalidOperationException("Changed live shell options accepted without restart"); }
         catch (CoreException error) when (error.Code == "shell_restart_required") { }
         nint window = FindOwnedWindow();
@@ -26,18 +26,18 @@ internal static class ShellSmoke
         var stopped = Read(core.StopShellAsync());
         Check(!stopped.Running && !stopped.TrayVisible && !IsWindow(window), "Shell stop did not remove native window");
         Check(!Read(core.StopShellAsync()).Running, "Idempotent shell stop");
-        Check(Read(core.StartShellAsync(false)).Starts == 2, "Shell message thread restart");
+        Check(Read(core.StartShellAsync(false, false)).Starts == 2, "Shell message thread restart");
         Console.WriteLine("PASS: real native shell window, bounded release/keyboard-select events, ignored mouse-down, explicit lifecycle and restart; no popup, clipboard or injected input");
     }
     internal static void DisposeActive(string database)
     {
         nint window;
-        using (var core = new NativeCore(database)) { Read(core.StartShellAsync(false)); window = FindOwnedWindow(); }
+        using (var core = new NativeCore(database)) { Read(core.StartShellAsync(false, false)); window = FindOwnedWindow(); }
         Check(!IsWindow(window), "Active core disposal left shell HWND alive");
         using var reopened = new NativeCore(database);
-        Check(Read(reopened.StartShellAsync(false)).Starts == 1, "Shell reopen after active disposal");
+        Check(Read(reopened.StartShellAsync(false, false)).Starts == 1, "Shell reopen after active disposal");
     }
-    private static nint FindOwnedWindow()
+    internal static nint FindOwnedWindow()
     {
         nint found = 0;
         bool duplicate = false;

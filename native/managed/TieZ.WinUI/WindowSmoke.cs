@@ -13,6 +13,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private DispatcherQueueTimer? timer;
     private int phase;
     private bool ticking;
+    private HotkeyProbe? hotkeyProbe;
     private long entryId, invalidImageId, pasteGuardId;
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
@@ -245,6 +246,41 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     break;
                 case 46:
                     Require(main.AppWindow.IsVisible && main.ResidentMode && core.Refresh().Revision == 3, "Show from resident mode failed or wrote settings.");
+                    main.OpenSettings();
+                    break;
+                case 47:
+                    if (!main.Settings!.IsContentReady) return;
+                    main.Settings.SetSmokeHotkey("Ctrl+"); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    break;
+                case 48:
+                    Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+" && core.Snapshot.Revision == 3, "Invalid shortcut did not preserve draft/revision.");
+                    hotkeyProbe = new HotkeyProbe();
+                    main.Settings.SetSmokeHotkey("Ctrl+Alt+Shift+F24"); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    break;
+                case 49:
+                    Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+Alt+Shift+F24" && core.Snapshot.Revision == 3, "Conflicting shortcut changed state or lost draft.");
+                    hotkeyProbe!.Dispose(); hotkeyProbe = null;
+                    main.Settings.InvokeSettingsSave();
+                    break;
+                case 50:
+                    Require(core.Snapshot.Revision == 4 && core.Snapshot.Values["app.hotkey"] == "Ctrl+Alt+Shift+F24"
+                        && (await core.PollShellAsync()).Status.MainHotkeyActive, "Accepted shortcut did not register and persist.");
+                    main.CloseSettings(); main.HideToTray(); PostOwnedHotkey();
+                    break;
+                case 51:
+                    if (!main.AppWindow.IsVisible && elapsed.Elapsed.TotalSeconds < 55) return;
+                    Require(main.AppWindow.IsVisible && view.CaptureRunning, "Native hotkey event did not show resident main window.");
+                    main.OpenSettings();
+                    break;
+                case 52:
+                    if (!main.Settings!.IsContentReady) return;
+                    main.Settings.SetSmokeHotkey(""); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    break;
+                case 53:
+                    Require(core.Snapshot.Revision == 5 && core.Snapshot.Values["app.hotkey"] == ""
+                        && !(await core.PollShellAsync()).Status.MainHotkeyActive, "Disabled shortcut remained registered.");
+                    using (var released = new HotkeyProbe()) { }
+                    main.CloseSettings();
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
@@ -262,10 +298,52 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool PostMessageW(nint window, uint message, nuint wparam, nint lparam);
 
+    private static void PostOwnedHotkey()
+    {
+        nint found = 0;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out uint process);
+            if (process != (uint)Environment.ProcessId) return true;
+            var name = new System.Text.StringBuilder(256);
+            GetClassNameW(window, name, name.Capacity);
+            if (name.ToString().StartsWith($"TieZNativeShell-{Environment.ProcessId}-", StringComparison.Ordinal)) found = window;
+            return true;
+        }, 0);
+        Require(found != 0, "Owned shell HWND missing.");
+        // Smoke startup skips automatic registration; the first accepted binding uses 0x4100.
+        // This posts only a notification to our HWND. It injects no physical keyboard input.
+        if (!PostMessageW(found, 0x312, 0x4100, (0x87 << 16) | 7))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    private sealed class HotkeyProbe : IDisposable
+    {
+        private bool disposed;
+        internal HotkeyProbe()
+        {
+            if (!RegisterHotKey(0, 0x6401, 7 | 0x4000, 0x87))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Owned shortcut conflict fixture unavailable");
+        }
+        public void Dispose()
+        {
+            if (disposed) return;
+            if (!UnregisterHotKey(0, 0x6401)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            disposed = true;
+        }
+    }
+    private delegate bool EnumWindowProc(nint window, nint data);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowProc callback, nint data);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window, out uint process);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint window, System.Text.StringBuilder name, int maximum);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(nint window, int id);
+
     private void Finish(bool passed, string? error)
     {
         timer!.Stop();
         ulong revision = core.Snapshot.Revision;
+        try { hotkeyProbe?.Dispose(); hotkeyProbe = null; }
+        catch (Exception failure) { passed = false; error = failure.ToString(); }
         try { main.Quit(); Directory.Delete(directory, recursive: true); }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, phases = phase + 1,

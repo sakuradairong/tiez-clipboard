@@ -45,6 +45,7 @@ pub struct SettingsService {
 fn defaults() -> BTreeMap<String, String> {
     [
         ("app.language", "zh"),
+        ("app.hotkey", "Win+V"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
@@ -79,6 +80,7 @@ fn valid_cleanup(value: &str) -> bool {
 fn validate(key: &str, value: &str) -> CoreResult<()> {
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
+        "app.hotkey" => tiez_native_platform::hotkey::Shortcut::parse(value).is_ok(),
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
         "app.deduplicate"
         | "app.show_search_box"
@@ -178,6 +180,18 @@ impl SettingsService {
         expected_revision: u64,
         patch: BTreeMap<String, String>,
     ) -> CoreResult<SettingsChange> {
+        self.update_with(expected_revision, patch, |_, _| Ok(()))
+            .map(|(change, _)| change)
+    }
+
+    /// A prepared effect is dropped (rolled back) if the SQLite commit fails.
+    /// Callers finalize it only after receiving an accepted durable snapshot.
+    pub(crate) fn update_with<P>(
+        &mut self,
+        expected_revision: u64,
+        patch: BTreeMap<String, String>,
+        prepare: impl FnOnce(&SettingsSnapshot, &SettingsSnapshot) -> CoreResult<P>,
+    ) -> CoreResult<(SettingsChange, Option<P>)> {
         for (key, value) in &patch {
             validate(key, value)?;
         }
@@ -196,10 +210,13 @@ impl SettingsService {
             .any(|(key, value)| current.values.get(key) != Some(value));
         if !changed {
             transaction.rollback()?;
-            return Ok(SettingsChange {
-                changed: false,
-                snapshot: current,
-            });
+            return Ok((
+                SettingsChange {
+                    changed: false,
+                    snapshot: current,
+                },
+                None,
+            ));
         }
         let next_revision = current
             .revision
@@ -218,11 +235,15 @@ impl SettingsService {
             [next_revision as i64],
         )?;
         let snapshot = read_snapshot(&transaction)?;
+        let prepared = prepare(&current, &snapshot)?;
         transaction.commit()?;
-        Ok(SettingsChange {
-            changed: true,
-            snapshot,
-        })
+        Ok((
+            SettingsChange {
+                changed: true,
+                snapshot,
+            },
+            Some(prepared),
+        ))
     }
 }
 
@@ -390,5 +411,71 @@ mod tests {
     #[test]
     fn rejects_relative_database_path() {
         assert!(SettingsService::open(Path::new("clipboard.db")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    struct Guard(Arc<AtomicUsize>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn patch() -> BTreeMap<String, String> {
+        [("app.hotkey".into(), "Ctrl+Alt+F24".into())].into()
+    }
+    #[test]
+    fn preparation_failure_rolls_back_rows_and_revision() {
+        let mut service =
+            SettingsService::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let original = service.snapshot().unwrap();
+        let result: CoreResult<(SettingsChange, Option<()>)> =
+            service.update_with(0, patch(), |_, _| {
+                Err(CoreError::new("hotkey_conflict", "fixture"))
+            });
+        assert_eq!(result.unwrap_err().code, "hotkey_conflict");
+        assert_eq!(service.snapshot().unwrap(), original);
+    }
+    #[test]
+    fn noops_and_stale_requests_never_prepare_runtime_effects() {
+        let mut service =
+            SettingsService::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let (_, prepared) = service
+            .update_with(0, BTreeMap::new(), |_, _| -> CoreResult<()> {
+                panic!("No-op prepared runtime");
+            })
+            .unwrap();
+        assert!(prepared.is_none());
+        assert!(service
+            .update_with(1, patch(), |_, _| -> CoreResult<()> {
+                panic!("Stale save prepared runtime");
+            })
+            .is_err());
+    }
+    #[test]
+    fn failed_commit_drops_prepared_effect_before_returning() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE effect_child(id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);").unwrap();
+        let mut service = SettingsService::from_connection(connection).unwrap();
+        service
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER fail_effect_commit AFTER INSERT ON settings
+            WHEN NEW.key='app.hotkey' BEGIN INSERT INTO effect_child VALUES(999); END;",
+            )
+            .unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let result = service.update_with(0, patch(), |_, _| Ok(Guard(drops.clone())));
+        assert!(result.is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(service.snapshot().unwrap().revision, 0);
+        assert_eq!(service.snapshot().unwrap().values["app.hotkey"], "Win+V");
     }
 }

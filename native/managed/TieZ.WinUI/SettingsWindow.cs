@@ -15,6 +15,7 @@ public sealed class SettingsWindow : Window
     private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
     private readonly ComboBox language = new() { Header = "语言（配置值）", ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox theme = new() { Header = "外观", ItemsSource = new[] { "跟随系统", "浅色", "深色" }, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBox hotkey = new() { Header = "主窗口快捷键（留空禁用）", PlaceholderText = "Ctrl+Alt+V" };
     private readonly ToggleSwitch deduplicate = new() { Header = "自动去重" };
     private readonly ToggleSwitch showSearch = new() { Header = "显示主窗口搜索框" };
     private readonly ToggleSwitch persistent = new() { Header = "保存采集历史到磁盘", OffContent = "仅保留本次会话", OnContent = "持久化保存" };
@@ -43,7 +44,8 @@ public sealed class SettingsWindow : Window
         AppWindow.Resize(new SizeInt32(520, 740));
         panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         panel.Children.Add(new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", Opacity = 0.6 });
-        panel.Children.Add(language); panel.Children.Add(theme);
+        panel.Children.Add(language); panel.Children.Add(theme); panel.Children.Add(hotkey);
+        ToolTipService.SetToolTip(hotkey, "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。");
         panel.Children.Add(deduplicate); panel.Children.Add(showSearch);
         panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
         panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
@@ -64,7 +66,7 @@ public sealed class SettingsWindow : Window
         showSearch.Toggled += (_, _) => MarkDirty();
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
-        foreach (var input in new[] { limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
+        foreach (var input in new[] { hotkey, limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
             input.TextChanged += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
         reload.Click += (_, _) =>
@@ -91,6 +93,7 @@ public sealed class SettingsWindow : Window
         {
             expectedRevision = snapshot.Revision;
             loadedSnapshot = snapshot;
+            hotkey.Text = snapshot.Values["app.hotkey"];
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
             deduplicate.IsOn = snapshot.Values["app.deduplicate"] == "true";
@@ -125,6 +128,7 @@ public sealed class SettingsWindow : Window
     private Dictionary<string, string> CurrentValues() =>
         new Dictionary<string, string>
         {
+            ["app.hotkey"] = hotkey.Text,
             ["app.language"] = Languages[language.SelectedIndex],
             ["app.color_mode"] = Themes[theme.SelectedIndex],
             ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
@@ -148,13 +152,16 @@ public sealed class SettingsWindow : Window
         {
             core.Update(CurrentValues(), expectedRevision);
             Load(core.Snapshot);
-            message.Severity = InfoBarSeverity.Success;
-            message.Message = "设置已保存，主窗口已同步。"; message.IsOpen = true;
+            message.Severity = core.LastSideEffectError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+            message.Message = core.LastSideEffectError is null ? "设置已保存，主窗口已同步。"
+                : $"设置已保存，但快捷键未完整应用：{core.LastSideEffectError}。可退出并重新打开应用恢复。";
+            message.IsOpen = true;
         }
         catch (Exception e)
         {
             save.IsEnabled = true;
-            ShowError(e.Message);
+            ShowError(e is CoreException { Code: "hotkey_conflict" }
+                ? "快捷键已被系统或其他应用占用。原配置和绑定保持，当前草稿已保留。" : e.Message);
         }
     }
 
@@ -163,8 +170,24 @@ public sealed class SettingsWindow : Window
         message.Severity = InfoBarSeverity.Error; message.Message = text; message.IsOpen = true;
     }
 
+    internal bool IsContentReady => panel.IsLoaded && panel.XamlRoot is not null;
     internal bool HasError => message.IsOpen && message.Severity == InfoBarSeverity.Error;
     internal string DraftLimit => limit.Text;
+    internal string DraftHotkey => hotkey.Text;
+    internal void SetSmokeHotkey(string value) => hotkey.Text = value;
+    internal async Task WaitForDraftAsync()
+    {
+        if (save.IsEnabled) return;
+        var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnTextChanged(object sender, TextChangedEventArgs args) => changed.TrySetResult();
+        hotkey.TextChanged += OnTextChanged;
+        try
+        {
+            if (!save.IsEnabled) await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!save.IsEnabled) throw new InvalidOperationException("Edited shortcut did not enable Save.");
+        }
+        finally { hotkey.TextChanged -= OnTextChanged; }
+    }
     internal void SetSmokeLimit(string value) => limit.Text = value;
     internal void InvokeSettingsSave() => InvokeSaveButton();
 

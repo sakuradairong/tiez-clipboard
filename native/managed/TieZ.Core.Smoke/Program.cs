@@ -42,6 +42,7 @@ try
         CaptureSmoke.Run(core);
         TargetSmoke.Run(core);
         ShellSmoke.Run(core);
+        HotkeySmoke.Run(core);
         revision = core.Snapshot.Revision;
     }
     disposed.Dispose();

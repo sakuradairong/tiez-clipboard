@@ -20,6 +20,7 @@ public sealed partial class NativeCore : IDisposable
     private readonly CancellationTokenSource shutdown = new();
     private static readonly JsonSerializerOptions WireJson = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
     public SettingsSnapshot Snapshot { get; private set; }
+    public string? LastSideEffectError { get; private set; }
     public event Action<SettingsSnapshot>? Changed;
 
     public NativeCore(string databasePath)
@@ -39,11 +40,14 @@ public sealed partial class NativeCore : IDisposable
         VerifyAccess();
         requestGate.Wait();
         bool changed;
+        LastSideEffectError = null;
         try
         {
             var result = Request(new { op = "update", handle, expected_revision = expectedRevision, patch });
             Snapshot = ReadSnapshot(result);
             changed = result.GetProperty("changed").GetBoolean();
+            if (result.TryGetProperty("side_effect_error", out var effectError)
+                && effectError.ValueKind == JsonValueKind.String) LastSideEffectError = effectError.GetString();
         }
         finally { requestGate.Release(); }
         if (changed) Changed?.Invoke(Snapshot);

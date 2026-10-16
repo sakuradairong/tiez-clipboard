@@ -29,7 +29,7 @@ public partial class App : Application
             main = new MainWindow(core, directory, captureOnStartup: report is null);
             if (targetError is not null) main.History.SetTargetError(targetError);
             shell = new ShellController(main, core);
-            await shell.StartAsync();
+            await shell.StartAsync(bindMainHotkey: report is null);
             main.Closed += (_, _) =>
             {
                 shell.Dispose();

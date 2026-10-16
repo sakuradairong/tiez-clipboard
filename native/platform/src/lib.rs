@@ -17,3 +17,5 @@ mod paste_input_rules;
 pub mod keyboard;
 
 pub mod shell;
+
+pub mod hotkey;
