@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NativeCoreProfile Condition="'$(Configuration)' == 'Release'">release</NativeCoreProfile>
+    <NativeCoreProfile Condition="'$(NativeCoreProfile)' == ''">debug</NativeCoreProfile>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../core/target/$(NativeCoreProfile)/tiez_native_core.dll" Link="tiez_native_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -29,3 +29,13 @@ Commands:
 ```
 
 `open` requires an absolute path with an existing parent directory. It returns a numeric handle and a snapshot. Share that handle across windows; a second concurrent open is rejected. `update` returns `changed` and a snapshot. Accepted changes advance a durable revision in the same transaction as the values. Reads, invalid/stale requests, failed writes and no-op saves do not advance it. Consumers publish accepted snapshots to their views only when `changed` is true; no callback thread or polling loop is required. Unknown database rows are retained and never included in snapshots. `close` invalidates the handle; closing a settings window must not close the core shared by the main window.
+
+## Managed interop smoke check
+
+Requires .NET SDK 10 and a Windows x64 Rust toolchain. Build the debug DLL first, then:
+
+```powershell
+dotnet run --project native/managed/TieZ.Core.Smoke
+```
+
+The managed client owns one core on the creating thread, copies UTF-8 responses before freeing native memory in `finally`, and publishes accepted snapshots only after a changed save. The smoke program loads the real DLL and uses a temporary Unicode database directory that it removes on exit. For Release, build Rust with `--release` before using `-c Release`.
