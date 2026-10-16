@@ -48,6 +48,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 0:
                     Require(core.Snapshot.Revision == 0, "Initial window binding wrote configuration.");
                     Require(!view.CaptureRunning && (await core.GetCaptureStatusAsync()).Starts == 0, "Smoke capture must be explicitly controlled.");
+                    Require((await core.GetTargetStatusAsync()) is { Running: true, Starts: 1 }, "Main startup did not own one target hook.");
                     main.OpenSettings();
                     var first = main.Settings;
                     main.OpenSettings();
@@ -65,6 +66,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(main.Settings!.DisplayedRevision == 1 && core.Refresh().Revision == 1, "Reopen wrote configuration.");
                     Require(main.Settings.CaptureOptionsLoaded, "Capture settings did not reload accepted values.");
                     main.CloseSettings();
+                    Require((await core.GetTargetStatusAsync()).Starts == 1, "Settings lifetime restarted target tracking.");
                     core.Update(new Dictionary<string, string> { ["app.show_search_box"] = "true" }, 1);
                     break;
                 case 4: view.Invoke("add"); break;

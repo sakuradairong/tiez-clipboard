@@ -13,3 +13,4 @@ pub mod mqtt_sub;
 pub mod paste_queue;
 pub mod relay_key;
 pub mod sensitive_align;
+pub(crate) mod paste_rules;

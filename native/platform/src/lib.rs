@@ -7,3 +7,7 @@ pub mod clipboard_formats;
 mod listener;
 pub mod source_app;
 pub use listener::{ClipboardEvents, ClipboardListener, ClipboardSignal};
+
+#[path = "../../../src-tauri/src/services/paste_rules.rs"]
+mod paste_rules;
+pub mod target;

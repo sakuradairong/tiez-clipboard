@@ -18,6 +18,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private readonly HashSet<TextBox> compositions = [];
     private NativeCore? core;
     private CaptureStatus? captureStatus;
+    private TargetTrackingStatus? targetStatus;
+    private bool targetBusy;
     private bool startCapture, captureBusy;
     private int captureGeneration;
     private DispatcherQueueTimer? debounce;
@@ -71,6 +73,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         };
         CaptureButton.Click += async (_, _) => await SetCaptureAsync(captureStatus?.Running != true);
         AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", value => core!.AddManualAsync(value));
+        ReturnTargetButton.Click += async (_, _) => await ReturnTargetAsync();
+        StartTargetButton.Click += async (_, _) => await StartTargetAsync();
         CopyButton.Click += async (_, _) => await CopySelectedAsync(false);
         CopyPlainButton.Click += async (_, _) => await CopySelectedAsync(true);
         EditButton.Click += async (_, _) =>
@@ -108,6 +112,41 @@ public sealed partial class HistoryView : UserControl, IDisposable
         poll = DispatcherQueue.CreateTimer();
         poll.Interval = TimeSpan.FromSeconds(1);
         poll.Tick += OnPoll;
+    }
+
+    internal void SetTargetError(string message) => TargetInfo.Text = $"目标跟踪不可用：{message}";
+
+    private void ApplyTarget(TargetTrackingStatus status)
+    {
+        if (targetStatus is not null && status.Generation < targetStatus.Generation) return;
+        targetStatus = status;
+        TargetInfo.Text = status.HasTarget ? $"上次输入窗口：{status.Application}。返回窗口不会粘贴内容。"
+            : status.Running ? "尚无输入目标：先切换到需要粘贴的应用，再返回 TieZ。" : "窗口跟踪已停止，可点击启用目标跟踪。";
+        if (status.LastError is not null) TargetInfo.Text += $" 服务错误：{status.LastError}";
+        StartTargetButton.Visibility = status.Running ? Visibility.Collapsed : Visibility.Visible;
+        UpdateCommands();
+    }
+    private async Task StartTargetAsync()
+    {
+        if (disposed || targetBusy) return;
+        targetBusy = true; UpdateCommands();
+        try { var status = await core!.StartTargetTrackingAsync(lifetime.Token); if (!disposed) ApplyTarget(status); }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { if (!disposed) SetTargetError(error.Message); }
+        finally { targetBusy = false; if (!disposed) UpdateCommands(); }
+    }
+    private async Task ReturnTargetAsync()
+    {
+        if (disposed || targetBusy || targetStatus is not { HasTarget: true } target) return;
+        targetBusy = true; UpdateCommands();
+        try
+        {
+            await core!.RestoreTargetFocusAsync(target.Generation, lifetime.Token);
+            if (!disposed) { Feedback.Title = "已返回目标窗口"; Feedback.Message = "未发送粘贴按键。"; Feedback.Severity = InfoBarSeverity.Success; Feedback.IsOpen = true; }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { if (!disposed) ShowError(error.Message); }
+        finally { targetBusy = false; if (!disposed) UpdateCommands(); }
     }
 
     private void ApplyCapture(CaptureStatus status)
@@ -267,6 +306,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 if (disposed) return;
                 if (captureRead == captureGeneration && !captureBusy) ApplyCapture(status);
             }
+            if (!targetBusy)
+            {
+                var target = await core!.GetTargetStatusAsync(lifetime.Token);
+                if (disposed) return;
+                if (!targetBusy) ApplyTarget(target);
+            }
             var changes = await core!.GetHistoryChangesAsync(observedRevision ?? revision.Value, lifetime.Token);
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             observedRevision = changes.Revision;
@@ -340,9 +385,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private void UpdateCommands()
     {
         if (disposed) return;
-        bool busy = loading || mutating || filterPending;
+        bool busy = loading || mutating || filterPending || targetBusy;
         var selected = HistoryList.SelectedItem as HistoryRow;
         bool available = !busy && activeDialog is null;
+        ReturnTargetButton.IsEnabled = available && targetStatus?.HasTarget == true;
+        StartTargetButton.IsEnabled = available;
         AddButton.IsEnabled = available && !externalPending;
         EditButton.IsEnabled = available && !externalPending && selectedEntry is not null;
         CopyButton.IsEnabled = CopyPlainButton.IsEnabled = available && !externalPending && selectedEntry is not null && selected is { IsStale: false };
@@ -530,7 +577,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
 
     // Smoke helpers operate the real controls; they do not bypass production click handlers.
-    internal bool IsBusy => loading || mutating || filterPending || captureBusy;
+    internal bool IsBusy => loading || mutating || filterPending || captureBusy || targetBusy;
     internal bool CaptureRunning => captureStatus?.Running == true;
     internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;

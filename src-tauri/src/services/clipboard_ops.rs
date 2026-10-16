@@ -658,7 +658,7 @@ async fn restore_focus_before_paste(_app_handle: &tauri::AppHandle) -> AppResult
 
 #[cfg(any(target_os = "windows", test))]
 fn validate_restored_paste_focus(target: usize, foreground: usize) -> AppResult<()> {
-    if target != 0 && foreground == target {
+    if crate::services::paste_rules::matches_target_foreground(target, foreground) {
         Ok(())
     } else {
         Err(AppError::Internal(

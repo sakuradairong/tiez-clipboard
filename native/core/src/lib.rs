@@ -22,6 +22,7 @@ struct CoreRuntime {
     settings: SettingsService,
     history: Arc<Mutex<HistoryService>>,
     capture: capture::CaptureService,
+    target: tiez_native_platform::target::TargetTracker,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
@@ -86,6 +87,19 @@ enum Request {
         #[serde(default)]
         allow_sensitive: bool,
     },
+    TargetStart {
+        handle: u64,
+    },
+    TargetStatus {
+        handle: u64,
+    },
+    TargetStop {
+        handle: u64,
+    },
+    TargetRestore {
+        handle: u64,
+        expected_generation: u64,
+    },
     CaptureStart {
         handle: u64,
     },
@@ -134,6 +148,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     settings: service,
                     history,
                     capture,
+                    target: Default::default(),
                 },
             );
             Ok(json!({ "handle": handle, "snapshot": snapshot }))
@@ -247,6 +262,41 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .ok_or_else(invalid_handle)?
             .capture
             .copy_entry(id, plain_text, allow_sensitive)?)),
+        Request::TargetStart { handle } => {
+            let service = registry
+                .services
+                .get_mut(&handle)
+                .ok_or_else(invalid_handle)?;
+            Ok(target_status(service.target.start().map_err(target_error)?))
+        }
+        Request::TargetStatus { handle } => Ok(target_status(
+            registry
+                .services
+                .get(&handle)
+                .ok_or_else(invalid_handle)?
+                .target
+                .status(),
+        )),
+        Request::TargetStop { handle } => {
+            let service = registry
+                .services
+                .get_mut(&handle)
+                .ok_or_else(invalid_handle)?;
+            service.target.stop().map_err(target_error)?;
+            Ok(target_status(service.target.status()))
+        }
+        Request::TargetRestore {
+            handle,
+            expected_generation,
+        } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            let ticket = service
+                .target
+                .ticket(expected_generation)
+                .map_err(target_error)?;
+            let result = service.target.restore(&ticket).map_err(target_error)?;
+            Ok(json!({ "generation": result.generation, "restored": result.restored }))
+        }
         Request::CaptureStart { handle } => Ok(json!(registry
             .services
             .get_mut(&handle)
@@ -272,9 +322,21 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .ok_or_else(invalid_handle)?;
             // Removed from registry, no history/policy guards held while joining.
             let capture = service.capture.stop();
-            Ok(json!({ "closed": true, "capture": capture }))
+            let _ = service.target.stop();
+            let target = target_status(service.target.status());
+            Ok(json!({ "closed": true, "capture": capture, "target": target }))
         }
     }
+}
+fn target_error(code: &'static str) -> CoreError {
+    CoreError::new(
+        code,
+        "Target window could not be verified or restored; no paste input was sent",
+    )
+}
+fn target_status(status: tiez_native_platform::target::TargetStatus) -> Value {
+    json!({ "running": status.running, "starts": status.starts, "generation": status.generation,
+        "has_target": status.has_target, "application": status.application, "last_error": status.last_error })
 }
 fn invalid_handle() -> CoreError {
     CoreError::new("invalid_handle", "Core handle is closed or unknown")

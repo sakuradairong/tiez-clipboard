@@ -10,9 +10,13 @@
             <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <TextBlock Text="剪贴板历史" FontSize="28" FontWeight="SemiBold"/>
-        <InfoBar x:Name="CaptureInfo" Grid.Row="1" IsOpen="True" IsClosable="False" Severity="Informational"
+        <StackPanel Grid.Row="1" Spacing="6">
+        <InfoBar x:Name="CaptureInfo" IsOpen="True" IsClosable="False" Severity="Informational"
                  Title="使用独立数据"
                  Message="正在准备原生采集，使用独立数据库。粘贴仍在迁移。"/>
+        <TextBlock x:Name="TargetInfo" Text="正在读取上次输入窗口" TextWrapping="Wrap"
+                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </StackPanel>
         <StackPanel Grid.Row="2" Spacing="8">
             <TextBox x:Name="SearchText" PlaceholderText="搜索内容、来源、标签或识别结果"
                      AutomationProperties.Name="搜索剪贴板历史"/>
@@ -32,6 +36,8 @@
         </StackPanel>
         <CommandBar Grid.Row="3" HorizontalContentAlignment="Left" DefaultLabelPosition="Right">
             <AppBarButton x:Name="CaptureButton" Label="开始采集" Icon="Play"/>
+            <AppBarButton x:Name="ReturnTargetButton" Label="返回上次窗口" Icon="Back"/>
+            <AppBarButton x:Name="StartTargetButton" Label="启用目标跟踪" Icon="Find"/>
             <AppBarSeparator/>
             <AppBarButton x:Name="AddButton" Label="新增" Icon="Add"/>
             <AppBarButton x:Name="CopyButton" Label="复制原始格式" Icon="Copy"/>

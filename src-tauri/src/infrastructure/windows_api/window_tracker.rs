@@ -175,26 +175,7 @@ fn is_system_focus_window(hwnd: HWND) -> bool {
         String::new()
     };
 
-    matches!(
-        class_str.as_str(),
-        // Taskbar / tray / shell surfaces (these should NOT receive paste)
-        "Shell_TrayWnd"
-            | "Shell_SecondaryTrayWnd"
-            | "TrayNotifyWnd"
-            | "NotifyIconOverflowWindow"
-            | "ReBarWindow32"
-            | "MSTaskSwWClass"
-            // Note: Progman and WorkerW (desktop windows) are intentionally NOT filtered
-            // because users may need to paste when renaming files on the desktop
-            | "Button"
-            // System UI overlays that should NOT receive paste
-            | "ImmersiveLauncher"
-            | "ShellExperienceHost"
-            | "TaskSwitcherWnd"
-            | "MultitaskingViewFrame" // Note: Windows.UI.Core.CoreWindow, SearchUI, Cortana, XamlExplorerHostIslandWindow,
-                                      // and ApplicationFrameWindow are intentionally NOT filtered because users may need
-                                      // to paste in Windows search box and other UWP app input fields
-    )
+    crate::services::paste_rules::is_system_focus_class(&class_str)
 }
 
 unsafe extern "system" fn event_hook_callback(

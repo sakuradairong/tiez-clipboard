@@ -10,7 +10,7 @@ public partial class App : Application
     private MainWindow? main;
     public App() => InitializeComponent();
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         string[] arguments = Environment.GetCommandLineArgs();
         int smokeIndex = Array.IndexOf(arguments, "--smoke");
@@ -22,7 +22,11 @@ public partial class App : Application
         {
             Directory.CreateDirectory(directory);
             core = new NativeCore(Path.Combine(directory, "settings.db"));
+            string? targetError = null;
+            try { await core.StartTargetTrackingAsync(); }
+            catch (CoreException error) { targetError = error.Message; }
             main = new MainWindow(core, directory, captureOnStartup: report is null);
+            if (targetError is not null) main.History.SetTargetError(targetError);
             main.Closed += (_, _) =>
             {
                 main.CloseSettings();
