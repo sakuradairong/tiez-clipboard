@@ -49,6 +49,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
+        ("app.compact_mode", "false"),
         ("app.persistent", "false"),
         ("app.capture_files", "false"),
         ("app.capture_rich_text", "false"),
@@ -84,6 +85,7 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
         "app.deduplicate"
         | "app.show_search_box"
+        | "app.compact_mode"
         | "app.persistent"
         | "app.capture_files"
         | "app.capture_rich_text"
@@ -477,5 +479,28 @@ mod effect_tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(service.snapshot().unwrap().revision, 0);
         assert_eq!(service.snapshot().unwrap().values["app.hotkey"], "Win+V");
+    }
+    #[test]
+    fn compact_mode_defaults_without_writes_and_requires_boolean_values() {
+        let mut s =
+            SettingsService::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let compact_patch = |value: &str| -> BTreeMap<String, String> {
+            [("app.compact_mode".into(), value.into())].into()
+        };
+        let before: i64 = s
+            .connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(s.snapshot().unwrap().values["app.compact_mode"], "false");
+        assert_eq!(
+            s.connection
+                .query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert!(s.update(0, compact_patch("1")).is_err());
+        assert_eq!(s.snapshot().unwrap().revision, 0);
+        assert!(s.update(0, compact_patch("true")).unwrap().changed);
+        assert!(!s.update(1, compact_patch("true")).unwrap().changed);
     }
 }

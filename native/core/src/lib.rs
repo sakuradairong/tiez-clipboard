@@ -53,6 +53,13 @@ enum Request {
         handle: u64,
         id: i64,
     },
+    HistoryPreviewEntry {
+        handle: u64,
+        id: i64,
+        expected_revision: u64,
+        #[serde(default)]
+        allow_sensitive: bool,
+    },
     HistoryAdd {
         handle: u64,
         content_type: String,
@@ -260,6 +267,19 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .entry(id)?)),
+        Request::HistoryPreviewEntry {
+            handle,
+            id,
+            expected_revision,
+            allow_sensitive,
+        } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .preview_entry(id, expected_revision, allow_sensitive)?)),
         Request::HistoryChanges {
             handle,
             after_revision,

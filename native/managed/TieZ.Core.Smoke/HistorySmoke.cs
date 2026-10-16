@@ -27,6 +27,8 @@ internal static class HistorySmoke
         Check(next.Items[0].Id == saved.Id, "Page continuation");
         var entry = Read(core.GetEntryAsync(saved.Id));
         Check(entry.Content == body && Read(core.GetEntryAsync(rich.Id)).HtmlContent == "<b>managed rich</b>", "Original formats");
+        Check(Read(core.GetPreviewEntryAsync(saved.Id, page.Revision)).Content == body,
+            "Guarded preview lost original whitespace");
         Check(!Read(core.EditEntryAsync(saved.Id, body)).Changed, "No-op edit");
         Read(core.SetPinnedAsync(saved.Id, true));
         Expect("history_conflict", () => Read(core.GetHistoryAsync(new(Limit: 1, Offset: page.NextOffset,
@@ -34,6 +36,10 @@ internal static class HistorySmoke
         Read(core.SetTagsAsync(saved.Id, ["密码", "work"]));
         var sensitive = Read(core.GetHistoryAsync(new(Search: "%_", Tag: "work")));
         Check(sensitive.Items.Count == 1 && sensitive.Items[0].IsSensitive, "Sensitive metadata and literal search");
+        ulong previewRevision = Read(core.GetHistoryAsync(new())).Revision;
+        Expect("history_conflict", () => Read(core.GetPreviewEntryAsync(saved.Id, page.Revision, true)));
+        Expect("sensitive_confirmation", () => Read(core.GetPreviewEntryAsync(saved.Id, previewRevision)));
+        Check(Read(core.GetPreviewEntryAsync(saved.Id, previewRevision, true)).Content == body, "Explicit sensitive preview");
         Read(core.EditEntryAsync(rich.Id, "managed plain"));
         var edited = Read(core.GetEntryAsync(rich.Id));
         Check(edited.ContentType == "text" && edited.HtmlContent is null, "Rich to plain transition");

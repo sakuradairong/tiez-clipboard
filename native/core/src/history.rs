@@ -755,6 +755,27 @@ impl HistoryService {
         self.session.retain(|entry| !ids.contains(&entry.id));
         Ok(self.committed(revision, first, None, ids.into_iter().collect(), persisted))
     }
+    pub fn preview_entry(
+        &self,
+        id: i64,
+        expected_revision: u64,
+        allow_sensitive: bool,
+    ) -> CoreResult<ClipboardEntry> {
+        if expected_revision != self.revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; refresh before previewing",
+            ));
+        }
+        let entry = self.entry(id)?;
+        if has_sensitive_tag(&entry.tags) && !allow_sensitive {
+            return Err(CoreError::new(
+                "sensitive_confirmation",
+                "Reveal sensitive content before previewing",
+            ));
+        }
+        Ok(entry)
+    }
     pub fn document_preview(
         &self,
         id: i64,
@@ -1924,6 +1945,38 @@ mod tests {
         assert_eq!(
             s.document_preview(id, s.revision, false).unwrap_err().code,
             "document_unavailable"
+        );
+    }
+    #[test]
+    fn preview_entry_checks_revision_privacy_and_preserves_session_text() {
+        let mut s = service();
+        let original = "  中文\r\n  ";
+        let id = s
+            .record_capture(processed(original), false, false, false)
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        assert!(id < 0);
+        assert_eq!(
+            s.preview_entry(id, revision, false).unwrap().content,
+            original
+        );
+        assert_eq!(s.revision, revision);
+        assert!(!s.persistent_sync_pending);
+        let promoted = s.set_tags(id, vec!["PASSWORD".into()]).unwrap().id;
+        assert_eq!(
+            s.preview_entry(id, revision, true).unwrap_err().code,
+            "history_conflict"
+        );
+        assert_eq!(
+            s.preview_entry(promoted, s.revision, false)
+                .unwrap_err()
+                .code,
+            "sensitive_confirmation"
+        );
+        assert_eq!(
+            s.preview_entry(promoted, s.revision, true).unwrap().content,
+            original
         );
     }
 }
