@@ -34,6 +34,8 @@
             <AppBarButton x:Name="CaptureButton" Label="开始采集" Icon="Play"/>
             <AppBarSeparator/>
             <AppBarButton x:Name="AddButton" Label="新增" Icon="Add"/>
+            <AppBarButton x:Name="CopyButton" Label="复制原始格式" Icon="Copy"/>
+            <AppBarButton x:Name="CopyPlainButton" Label="复制为纯文本" Icon="Document"/>
             <AppBarButton x:Name="EditButton" Label="编辑" Icon="Edit"/>
             <AppBarButton x:Name="PinButton" Label="置顶" Icon="Pin"/>
             <AppBarButton x:Name="TagsButton" Label="标签">

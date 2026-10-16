@@ -257,6 +257,8 @@ struct Echo {
     exact: u64,
     text: Option<u64>,
     image: Option<i64>,
+    sequence: Option<u32>,
+    aliases: Vec<u64>,
 }
 impl Echo {
     fn key(
@@ -281,12 +283,15 @@ impl Echo {
             },
         )
     }
-    fn matches(&self, entry: &tiez_storage::domain::models::ClipboardEntry) -> bool {
-        if Instant::now() >= self.expires {
+    fn matches(&self, entry: &tiez_storage::domain::models::ClipboardEntry, sequence: u32) -> bool {
+        if Instant::now() >= self.expires
+            || self.sequence.is_some_and(|expected| expected != sequence)
+        {
             return false;
         }
         let (exact, text, image) = Self::key(entry);
         self.exact == exact
+            || self.aliases.contains(&exact)
             || self.text.is_some() && self.text == text
             || self.image.is_some() && self.image == image
     }
@@ -301,14 +306,106 @@ struct WorkerState {
 }
 impl CaptureService {
     /// Record a successful native clipboard write; failed writes never call this.
-    pub fn remember_write(&self, entry: &tiez_storage::domain::models::ClipboardEntry) {
+    #[cfg(test)]
+    fn remember_write(&self, entry: &tiez_storage::domain::models::ClipboardEntry) {
         let (exact, text, image) = Echo::key(entry);
         *self.echo.lock().unwrap_or_else(|e| e.into_inner()) = Some(Echo {
             expires: Instant::now() + Duration::from_secs(10),
             exact,
             text,
             image,
+            sequence: None,
+            aliases: Vec::new(),
         });
+    }
+}
+#[derive(Debug, Serialize)]
+pub struct ClipboardWriteResult {
+    pub id: i64,
+    pub clipboard_sequence: u32,
+}
+impl CaptureService {
+    /// Copy an authoritative history snapshot; never accept a UI-provided body.
+    pub fn copy_entry(
+        &self,
+        id: i64,
+        plain_text: bool,
+        allow_sensitive: bool,
+    ) -> CoreResult<ClipboardWriteResult> {
+        let entry = self
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .entry(id)?;
+        if tiez_storage::database::has_sensitive_tag(&entry.tags) && !allow_sensitive {
+            return Err(CoreError::new(
+                "sensitive_confirmation",
+                "Reveal sensitive content before copying it",
+            ));
+        }
+        let mut roots = tiez_content::clipboard_image_roots(&self.directory);
+        if entry.content_type == "image" && entry.is_external {
+            let path = std::path::Path::new(&entry.content);
+            if path.is_absolute() {
+                if let Some(parent) = path.parent() {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+        let prepared = tiez_content::with_data_directory(&self.directory, || {
+            tiez_content::write::PreparedWrite::prepare(&entry, plain_text, &roots)
+        })
+        .map_err(|code| {
+            CoreError::new(
+                code,
+                "Clipboard payload could not be prepared; clipboard unchanged",
+            )
+        })?;
+        let mut identity = entry.clone();
+        if plain_text {
+            identity.content_type = "text".into();
+            identity.html_content = None;
+        }
+        let (exact, text, image) =
+            tiez_content::with_data_directory(&self.directory, || Echo::key(&identity));
+        let mut marker = Echo {
+            expires: Instant::now() + Duration::from_secs(10),
+            exact,
+            text,
+            image: prepared.image_visual_hash().or(image),
+            sequence: None,
+            aliases: Vec::new(),
+        };
+        // The worker holds this same gate before accepting a read. Publish the marker
+        // before releasing it, even if a multi-format OS write only partially succeeds.
+        let _policy = self.policy.lock().unwrap_or_else(|e| e.into_inner());
+        match prepared.commit() {
+            Ok(receipt) => {
+                marker.sequence = Some(receipt.sequence);
+                if let Some(path) = receipt.temporary_image_path {
+                    marker
+                        .aliases
+                        .push(tiez_storage::database::calc_text_hash(&path));
+                }
+                *self.echo.lock().unwrap_or_else(|e| e.into_inner()) = Some(marker);
+                Ok(ClipboardWriteResult {
+                    id,
+                    clipboard_sequence: receipt.sequence,
+                })
+            }
+            Err(error) => {
+                if error.clipboard_changed {
+                    marker.sequence = Some(capture::sequence());
+                    *self.echo.lock().unwrap_or_else(|e| e.into_inner()) = Some(marker);
+                    Err(CoreError::new(
+                        "clipboard_partial",
+                        format!("Clipboard changed before the write failed ({})", error.code),
+                    ))
+                } else {
+                    Err(CoreError::new(error.code, "Clipboard write failed"))
+                }
+            }
+        }
     }
 }
 fn ignored(state: &WorkerState) {
@@ -399,6 +496,11 @@ fn run(mut input: Box<dyn Input>, baseline: u32, state: &WorkerState) -> Result<
             continue;
         }
         let current_policy = state.policy.lock().unwrap_or_else(|e| e.into_inner());
+        // A copy can change the clipboard while this read waits for the policy gate.
+        if input.sequence() != sequence {
+            pending = Some(input.sequence());
+            continue;
+        }
         if current_policy.revision != policy.revision {
             pending = Some(sequence);
             continue;
@@ -412,7 +514,10 @@ fn run(mut input: Box<dyn Input>, baseline: u32, state: &WorkerState) -> Result<
             continue;
         };
         let echo = state.echo.lock().unwrap_or_else(|e| e.into_inner()).take();
-        if echo.as_ref().is_some_and(|echo| echo.matches(&entry)) {
+        if echo
+            .as_ref()
+            .is_some_and(|echo| echo.matches(&entry, snapshot.sequence))
+        {
             ignored(state);
             last_sequence = sequence;
             last_burst = Some((burst, policy.revision, Instant::now()));
@@ -566,6 +671,128 @@ mod tests {
             .update(revision, [(key.into(), value.into())].into())
             .unwrap();
         service.apply_settings(&change.snapshot);
+    }
+    #[test]
+    fn sequence_bound_marker_allows_later_intentional_identical_copy() {
+        fixture(|service, _, _| {
+            let entry =
+                processing::discover(&ClipboardData::Text("same".into()), "fixture", None, 1);
+            service.remember_write(&entry);
+            let mut marker = service.echo.lock().unwrap().clone().unwrap();
+            marker.sequence = Some(42);
+            assert!(marker.matches(&entry, 42));
+            assert!(!marker.matches(&entry, 43));
+        });
+    }
+    #[test]
+    fn clipboard_change_while_acquiring_commit_gate_rejects_stale_read() {
+        struct RacingInput {
+            checks: std::sync::atomic::AtomicU32,
+        }
+        impl Input for RacingInput {
+            fn sequence(&self) -> u32 {
+                if self.checks.fetch_add(1, Ordering::AcqRel) < 2 {
+                    1
+                } else {
+                    2
+                }
+            }
+            fn next(&self, timeout: Duration) -> Result<Option<u32>, &'static str> {
+                if self.checks.load(Ordering::Acquire) == 0 {
+                    Ok(Some(1))
+                } else {
+                    thread::sleep(timeout);
+                    Ok(None)
+                }
+            }
+            fn source(&self) -> ActiveAppInfo {
+                ActiveAppInfo::default()
+            }
+            fn read(
+                &mut self,
+                sequence: u32,
+                source: ActiveAppInfo,
+                _: capture::ReadOptions,
+                _: &AtomicBool,
+            ) -> Result<Option<capture::CapturedSnapshot>, capture::ReadError> {
+                Ok(Some(capture::CapturedSnapshot {
+                    sequence,
+                    source,
+                    data: ClipboardData::Text(
+                        if sequence == 1 {
+                            "stale before copy"
+                        } else {
+                            "current after copy"
+                        }
+                        .into(),
+                    ),
+                }))
+            }
+        }
+        fixture(|service, _, _| {
+            service
+                .start_input(
+                    Box::new(RacingInput {
+                        checks: Default::default(),
+                    }),
+                    0,
+                )
+                .unwrap();
+            wait(service, |status| status.accepted == 1);
+            service.stop();
+            let history = service.history.lock().unwrap();
+            let page = history.page(Default::default()).unwrap();
+            assert_eq!(page.session_count, 1);
+            assert_eq!(
+                history.entry(page.items[0].id).unwrap().content,
+                "current after copy"
+            );
+            assert_eq!(service.status().accepted, 1);
+        });
+    }
+    #[test]
+    fn copy_rejects_missing_sensitive_and_invalid_entries_before_os_write() {
+        fixture(|service, _, _| {
+            assert_eq!(
+                service.copy_entry(99999, false, false).unwrap_err().code,
+                "not_found"
+            );
+            let sensitive = service
+                .history
+                .lock()
+                .unwrap()
+                .add_manual(
+                    "text".into(),
+                    "private".into(),
+                    None,
+                    vec!["sensitive".into()],
+                )
+                .unwrap()
+                .id;
+            assert_eq!(
+                service
+                    .copy_entry(sensitive, false, false)
+                    .unwrap_err()
+                    .code,
+                "sensitive_confirmation"
+            );
+            let invalid = service
+                .history
+                .lock()
+                .unwrap()
+                .add_manual(
+                    "image".into(),
+                    "data:image/png;base64,bad!".into(),
+                    None,
+                    vec![],
+                )
+                .unwrap()
+                .id;
+            assert_eq!(
+                service.copy_entry(invalid, false, false).unwrap_err().code,
+                "image_encoding"
+            );
+        });
     }
     #[test]
     fn worker_preserves_whitespace_source_and_privacy() {

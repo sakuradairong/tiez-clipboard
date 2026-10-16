@@ -78,6 +78,14 @@ enum Request {
         handle: u64,
         after_revision: u64,
     },
+    ClipboardCopy {
+        handle: u64,
+        id: i64,
+        #[serde(default)]
+        plain_text: bool,
+        #[serde(default)]
+        allow_sensitive: bool,
+    },
     CaptureStart {
         handle: u64,
     },
@@ -228,6 +236,17 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .delete(id)?)),
+        Request::ClipboardCopy {
+            handle,
+            id,
+            plain_text,
+            allow_sensitive,
+        } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .capture
+            .copy_entry(id, plain_text, allow_sensitive)?)),
         Request::CaptureStart { handle } => Ok(json!(registry
             .services
             .get_mut(&handle)

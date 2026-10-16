@@ -188,6 +188,20 @@ impl PreparedWrite {
         }
         Ok(Self(Payload::Text(text.into())))
     }
+    /// Fingerprint the actual prepared raster, including an image-only rich fallback.
+    pub fn image_visual_hash(&self) -> Option<i64> {
+        let image = match &self.0 {
+            Payload::Image(image) => Some(image),
+            Payload::Rich { image, .. } => image.as_ref(),
+            _ => None,
+        }?;
+        crate::database::calc_image_hash_from_rgba(
+            image.width as u32,
+            image.height as u32,
+            &image.rgba,
+        )
+    }
+
     /// All serialization/decoding/path validation is complete before this call.
     /// OS ownership is multi-format, so later failures are explicitly reported.
     pub fn commit(self) -> Result<WriteReceipt, WriteError> {
@@ -476,7 +490,7 @@ mod tests {
     fn image_only_rich_fallback_appends_html_without_clearing_static_raster() {
         let html = attach_rich_image_fallback("", &encoded(&png(), "png"));
         let mut sink = FakeSink::default();
-        PreparedWrite::prepare(
+        let prepared = PreparedWrite::prepare(
             &entry(ClipboardData::RichText {
                 text: "".into(),
                 html,
@@ -484,9 +498,9 @@ mod tests {
             false,
             &[],
         )
-        .unwrap()
-        .write_to(&mut sink)
         .unwrap();
+        assert!(prepared.image_visual_hash().is_some());
+        prepared.write_to(&mut sink).unwrap();
         assert_eq!(sink.calls, ["image", "rich"]);
         assert!(sink.image.is_some());
         assert!(sink.append); // Still images have no temporary CF_HDROP path.

@@ -9,6 +9,8 @@ internal static class CaptureSmoke
     }
     internal static void Run(NativeCore core)
     {
+        try { Read(core.CopyEntryAsync(long.MaxValue)); throw new InvalidOperationException("Missing copy target accepted"); }
+        catch (CoreException error) when (error.Code == "not_found") { }
         var before = Read(core.GetCaptureStatusAsync());
         Check(!before.Running && before.Starts == 0, "Open must not capture implicitly");
         var started = Read(core.StartCaptureAsync());

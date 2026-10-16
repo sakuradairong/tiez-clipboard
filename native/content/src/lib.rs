@@ -107,3 +107,8 @@ mod tests {
         assert_eq!(image_roots::current_clipboard_image_roots(), initial);
     }
 }
+
+/// Scope used by the core for stored images and preview fallback resources.
+pub fn clipboard_image_roots(directory: &Path) -> Vec<PathBuf> {
+    local_image_resource::clipboard_image_roots(directory)
+}

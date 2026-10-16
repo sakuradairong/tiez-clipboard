@@ -12,7 +12,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private DispatcherQueueTimer? timer;
     private int phase;
     private bool ticking;
-    private long entryId;
+    private long entryId, invalidImageId;
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
@@ -196,6 +196,20 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 38:
                     Require(view.CaptureRunning && view.CaptureStarts == 2, "Capture restart failed.");
                     captureStarts = view.CaptureStarts;
+                    invalidImageId = (await core.AddManualAsync("data:image/png;base64,bad!", contentType: "image")).Id;
+                    await view.ReloadAsync(invalidImageId);
+                    break;
+                case 39:
+                    Require(view.CanCopy && view.Detail == "data:image/png;base64,bad!", "Copy command did not bind to loaded detail.");
+                    view.Invoke("copy");
+                    break;
+                case 40:
+                    Require(view.HasError && view.CanCopy && view.Detail == "data:image/png;base64,bad!", "Failed payload preparation lost selection or hid error.");
+                    await core.DeleteEntryAsync(invalidImageId);
+                    await view.ReloadAsync();
+                    break;
+                case 41:
+                    Require(!view.CanCopy, "Copy was enabled without loaded detail.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

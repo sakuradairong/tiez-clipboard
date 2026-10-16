@@ -71,6 +71,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         };
         CaptureButton.Click += async (_, _) => await SetCaptureAsync(captureStatus?.Running != true);
         AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", value => core!.AddManualAsync(value));
+        CopyButton.Click += async (_, _) => await CopySelectedAsync(false);
+        CopyPlainButton.Click += async (_, _) => await CopySelectedAsync(true);
         EditButton.Click += async (_, _) =>
         {
             if (selectedEntry is { } entry)
@@ -343,6 +345,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         bool available = !busy && activeDialog is null;
         AddButton.IsEnabled = available && !externalPending;
         EditButton.IsEnabled = available && !externalPending && selectedEntry is not null;
+        CopyButton.IsEnabled = CopyPlainButton.IsEnabled = available && !externalPending && selectedEntry is not null && selected is { IsStale: false };
         PinButton.IsEnabled = TagsButton.IsEnabled = DeleteButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
         PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
         RefreshButton.IsEnabled = available;
@@ -350,6 +353,29 @@ public sealed partial class HistoryView : UserControl, IDisposable
         MoreButton.Visibility = hasMore ? Visibility.Visible : Visibility.Collapsed;
         RevealButton.IsEnabled = available && !externalPending;
         LoadingIndicator.IsActive = busy;
+    }
+
+    private async Task CopySelectedAsync(bool plainText)
+    {
+        if (disposed || mutating || loading || filterPending || externalPending || activeDialog is not null
+            || selectedEntry is not { } entry || HistoryList.SelectedItem is not HistoryRow { IsStale: false } row) return;
+        mutating = true;
+        UpdateCommands();
+        try
+        {
+            await core!.CopyEntryAsync(entry.Id, plainText, allowSensitive: row.Summary.IsSensitive, lifetime.Token);
+            if (!disposed)
+            {
+                Feedback.Title = "已复制";
+                Feedback.Message = plainText ? "已复制为纯文本。" : "已按原始格式复制到剪贴板。";
+                Feedback.Severity = InfoBarSeverity.Success;
+                Feedback.IsOpen = true;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (Exception error) { if (!disposed) ShowError(error.Message); }
+        finally { mutating = false; if (!disposed) UpdateCommands(); }
     }
 
     private void ShowError(string message)
@@ -509,6 +535,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;
     internal string Detail => DetailText.Text;
+    internal bool CanCopy => CopyButton.IsEnabled;
     internal bool CanReveal => RevealButton.Visibility == Visibility.Visible;
     internal bool ExternalPending => externalPending;
     internal bool HasDialog => activeDialog is not null;
@@ -528,7 +555,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         var button = name switch
         {
-            "capture" => (ButtonBase)CaptureButton, "add" => AddButton, "edit" => EditButton, "pin" => PinButton,
+            "capture" => (ButtonBase)CaptureButton, "add" => AddButton,
+            "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
             "tags" => TagsButton, "delete" => DeleteButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))
         };
