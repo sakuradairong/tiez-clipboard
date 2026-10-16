@@ -14,3 +14,5 @@ pub mod infrastructure {
     pub use crate::shared_encryption as encryption;
     pub use crate::shared_repository as repository;
 }
+
+pub mod retention;

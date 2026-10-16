@@ -853,11 +853,9 @@ impl SqliteClipboardRepository {
         }
     }
 
-    pub fn enforce_limit_with_conn(
-        &self,
-        conn: &Connection,
-        data_dir: Option<&std::path::Path>,
-    ) -> Result<Vec<i64>, String> {
+    /// Plans the same storage-limit eviction set without deleting rows or files.
+    /// Transaction owners may defer attachment cleanup until their own commit.
+    pub fn limit_candidates_with_conn(&self, conn: &Connection) -> Result<Vec<i64>, String> {
         // Check if storage limit is enabled
         if let Ok(Some(limit_enabled_str)) =
             SqliteSettingsRepository::get_raw(conn, "app.persistent_limit_enabled")
@@ -886,7 +884,7 @@ impl SqliteClipboardRepository {
                             .prepare(
                                 "SELECT id FROM clipboard_history 
                              WHERE is_pinned = 0 AND (tags = '[]' OR tags IS NULL)
-                             ORDER BY timestamp ASC 
+                             ORDER BY timestamp ASC, id ASC
                              LIMIT ?",
                             )
                             .map_err(|e| e.to_string())?;
@@ -896,16 +894,23 @@ impl SqliteClipboardRepository {
                             .map_err(|e| e.to_string())?;
                         rows.filter_map(|r| r.ok()).collect()
                     };
-                    // Actually delete records (and files if needed)
-                    for id in &deleted_ids {
-                        self.delete_with_conn(conn, *id, data_dir)?;
-                    }
                     return Ok(deleted_ids);
                 }
             }
         }
 
         Ok(Vec::new())
+    }
+    pub fn enforce_limit_with_conn(
+        &self,
+        conn: &Connection,
+        data_dir: Option<&std::path::Path>,
+    ) -> Result<Vec<i64>, String> {
+        let deleted_ids = self.limit_candidates_with_conn(conn)?;
+        for id in &deleted_ids {
+            self.delete_with_conn(conn, *id, data_dir)?;
+        }
+        Ok(deleted_ids)
     }
     pub fn toggle_pin_with_conn(
         &self,

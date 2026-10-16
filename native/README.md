@@ -9,7 +9,9 @@ cargo test --manifest-path native/core/Cargo.toml
 cargo build --manifest-path native/core/Cargo.toml
 ```
 
-The DLL is `native/core/target/debug/tiez_native_core.dll` on Windows. Only four configuration keys are supported: `app.language` (`zh`, `en`, `tw`), `app.color_mode` (`system`, `light`, `dark`), `app.deduplicate`, and `app.show_search_box` (literal `true`/`false`). These are prototype configuration values; capture and paste behavior are not implemented yet.
+The DLL is `native/core/target/debug/tiez_native_core.dll` on Windows. The settings snapshot supports language, color mode, deduplication, search visibility, persistence, file/rich-text capture, privacy matching, cleanup rules/policies, and persistent limits. Reads never save defaults. Capture is explicitly started by the host; paste is still pending.
+
+The core owns one stoppable Windows clipboard listener and capture worker per open handle. Startup records the current sequence without importing the existing clipboard. The worker uses the shared production format probes and transformations, preserves whitespace/source metadata, deduplicates with rich-format identity, and publishes history revisions. Settings acknowledgement applies the accepted policy before returning. Session-only captures keep negative IDs; persistent promotion reports replacement IDs. Save, encryption and storage-limit eviction share a transaction; owned attachment cleanup occurs after commit. Status reports counts and error codes without clipboard bodies. Stop/close joins the worker before releasing history; a synchronous delayed-render provider can delay shutdown until its read returns.
 
 ## ABI v1
 
@@ -25,6 +27,9 @@ Commands:
 {"op":"open","database_path":"C:\\absolute\\isolated\\probe.db"}
 {"op":"snapshot","handle":1}
 {"op":"update","handle":1,"expected_revision":0,"patch":{"app.language":"en"}}
+{"op":"capture_start","handle":1}
+{"op":"capture_status","handle":1}
+{"op":"capture_stop","handle":1}
 {"op":"close","handle":1}
 ```
 

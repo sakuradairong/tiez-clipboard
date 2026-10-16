@@ -48,17 +48,62 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
+        ("app.persistent", "false"),
+        ("app.capture_files", "false"),
+        ("app.capture_rich_text", "false"),
+        ("app.privacy_protection", "true"),
+        ("app.privacy_protection_kinds", "phone,idcard,email,secret"),
+        ("app.privacy_protection_custom_rules", ""),
+        ("app.cleanup_rules", ""),
+        ("app.app_cleanup_policies", "[]"),
+        ("app.persistent_limit_enabled", "true"),
+        ("app.persistent_limit", "500"),
     ]
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
     .collect()
 }
 
+fn valid_cleanup(value: &str) -> bool {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .all(|line| {
+            line.split_once("=>").is_some_and(|(pattern, _)| {
+                !pattern.trim().is_empty() && regex::Regex::new(pattern.trim()).is_ok()
+            })
+        })
+}
+
 fn validate(key: &str, value: &str) -> CoreResult<()> {
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
-        "app.deduplicate" | "app.show_search_box" => matches!(value, "true" | "false"),
+        "app.deduplicate"
+        | "app.show_search_box"
+        | "app.persistent"
+        | "app.capture_files"
+        | "app.capture_rich_text"
+        | "app.privacy_protection"
+        | "app.persistent_limit_enabled" => matches!(value, "true" | "false"),
+        "app.persistent_limit" => value.parse::<u32>().is_ok_and(|limit| limit <= 1_000_000),
+        "app.privacy_protection_kinds" => value.len() <= 4096,
+        "app.privacy_protection_custom_rules" => value
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .all(|line| regex::Regex::new(line.trim()).is_ok()),
+        "app.cleanup_rules" => valid_cleanup(value),
+        "app.app_cleanup_policies" => serde_json::from_str::<
+            Vec<tiez_content::utils::AppCleanupPolicy>,
+        >(value)
+        .is_ok_and(|policies| {
+            policies.iter().all(|policy| {
+                (policy.action.eq_ignore_ascii_case("ignore")
+                    || policy.action.eq_ignore_ascii_case("clean"))
+                    && valid_cleanup(&policy.cleanup_rules)
+            })
+        }),
         _ => {
             return Err(CoreError::new(
                 "unknown_setting",
@@ -299,6 +344,47 @@ mod tests {
             assert_eq!(value, "保留");
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn capture_policy_validation_is_atomic_and_read_only() {
+        let mut service = service();
+        let original = service.snapshot().unwrap();
+        assert_eq!(original.values["app.persistent"], "false");
+        assert_eq!(original.values["app.capture_rich_text"], "false");
+        assert_eq!(original.values["app.privacy_protection"], "true");
+        for (key, value) in [
+            ("app.persistent", "yes"),
+            ("app.capture_files", "1"),
+            ("app.persistent_limit", "-1"),
+            ("app.persistent_limit", "1000001"),
+            ("app.privacy_protection_custom_rules", "["),
+            ("app.cleanup_rules", "[ => bad"),
+            ("app.app_cleanup_policies", "{}"),
+            ("app.app_cleanup_policies", r#"[{"action":"delete"}]"#),
+        ] {
+            let mut edits = patch("app.persistent", "true");
+            edits.insert(key.into(), value.into());
+            assert!(service.update(0, edits).is_err(), "accepted invalid {key}");
+            assert_eq!(service.snapshot().unwrap(), original);
+        }
+        let accepted = service
+            .update(
+                0,
+                [
+                    ("app.persistent".into(), "true".into()),
+                    ("app.cleanup_rules".into(), "^prefix => replacement".into()),
+                    (
+                        "app.privacy_protection_custom_rules".into(),
+                        "secret[0-9]+".into(),
+                    ),
+                    ("app.persistent_limit".into(), "0".into()),
+                ]
+                .into(),
+            )
+            .unwrap();
+        assert_eq!(accepted.snapshot.revision, 1);
+        assert_eq!(accepted.snapshot.values["app.persistent_limit"], "0");
     }
 
     #[test]

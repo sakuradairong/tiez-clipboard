@@ -1,4 +1,6 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
+mod capture;
+pub use capture::{CaptureService, CaptureStatus};
 mod history;
 pub use history::{HistoryQuery, HistoryService};
 mod settings;
@@ -8,7 +10,7 @@ pub use settings::{CoreError, CoreResult, SettingsChange, SettingsService, Setti
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_char, CString};
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 #[derive(Default)]
@@ -18,7 +20,8 @@ struct Registry {
 }
 struct CoreRuntime {
     settings: SettingsService,
-    history: HistoryService,
+    history: Arc<Mutex<HistoryService>>,
+    capture: capture::CaptureService,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
@@ -75,6 +78,15 @@ enum Request {
         handle: u64,
         after_revision: u64,
     },
+    CaptureStart {
+        handle: u64,
+    },
+    CaptureStop {
+        handle: u64,
+    },
+    CaptureStatus {
+        handle: u64,
+    },
     Close {
         handle: u64,
     },
@@ -95,9 +107,14 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     "Share the existing core between windows",
                 ));
             }
-            let history = HistoryService::open(Path::new(&database_path))?;
+            let history = Arc::new(Mutex::new(HistoryService::open(Path::new(&database_path))?));
             let service = SettingsService::open(Path::new(&database_path))?;
             let snapshot = service.snapshot()?;
+            let capture = capture::CaptureService::new(
+                Arc::clone(&history),
+                Path::new(&database_path).parent().unwrap().to_path_buf(),
+                &snapshot,
+            );
             let handle = registry
                 .next_handle
                 .checked_add(1)
@@ -108,6 +125,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 CoreRuntime {
                     settings: service,
                     history,
+                    capture,
                 },
             );
             Ok(json!({ "handle": handle, "snapshot": snapshot }))
@@ -125,22 +143,25 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .services
                 .get_mut(&handle)
                 .ok_or_else(invalid_handle)?;
-            Ok(
-                serde_json::to_value(service.settings.update(expected_revision, patch)?)
-                    .expect("serializable settings"),
-            )
+            let change = service.settings.update(expected_revision, patch)?;
+            service.capture.apply_settings(&change.snapshot);
+            Ok(serde_json::to_value(change).expect("serializable settings"))
         }
         Request::HistoryPage { handle, query } => Ok(json!(registry
             .services
             .get(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .page(query)?)),
         Request::HistoryEntry { handle, id } => Ok(json!(registry
             .services
             .get(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .entry(id)?)),
         Request::HistoryChanges {
             handle,
@@ -150,6 +171,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .get(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .changes(after_revision)?)),
         Request::HistoryAdd {
             handle,
@@ -162,6 +185,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .get_mut(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .add_manual(content_type, content, html_content, tags)?)),
         Request::HistoryPin {
             handle,
@@ -172,6 +197,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .get_mut(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .pin(id, is_pinned)?)),
         Request::HistoryEdit {
             handle,
@@ -182,25 +209,51 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .get_mut(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .edit(id, content)?)),
         Request::HistoryTags { handle, id, tags } => Ok(json!(registry
             .services
             .get_mut(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .set_tags(id, tags)?)),
         Request::HistoryDelete { handle, id } => Ok(json!(registry
             .services
             .get_mut(&handle)
             .ok_or_else(invalid_handle)?
             .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
             .delete(id)?)),
+        Request::CaptureStart { handle } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .capture
+            .start()?)),
+        Request::CaptureStop { handle } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .capture
+            .stop())),
+        Request::CaptureStatus { handle } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .capture
+            .status())),
         Request::Close { handle } => {
-            registry
+            let mut service = registry
                 .services
                 .remove(&handle)
                 .ok_or_else(invalid_handle)?;
-            Ok(json!({ "closed": true }))
+            // Removed from registry, no history/policy guards held while joining.
+            let capture = service.capture.stop();
+            Ok(json!({ "closed": true, "capture": capture }))
         }
     }
 }

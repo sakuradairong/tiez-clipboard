@@ -355,6 +355,13 @@ impl HistoryService {
         Ok(())
     }
     fn persist(&self, entry: &ClipboardEntry) -> CoreResult<i64> {
+        self.persist_with_limit(entry, false).map(|result| result.0)
+    }
+    fn persist_with_limit(
+        &self,
+        entry: &ClipboardEntry,
+        enforce_limit: bool,
+    ) -> CoreResult<(i64, Vec<i64>)> {
         let mut entry = entry.clone();
         if entry.id > 0 {
             let old = self.entry(entry.id)?;
@@ -387,8 +394,23 @@ impl HistoryService {
                 )
                 .map_err(failure)?;
         }
+        let cleanup = if enforce_limit {
+            Some(
+                tiez_storage::retention::prune(&self.repository, &transaction, &self.data_dir)
+                    .map_err(failure)?,
+            )
+        } else {
+            None
+        };
         transaction.commit().map_err(failure)?;
-        Ok(id)
+        let removed = if let Some(cleanup) = cleanup {
+            cleanup
+                .finish(&self.repository, &connection, &self.data_dir)
+                .map_err(failure)?
+        } else {
+            Vec::new()
+        };
+        Ok((id, removed))
     }
     pub fn add_manual(
         &mut self,
@@ -425,6 +447,124 @@ impl HistoryService {
         };
         let id = self.persist(&e)?;
         Ok(self.committed(revision, id, None, Vec::new(), true))
+    }
+    /// Applies capture dedup, persistence/retention and session removals as one
+    /// accepted history revision. Failed persistence never removes session rows.
+    pub fn record_capture(
+        &mut self,
+        mut entry: ClipboardEntry,
+        persistent: bool,
+        deduplicate: bool,
+        recent_self_copy: bool,
+    ) -> CoreResult<HistoryMutation> {
+        let rich_equivalent = |old: &ClipboardEntry| {
+            entry.content_type != "rich_text"
+                || old.content_type != "rich_text"
+                || match (entry.html_content.as_deref(), old.html_content.as_deref()) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => {
+                        a.trim().replace("\r\n", "\n") == b.trim().replace("\r\n", "\n")
+                    }
+                    _ => false,
+                }
+                || recent_self_copy
+                    && database::calc_text_hash(&old.content)
+                        == database::calc_text_hash(&entry.content)
+        };
+        let matches = if deduplicate {
+            let hash = database::calc_text_hash(&entry.content);
+            let image_hash = if entry.content_type == "image" {
+                database::calc_image_hash(&entry.content)
+            } else {
+                None
+            };
+            self.session
+                .iter()
+                .filter(|old| {
+                    let image = entry.content_type == "image"
+                        && old.content_type == "image"
+                        && image_hash.is_some()
+                        && database::calc_image_hash(&old.content) == image_hash;
+                    image
+                        || (old.content == entry.content
+                            || database::calc_text_hash(&old.content) == hash)
+                            && rich_equivalent(old)
+                })
+                .map(|old| old.id)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if persistent && deduplicate {
+            let connection = self.connection.lock().map_err(failure)?;
+            let kinds: &[&str] = if entry.content_type == "rich_text" {
+                &["rich_text", "text", "code", "url"]
+            } else {
+                &[&entry.content_type]
+            };
+            let mut found = None;
+            for kind in kinds {
+                if let Some(id) = self
+                    .repository
+                    .find_by_content_with_conn(&connection, &entry.content, Some(kind))
+                    .map_err(failure)?
+                {
+                    let old = self
+                        .repository
+                        .get_entry_by_id_with_conn(&connection, id)
+                        .map_err(failure)?
+                        .ok_or_else(missing)?;
+                    if rich_equivalent(&old) {
+                        found = Some(id);
+                        break;
+                    }
+                }
+            }
+            entry.id = found.unwrap_or(0);
+        } else {
+            entry.id = 0;
+        }
+        let revision = self.next_revision()?;
+        if persistent {
+            let (id, mut removed) = self.persist_with_limit(&entry, true)?;
+            self.session.retain(|old| !matches.contains(&old.id));
+            let replaced = matches.last().copied();
+            removed.extend(matches.into_iter().filter(|old| Some(*old) != replaced));
+            return Ok(self.committed(revision, id, replaced, removed, true));
+        }
+        let reused = matches.last().copied();
+        let id = if let Some(id) = reused {
+            let old = self
+                .session
+                .iter()
+                .find(|old| old.id == id)
+                .ok_or_else(missing)?;
+            entry.is_pinned = old.is_pinned;
+            entry.pinned_order = old.pinned_order;
+            if entry.tags.is_empty() {
+                entry.tags = old.tags.clone();
+            }
+            entry.use_count = old.use_count.saturating_add(1);
+            id
+        } else {
+            let id = self.next_session_id;
+            self.next_session_id = id
+                .checked_sub(1)
+                .ok_or_else(|| failure("Session ID space exhausted"))?;
+            id
+        };
+        entry.id = id;
+        // Reinsert at the newest position, retaining the stable negative identity.
+        self.session.retain(|old| !matches.contains(&old.id));
+        self.session.push_back(entry);
+        let mut removed = matches
+            .into_iter()
+            .filter(|old| *old != id)
+            .collect::<Vec<_>>();
+        if self.session.len() > SESSION_LIMIT {
+            removed.push(self.session.pop_front().unwrap().id);
+        }
+        Ok(self.committed(revision, id, None, removed, false))
     }
     /// Accepts persistence-stage input after capture/cleanup/privacy/dedup processing.
     /// This method does not read the OS clipboard or implement that pipeline.
@@ -851,5 +991,150 @@ mod tests {
             })
             .unwrap();
         assert_eq!(next.items[0].id, 1);
+    }
+    #[test]
+    fn capture_dedup_keeps_pinned_tags_and_disabled_mode_keeps_copies() {
+        let mut s = service();
+        let id = add(&mut s, "  captured  ");
+        s.pin(id, true).unwrap();
+        s.set_tags(id, vec!["work".into()]).unwrap();
+        assert_eq!(
+            s.record_capture(processed("  captured  "), true, true, false)
+                .unwrap()
+                .id,
+            id
+        );
+        let entry = s.entry(id).unwrap();
+        assert!(entry.is_pinned);
+        assert_eq!(entry.tags, vec!["work"]);
+        assert_eq!(entry.use_count, 1);
+        assert_ne!(
+            s.record_capture(processed("  captured  "), true, false, false)
+                .unwrap()
+                .id,
+            id
+        );
+    }
+    #[test]
+    fn rich_capture_identity_includes_original_html() {
+        let mut s = service();
+        let mut a = processed("rich");
+        a.content_type = "rich_text".into();
+        a.html_content = Some("<b>rich</b>".into());
+        let mut b = a.clone();
+        b.html_content = Some("<i>rich</i>".into());
+        let first = s.record_capture(a.clone(), true, true, false).unwrap().id;
+        let second = s.record_capture(b, true, true, false).unwrap().id;
+        assert_ne!(first, second);
+        assert_eq!(s.record_capture(a, true, true, false).unwrap().id, first);
+        assert_eq!(
+            s.entry(second).unwrap().html_content.as_deref(),
+            Some("<i>rich</i>")
+        );
+    }
+    #[test]
+    fn session_capture_reuses_identity_and_promotes_after_persistence_changes() {
+        let mut s = service();
+        let first = s
+            .record_capture(processed("session"), false, true, false)
+            .unwrap()
+            .id;
+        assert!(first < 0);
+        assert_eq!(
+            s.record_capture(processed("session"), false, true, false)
+                .unwrap()
+                .id,
+            first
+        );
+        assert_eq!(s.entry(first).unwrap().use_count, 1);
+        let second = s
+            .record_capture(processed("session"), false, false, false)
+            .unwrap()
+            .id;
+        let saved = s
+            .record_capture(processed("session"), true, true, false)
+            .unwrap();
+        assert!(saved.id > 0);
+        assert_eq!(saved.replaced_id, Some(second));
+        assert!(saved.removed_ids.contains(&first));
+        let page = s.page(Default::default()).unwrap();
+        assert_eq!(page.session_count, 0);
+        assert_eq!(page.stored_count, 1);
+    }
+    #[test]
+    fn capture_retention_failure_preserves_session_and_revision() {
+        let mut s = service();
+        let id = s
+            .record_capture(processed("session"), false, true, false)
+            .unwrap()
+            .id;
+        add(&mut s, "old stored");
+        let revision = s.revision;
+        {
+            let c = s.connection.lock().unwrap();
+            c.execute(
+                "UPDATE settings SET value='1' WHERE key='app.persistent_limit'",
+                [],
+            )
+            .unwrap();
+            c.execute_batch("CREATE TRIGGER reject_capture_prune BEFORE DELETE ON clipboard_history BEGIN SELECT RAISE(ABORT,'synthetic retention failure'); END").unwrap();
+        }
+        assert!(s
+            .record_capture(processed("session"), true, true, false)
+            .is_err());
+        assert_eq!(s.revision, revision);
+        assert!(s.entry(id).is_ok());
+        let page = s.page(Default::default()).unwrap();
+        assert_eq!(page.stored_count, 1);
+        assert_eq!(page.session_count, 1);
+    }
+    #[test]
+    fn capture_limit_preserves_protected_rows_and_publishes_removals() {
+        let mut s = service();
+        let pinned = add(&mut s, "pinned");
+        s.pin(pinned, true).unwrap();
+        let tagged = add(&mut s, "tagged");
+        s.set_tags(tagged, vec!["work".into()]).unwrap();
+        s.connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE settings SET value='1' WHERE key='app.persistent_limit'",
+                [],
+            )
+            .unwrap();
+        let old = s
+            .record_capture(processed("first"), true, true, false)
+            .unwrap()
+            .id;
+        let next = s
+            .record_capture(processed("second"), true, true, false)
+            .unwrap();
+        assert!(next.removed_ids.contains(&old));
+        assert!(s.entry(old).is_err());
+        assert!(s.entry(pinned).is_ok());
+        assert!(s.entry(tagged).is_ok());
+        assert_eq!(s.page(Default::default()).unwrap().stored_count, 3);
+        assert!(next.persistent_sync_pending);
+    }
+    #[test]
+    fn sensitive_capture_persists_encrypted_fields() {
+        let mut s = service();
+        let mut e = processed("user@example.com");
+        e.tags = vec!["sensitive".into()];
+        let saved = s.record_capture(e, true, true, false).unwrap();
+        assert_eq!(s.entry(saved.id).unwrap().content, "user@example.com");
+        #[cfg(not(feature = "portable"))]
+        assert!(s
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT content FROM clipboard_history WHERE id=?1",
+                [saved.id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap()
+            .starts_with(database::ENCRYPT_PREFIX));
     }
 }
