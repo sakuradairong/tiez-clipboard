@@ -7,6 +7,8 @@ namespace TieZ.Native;
 public sealed partial class MainWindow : Window
 {
     private readonly NativeCore core;
+    private readonly CompactPreviewController compactPreview;
+    internal CompactPreviewController CompactPreview => compactPreview;
     private bool residentMode, quitting, active;
     internal SettingsWindow? Settings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
@@ -17,9 +19,16 @@ public sealed partial class MainWindow : Window
     {
         this.core = core;
         InitializeComponent();
+        compactPreview = new CompactPreviewController(this, core);
+        HistoryWorkspace.PreviewRequested += compactPreview.Request;
+        HistoryWorkspace.PreviewInvalidated += compactPreview.Cancel;
         Title = "TieZ · 原生迁移版";
         AppWindow.Resize(new SizeInt32(1080, 760));
-        Activated += (_, args) => active = args.WindowActivationState != WindowActivationState.Deactivated;
+        Activated += (_, args) =>
+        {
+            active = args.WindowActivationState != WindowActivationState.Deactivated;
+            if (!active) compactPreview.Cancel();
+        };
         AppWindow.Closing += (_, args) =>
         {
             if (residentMode && !quitting) { args.Cancel = true; HideToTray(); }
@@ -37,6 +46,9 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             core.Changed -= Apply;
+            HistoryWorkspace.PreviewRequested -= compactPreview.Request;
+            HistoryWorkspace.PreviewInvalidated -= compactPreview.Cancel;
+            compactPreview.Dispose();
             HistoryWorkspace.Dispose();
         };
         Apply(core.Snapshot);
@@ -53,6 +65,7 @@ public sealed partial class MainWindow : Window
     }
     internal void HideToTray()
     {
+        compactPreview.Cancel();
         if (residentMode && !quitting) AppWindow.Hide();
     }
     internal void ToggleMain()
@@ -89,6 +102,8 @@ public sealed partial class MainWindow : Window
     private void Apply(SettingsSnapshot snapshot)
     {
         MainRoot.RequestedTheme = ViewTheme.From(snapshot);
+        HistoryWorkspace.CompactMode = snapshot.Values["app.compact_mode"] == "true";
+        compactPreview.Apply(HistoryWorkspace.CompactMode, MainRoot.RequestedTheme);
         HistoryWorkspace.SearchVisible = snapshot.Values["app.show_search_box"] == "true";
     }
 }

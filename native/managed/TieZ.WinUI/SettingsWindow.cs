@@ -18,6 +18,7 @@ public sealed class SettingsWindow : Window
     private readonly TextBox hotkey = new() { Header = "主窗口快捷键（留空禁用）", PlaceholderText = "Ctrl+Alt+V" };
     private readonly ToggleSwitch deduplicate = new() { Header = "自动去重" };
     private readonly ToggleSwitch showSearch = new() { Header = "显示主窗口搜索框" };
+    private readonly ToggleSwitch compact = new() { Header = "紧凑列表（鼠标悬停 1 秒显示预览）" };
     private readonly ToggleSwitch persistent = new() { Header = "保存采集历史到磁盘", OffContent = "仅保留本次会话", OnContent = "持久化保存" };
     private readonly ToggleSwitch captureFiles = new() { Header = "采集文件路径" };
     private readonly ToggleSwitch captureRichText = new() { Header = "采集富文本和表格原始格式" };
@@ -46,7 +47,7 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", Opacity = 0.6 });
         panel.Children.Add(language); panel.Children.Add(theme); panel.Children.Add(hotkey);
         ToolTipService.SetToolTip(hotkey, "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。");
-        panel.Children.Add(deduplicate); panel.Children.Add(showSearch);
+        panel.Children.Add(deduplicate); panel.Children.Add(showSearch); panel.Children.Add(compact);
         panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
         panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
         var rules = new StackPanel { Spacing = 12 };
@@ -64,6 +65,7 @@ public sealed class SettingsWindow : Window
         theme.SelectionChanged += (_, _) => MarkDirty();
         deduplicate.Toggled += (_, _) => MarkDirty();
         showSearch.Toggled += (_, _) => MarkDirty();
+        compact.Toggled += (_, _) => MarkDirty();
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
         foreach (var input in new[] { hotkey, limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
@@ -99,6 +101,7 @@ public sealed class SettingsWindow : Window
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
             deduplicate.IsOn = snapshot.Values["app.deduplicate"] == "true";
             showSearch.IsOn = snapshot.Values["app.show_search_box"] == "true";
+            compact.IsOn = snapshot.Values["app.compact_mode"] == "true";
             persistent.IsOn = snapshot.Values["app.persistent"] == "true";
             captureFiles.IsOn = snapshot.Values["app.capture_files"] == "true";
             captureRichText.IsOn = snapshot.Values["app.capture_rich_text"] == "true";
@@ -134,6 +137,7 @@ public sealed class SettingsWindow : Window
             ["app.color_mode"] = Themes[theme.SelectedIndex],
             ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
             ["app.show_search_box"] = showSearch.IsOn ? "true" : "false",
+            ["app.compact_mode"] = compact.IsOn ? "true" : "false",
             ["app.persistent"] = persistent.IsOn ? "true" : "false",
             ["app.capture_files"] = captureFiles.IsOn ? "true" : "false",
             ["app.capture_rich_text"] = captureRichText.IsOn ? "true" : "false",
@@ -176,6 +180,8 @@ public sealed class SettingsWindow : Window
     internal string DraftLimit => limit.Text;
     internal string DraftHotkey => hotkey.Text;
     internal void SetSmokeHotkey(string value) => hotkey.Text = value;
+    internal bool CompactMode => compact.IsOn;
+    internal void SetCompactMode(bool enabled) => compact.IsOn = enabled;
     internal bool HasDraft => dirty && save.IsEnabled;
     internal void SetSmokeLimit(string value) => limit.Text = value;
     internal void InvokeSettingsSave() => InvokeSaveButton();

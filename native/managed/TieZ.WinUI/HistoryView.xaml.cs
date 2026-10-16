@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Input;
 using TieZ.Core;
 
 namespace TieZ.Native;
@@ -34,6 +35,24 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private int detailGeneration;
     private bool started, disposed, loading, mutating, polling, filterPending, hasMore, externalPending;
     private ClipboardEntry? selectedEntry;
+    private FrameworkElement? hoveredAnchor;
+    private bool compactMode;
+    internal event Action<CompactPreviewRequest>? PreviewRequested;
+    internal event Action? PreviewInvalidated;
+    internal bool CompactMode
+    {
+        get => compactMode;
+        set
+        {
+            if (compactMode == value) return;
+            compactMode = value;
+            PreviewInvalidated?.Invoke(); hoveredAnchor = null;
+            HistoryList.ItemTemplate = (DataTemplate)Resources[value ? "CompactHistoryTemplate" : "StandardHistoryTemplate"];
+            UpdateCommands();
+        }
+    }
+    internal void SetPreviewError(string message) => ShowError(message);
+
     private ContentDialog? activeDialog;
     private TextBox? dialogInput;
 
@@ -78,6 +97,10 @@ public sealed partial class HistoryView : UserControl, IDisposable
         StartTargetButton.Click += async (_, _) => await StartTargetAsync();
         PasteButton.Click += async (_, _) => await PasteSelectedAsync(false);
         PastePlainButton.Click += async (_, _) => await PasteSelectedAsync(true);
+        PreviewButton.Click += (_, _) =>
+        {
+            if (HistoryList.SelectedItem is HistoryRow row) PreviewRow(row.Id);
+        };
         CopyButton.Click += async (_, _) => await CopySelectedAsync(false);
         CopyPlainButton.Click += async (_, _) => await CopySelectedAsync(true);
         EditButton.Click += async (_, _) =>
@@ -205,6 +228,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
     private void InvalidateRead()
     {
+        PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!started || disposed) return;
         generation++;
         loadCancellation?.Cancel();
@@ -229,6 +253,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!reset && externalPending) { await ReloadAsync(); return; }
         if (reset)
         {
+            PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             debounce?.Stop();
             generation++;
             loadCancellation?.Cancel();
@@ -318,6 +343,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             }
             var changes = await core!.GetHistoryChangesAsync(observedRevision ?? revision.Value, lifetime.Token);
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
+            PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             observedRevision = changes.Revision;
             if (externalPending || activeDialog is not null || HistoryList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
@@ -343,6 +369,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private async Task LoadDetailAsync(bool reveal)
     {
         if (disposed) return;
+        PreviewInvalidated?.Invoke();
         detailGeneration++;
         var current = detailGeneration;
         detailCancellation?.Cancel();
@@ -430,6 +457,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = HistoryList.SelectedItems.Count == 1 ? HistoryList.SelectedItem as HistoryRow : null;
         bool available = !busy && activeDialog is null;
+        if (busy || activeDialog is not null || externalPending) PreviewInvalidated?.Invoke();
+        PreviewButton.IsEnabled = available && !externalPending && compactMode && selected is { IsStale: false }
+            && selected.Summary.ContentType != "file" && (!selected.Summary.IsSensitive || selectedEntry is not null);
         ReturnTargetButton.IsEnabled = available && targetStatus?.HasTarget == true;
         StartTargetButton.IsEnabled = available;
         AddButton.IsEnabled = available && !externalPending;
@@ -673,6 +703,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private void OnScroll(object? sender, ScrollViewerViewChangedEventArgs args)
     {
+        PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!disposed && !args.IsIntermediate && listScroll is { } scroll && scroll.ScrollableHeight > 0 &&
             scroll.VerticalOffset >= scroll.ScrollableHeight - 160) _ = LoadAsync(false);
     }
@@ -681,6 +712,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed) return;
         disposed = true;
+        PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         generation++;
         detailGeneration++;
         lifetime.Cancel();
@@ -698,6 +730,43 @@ public sealed partial class HistoryView : UserControl, IDisposable
         detailCancellation?.Dispose();
         lifetime.Dispose();
     }
+
+    private void OnRowPointerEntered(object sender, PointerRoutedEventArgs args)
+    {
+        if (args.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse
+            || sender is not FrameworkElement anchor || anchor.DataContext is not HistoryRow row) return;
+        hoveredAnchor = anchor; RequestPreview(row, anchor, requireHover: true);
+    }
+    private void OnRowPointerExited(object sender, PointerRoutedEventArgs args) => EndHover(sender);
+    private void OnRowUnloaded(object sender, RoutedEventArgs args) => EndHover(sender);
+    private void EndHover(object sender)
+    {
+        if (!ReferenceEquals(sender, hoveredAnchor)) return;
+        hoveredAnchor = null; PreviewInvalidated?.Invoke();
+    }
+    private void RequestPreview(HistoryRow row, FrameworkElement anchor, bool requireHover)
+    {
+        if (revision is not { } expected || !compactMode || disposed || row.IsStale || externalPending
+            || loading || mutating || filterPending || activeDialog is not null || row.Summary.ContentType == "file") return;
+        bool allowSensitive = selectedEntry?.Id == row.Id && HistoryList.SelectedItems.Count == 1;
+        if (row.Summary.IsSensitive && !allowSensitive) return;
+        PreviewRequested?.Invoke(new(row.Summary, expected, allowSensitive, anchor, () =>
+            !disposed && compactMode && !externalPending && !loading && !mutating && !filterPending
+            && activeDialog is null && revision == expected && rows.Contains(row) && anchor.IsLoaded
+            && (ReferenceEquals(anchor, HistoryList) || (anchor.DataContext is HistoryRow current && current.Id == row.Id))
+            && (!requireHover || ReferenceEquals(hoveredAnchor, anchor))));
+    }
+    internal void PreviewRow(long id)
+    {
+        var row = rows.FirstOrDefault(row => row.Id == id);
+        if (row is null) return;
+        // Explicit keyboard/button requests also work before virtualization realizes the row.
+        FrameworkElement? anchor = HistoryList.ContainerFromItem(row) is ListViewItem container
+            ? Descendants<StackPanel>(container).FirstOrDefault(element => element.IsLoaded
+                && element.DataContext is HistoryRow bound && bound.Id == row.Id) : null;
+        RequestPreview(row, anchor ?? HistoryList, requireHover: false);
+    }
+    internal void CancelPreview() { hoveredAnchor = null; PreviewInvalidated?.Invoke(); }
 
     // Smoke helpers operate the real controls; they do not bypass production click handlers.
     internal bool IsBusy => loading || mutating || filterPending || captureBusy || targetBusy;
@@ -746,7 +815,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             "capture" => (ButtonBase)CaptureButton, "add" => AddButton,
             "paste" => PasteButton, "paste-plain" => PastePlainButton, "target-start" => StartTargetButton,
-            "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
+            "preview" => PreviewButton, "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
             "tags" => TagsButton, "delete" => DeleteButton, "clear" => ClearButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))
         };

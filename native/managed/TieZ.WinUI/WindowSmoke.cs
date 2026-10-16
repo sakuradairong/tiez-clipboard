@@ -4,6 +4,8 @@ using System.Text.Json;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using TieZ.Core;
+using Windows.Graphics;
+using Microsoft.UI.Windowing;
 
 namespace TieZ.Native;
 
@@ -18,7 +20,11 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private ulong batchRevision;
     private long clearPinned, clearTagged, clearOrdinary, clearLate;
     private ulong clearRevision;
-    private long imageFirst, imageSecond, documentId;
+    private long imageFirst, imageSecond, documentId, compactTextId, compactDocumentId;
+    private TimeSpan compactRequestedAt;
+    private PointInt32 compactMainPosition;
+    private bool compactValidated, compactFocusPreserved;
+    private const string CompactText = "  紧凑文本\r\n  ";
     private const string DocumentHtml = "<h2>原生文档</h2><p><b>bold</b> &amp; 中文 <i>italic</i> <a href='https://example.invalid/native'>link</a></p><table><tr><th rowspan=2>H<th colspan=2>top<tr><td>one<td>two</table><img src='https://example.invalid/no-request' alt='logo'><script>never-render-script</script>";
     private const string PreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
     private const string SecondPreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAADklEQVR4nGNg+I8G0QUABykP8RHZtOEAAAAASUVORK5CYII=";
@@ -49,7 +55,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         ticking = true;
         try
         {
-            Require(elapsed.Elapsed < TimeSpan.FromSeconds(55), $"Timed out in phase {phase}.");
+            Require(elapsed.Elapsed < TimeSpan.FromSeconds(90), $"Timed out in phase {phase}.");
             var view = main.History;
             if (view.IsBusy) return;
             switch (phase)
@@ -476,6 +482,151 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 82:
                     Require(view.CanReveal && !view.HasDocumentPreview && !view.HasImagePreview && !view.CanCopy,
                         "Stale native preview bypassed sensitive final selection.");
+                    CheckCompactPlacement();
+                    compactTextId = (await core.AddManualAsync(CompactText)).Id;
+                    compactDocumentId = (await core.AddManualAsync("紧凑文档", "rich_text", DocumentHtml)).Id;
+                    await view.ReloadAsync(compactTextId);
+                    Require(!view.CompactMode && main.CompactPreview.WindowsCreated == 0, "Compact mode must default off without a hidden window.");
+                    main.OpenSettings();
+                    break;
+                case 83:
+                    Require(!main.Settings!.CompactMode && !main.Settings.HasDraft, "Opening compact settings wrote a draft.");
+                    main.Settings.SetCompactMode(true);
+                    Require(main.Settings.HasDraft && !view.CompactMode, "Compact draft applied before saving.");
+                    main.Settings.InvokeSettingsSave();
+                    Require(view.CompactMode && core.Snapshot.Values["app.compact_mode"] == "true", "Compact save did not synchronize main.");
+                    main.CloseSettings(); main.ShowMain();
+                    break;
+                case 84:
+                    compactRequestedAt = elapsed.Elapsed;
+                    view.Invoke("preview");
+                    Require(main.CompactPreview.HasPending && !main.CompactPreview.Visible, "Preview bypassed the hover delay.");
+                    view.CancelPreview();
+                    Require(!main.CompactPreview.HasPending && main.CompactPreview.DisplayedId is null, "Cancellation retained a delayed request.");
+                    view.Invoke("preview");
+                    break;
+                case 85:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Native text preview stopped before display.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(elapsed.Elapsed - compactRequestedAt >= TimeSpan.FromMilliseconds(900), "Compact preview did not wait one second.");
+                    Require(main.CompactPreview.DisplayedId == compactTextId,
+                        $"Compact text ID mismatch: expected={compactTextId}, actual={main.CompactPreview.DisplayedId}.");
+                    Require(Lines(main.CompactPreview.Text) == Lines(CompactText), "Compact text content mismatch.");
+                    Require(main.CompactPreview.IsNonActivating, "Compact preview lost non-activation styles.");
+                    Require(main.CompactPreview.ShowPreservedForeground,
+                        $"Native show changed foreground or no foreground was available: {main.CompactPreview.FocusDiagnostic}.");
+                    compactFocusPreserved = true;
+                    Require(main.CompactPreview.WindowsCreated == 1, "First hover created duplicate windows.");
+                    var previewBounds = main.CompactPreview.Bounds!.Value;
+                    var previewWork = DisplayArea.GetFromRect(previewBounds, DisplayAreaFallback.Nearest).WorkArea;
+                    Require(Within(previewBounds, previewWork), "Native preview escaped monitor work area.");
+                    view.PreviewRow(imageFirst);
+                    Require(!main.CompactPreview.Visible && main.CompactPreview.DisplayedId is null && main.CompactPreview.Text == "",
+                        "Changing hover retained old text.");
+                    break;
+                case 86:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Image hover failed.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(main.CompactPreview.HasImage && main.CompactPreview.DisplayedId == imageFirst
+                        && main.CompactPreview.WindowsCreated == 1, "Native image preview was not reused.");
+                    view.Search("取消紧凑预览");
+                    Require(!main.CompactPreview.Visible && !main.CompactPreview.HasImage && main.CompactPreview.DisplayedId is null,
+                        "Search retained native compact image.");
+                    break;
+                case 87:
+                    view.Search(""); await view.ReloadAsync(compactDocumentId);
+                    view.Invoke("preview");
+                    break;
+                case 88:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Document hover failed.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1, "Compact table preview did not reuse the native window.");
+                    await core.SetTagsAsync(compactDocumentId, ["sensitive"]);
+                    break;
+                case 89:
+                    if (!view.ExternalPending) return;
+                    Require(!main.CompactPreview.Visible && !main.CompactPreview.HasDocument && main.CompactPreview.DisplayedId is null,
+                        "External sensitive transition retained compact document.");
+                    await view.ReloadAsync(compactDocumentId);
+                    break;
+                case 90:
+                    view.PreviewRow(compactDocumentId);
+                    Require(view.CanReveal && !main.CompactPreview.HasPending && !main.CompactPreview.Visible,
+                        "Unrevealed sensitive row requested a hover preview.");
+                    view.Invoke("reveal");
+                    break;
+                case 91:
+                    if (!view.HasDocumentPreview) return;
+                    view.Invoke("preview");
+                    break;
+                case 92:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Revealed hover failed.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(main.CompactPreview.DisplayedId == compactDocumentId && main.CompactPreview.HasDocument,
+                        "Revealed sensitive document did not display.");
+                    core.Update(new Dictionary<string, string> { ["app.color_mode"] = "dark" }, core.Snapshot.Revision);
+                    break;
+                case 93:
+                    Require(main.CompactPreview.Visible && main.CompactPreview.CurrentTheme == ElementTheme.Dark,
+                        "Compact preview did not apply shared theme.");
+                    main.HideToTray();
+                    Require(!main.CompactPreview.Visible && !main.CompactPreview.HasDocument && main.CompactPreview.Text == "",
+                        "Hidden main retained sensitive compact data.");
+                    main.ShowMain(); await view.ReloadAsync(compactTextId);
+                    view.Invoke("preview");
+                    break;
+                case 94:
+                    view.CancelPreview();
+                    Require(!main.CompactPreview.HasPending && !main.CompactPreview.Visible, "Pending image survived cancellation.");
+                    main.OpenSettings();
+                    Require(main.Settings!.CompactMode && !main.Settings.HasDraft, "Reopened settings lost compact mode or wrote defaults.");
+                    main.Settings.SetCompactMode(false); main.Settings.InvokeSettingsSave();
+                    main.CloseSettings(); main.ShowMain();
+                    break;
+                case 95:
+                    Require(!view.CompactMode && !main.CompactPreview.HasPending && !main.CompactPreview.Visible,
+                        "Disabling compact mode retained hover.");
+                    view.PreviewRow(compactTextId);
+                    Require(!main.CompactPreview.HasPending, "Disabled compact mode accepted preview requests.");
+                    core.Update(new Dictionary<string, string> { ["app.compact_mode"] = "true" }, core.Snapshot.Revision);
+                    await view.ReloadAsync(compactTextId);
+                    break;
+                case 96:
+                    view.Invoke("preview");
+                    break;
+                case 97:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Reenabled preview failed.");
+                    if (!main.CompactPreview.Visible) return;
+                    compactMainPosition = main.AppWindow.Position;
+                    main.AppWindow.Move(new PointInt32(compactMainPosition.X + 10, compactMainPosition.Y));
+                    break;
+                case 98:
+                    Require(!main.CompactPreview.Visible && main.CompactPreview.Text == "", "Owner movement retained detached preview.");
+                    main.AppWindow.Move(compactMainPosition);
+                    break;
+                case 99:
+                    view.PreviewRow(imageFirst); view.PreviewRow(compactTextId);
+                    break;
+                case 100:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Last hover request was lost.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(main.CompactPreview.DisplayedId == compactTextId && !main.CompactPreview.HasImage
+                        && !main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1,
+                        "Old hover replaced final text or leaked another window.");
+                    Require(PostMessageW(main.CompactPreview.WindowHandle, 0x0010, 0, 0), "Native preview close message failed.");
+                    break;
+                case 101:
+                    Require(main.CompactPreview.WindowHandle == 0 && !main.CompactPreview.Visible, "Closed preview was retained.");
+                    view.PreviewRow(compactTextId);
+                    break;
+                case 102:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Closed preview could not reopen.");
+                    if (!main.CompactPreview.Visible) return;
+                    Require(main.CompactPreview.WindowsCreated == 2 && main.CompactPreview.DisplayedId == compactTextId
+                        && (await core.GetCaptureStatusAsync()).Starts == 2 && (await core.GetTargetStatusAsync()).Starts == 2,
+                        "Reopened preview duplicated windows or core services.");
+                    compactValidated = true;
+                    view.PreviewRow(imageFirst);
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
@@ -488,6 +639,23 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         }
         catch (Exception error) { Finish(false, $"Phase {phase}: {error}"); }
         finally { ticking = false; }
+    }
+
+    private static bool Within(RectInt32 bounds, RectInt32 work) => bounds.Width > 0 && bounds.Height > 0
+        && bounds.X >= work.X && bounds.Y >= work.Y && bounds.X + bounds.Width <= work.X + work.Width
+        && bounds.Y + bounds.Height <= work.Y + work.Height;
+    private static void CheckCompactPlacement()
+    {
+        foreach (double scale in new[] { 1.0, 1.5, 2.0 })
+            foreach (var work in new[] { new RectInt32(0, 0, 1920, 1040), new RectInt32(-1920, -200, 1920, 1080), new RectInt32(0, 0, 180, 160) })
+            {
+                var owner = new RectInt32(work.X + 30, work.Y + 20, Math.Min(900, work.Width), Math.Min(700, work.Height));
+                var anchor = new RectInt32(owner.X + 20, work.Y + work.Height - 20, 200, 40);
+                Require(Within(CompactPreviewPlacement.Calculate(owner, anchor, work, scale), work), "Placement failed negative/small/DPI work-area bounds.");
+            }
+        var normalWork = new RectInt32(0, 0, 1920, 1040);
+        Require(CompactPreviewPlacement.Calculate(new(20, 20, 800, 600), new(20, 20, 100, 40), normalWork, 1).X > 820, "Preview did not prefer free right side.");
+        Require(CompactPreviewPlacement.Calculate(new(1000, 20, 900, 600), new(1020, 20, 100, 40), normalWork, 1).X < 1000, "Preview did not use free left side.");
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -539,10 +707,17 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         ulong revision = core.Snapshot.Revision;
         try { hotkeyProbe?.Dispose(); hotkeyProbe = null; }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
-        try { main.Quit(); Directory.Delete(directory, recursive: true); }
+        try
+        {
+            main.Quit();
+            if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending
+                && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == "", "Quit retained compact native resources.");
+            Directory.Delete(directory, recursive: true);
+        }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, phases = phase + 1,
             framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,
+            compactWindowsCreated = main.CompactPreview.WindowsCreated, compactFocusPreserved,
             elapsedSeconds = elapsed.Elapsed.TotalSeconds }));
         Environment.ExitCode = passed ? 0 : 1;
     }
