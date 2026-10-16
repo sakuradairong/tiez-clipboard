@@ -9,7 +9,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tauri::Manager;
+use super::image_roots::current_clipboard_image_roots;
 use urlencoding::decode;
 
 const HTML_PREVIEW_MAX_CHARS: usize = 5000;
@@ -311,20 +311,6 @@ fn image_data_url_from_bytes(bytes: &[u8]) -> Option<String> {
 
     let b64 = general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{};base64,{}", image_mime_by_ext(ext), b64))
-}
-
-fn current_clipboard_image_roots() -> Vec<std::path::PathBuf> {
-    let mut roots = vec![std::env::temp_dir()];
-    if let Some(app) = crate::global_state::GLOBAL_APP_HANDLE.get() {
-        if let Some(state) = app.try_state::<crate::app_state::AppDataDir>() {
-            if let Ok(data_dir) = state.0.lock() {
-                roots.extend(crate::services::local_image_resource::managed_image_roots(
-                    &data_dir,
-                ));
-            }
-        }
-    }
-    roots
 }
 
 fn resolve_image_src_to_data_url(src: &str) -> Option<String> {

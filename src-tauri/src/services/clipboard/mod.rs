@@ -1,3 +1,4 @@
+mod image_roots;
 mod pipeline;
 mod utils;
 
