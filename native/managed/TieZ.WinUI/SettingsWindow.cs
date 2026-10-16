@@ -67,7 +67,8 @@ public sealed class SettingsWindow : Window
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
         foreach (var input in new[] { hotkey, limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
-            input.TextChanged += (_, _) => MarkDirty();
+            // TextChanged is deferred; drafts must be current before Save or an external snapshot.
+            input.TextChanging += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
         reload.Click += (_, _) =>
         {
@@ -175,19 +176,7 @@ public sealed class SettingsWindow : Window
     internal string DraftLimit => limit.Text;
     internal string DraftHotkey => hotkey.Text;
     internal void SetSmokeHotkey(string value) => hotkey.Text = value;
-    internal async Task WaitForDraftAsync()
-    {
-        if (save.IsEnabled) return;
-        var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnTextChanged(object sender, TextChangedEventArgs args) => changed.TrySetResult();
-        hotkey.TextChanged += OnTextChanged;
-        try
-        {
-            if (!save.IsEnabled) await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            if (!save.IsEnabled) throw new InvalidOperationException("Edited shortcut did not enable Save.");
-        }
-        finally { hotkey.TextChanged -= OnTextChanged; }
-    }
+    internal bool HasDraft => dirty && save.IsEnabled;
     internal void SetSmokeLimit(string value) => limit.Text = value;
     internal void InvokeSettingsSave() => InvokeSaveButton();
 

@@ -250,12 +250,18 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     break;
                 case 47:
                     if (!main.Settings!.IsContentReady) return;
-                    main.Settings.SetSmokeHotkey("Ctrl+"); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    main.Settings.SetSmokeHotkey("Ctrl+");
+                    Require(main.Settings.HasDraft, "Text edit did not immediately enable Save.");
+                    main.Settings.SetSmokeHotkey(core.Snapshot.Values["app.hotkey"]);
+                    Require(!main.Settings.HasDraft, "Returning to accepted text left Save enabled.");
+                    main.Settings.SetSmokeHotkey("Ctrl+");
+                    Require(main.Settings.HasDraft, "Second text edit did not immediately enable Save.");
+                    main.Settings.InvokeSettingsSave();
                     break;
                 case 48:
                     Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+" && core.Snapshot.Revision == 3, "Invalid shortcut did not preserve draft/revision.");
                     hotkeyProbe = new HotkeyProbe();
-                    main.Settings.SetSmokeHotkey("Ctrl+Alt+Shift+F24"); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    main.Settings.SetSmokeHotkey("Ctrl+Alt+Shift+F24"); Require(main.Settings.HasDraft, "Text edit did not immediately enable Save."); main.Settings.InvokeSettingsSave();
                     break;
                 case 49:
                     Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+Alt+Shift+F24" && core.Snapshot.Revision == 3, "Conflicting shortcut changed state or lost draft.");
@@ -274,7 +280,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     break;
                 case 52:
                     if (!main.Settings!.IsContentReady) return;
-                    main.Settings.SetSmokeHotkey(""); await main.Settings.WaitForDraftAsync(); main.Settings.InvokeSettingsSave();
+                    main.Settings.SetSmokeHotkey(""); Require(main.Settings.HasDraft, "Text edit did not immediately enable Save."); main.Settings.InvokeSettingsSave();
                     break;
                 case 53:
                     Require(core.Snapshot.Revision == 5 && core.Snapshot.Values["app.hotkey"] == ""
