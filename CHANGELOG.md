@@ -8,6 +8,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- 原生重构新增完整能力迁移台账及源码清单核对工具，并让原有模型、数据库迁移、DPAPI 和仓库代码在独立无 Tauri 存储库中运行同源回归测试。
+
 - Windows 原生迁移实验新增独立 Rust 设置核心与 C ABI，使用隔离数据库验证配置校验、原子保存和版本同步；现有 Tauri 应用保持原有行为。
 - 新增 WinUI 3 原型主窗口、独立设置窗口与 C# 调用层，验证共享设置保存、主题和搜索框同步、窗口重开及原生核心释放；原型排除 WebView2 SDK 资产，纯原生输出可通过窗口功能检查。
 

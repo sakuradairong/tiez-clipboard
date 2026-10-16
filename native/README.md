@@ -62,3 +62,9 @@ Get-Content $report
 ```
 
 The check invokes the native Save button through its automation peer and verifies shared settings, duplicate-open handling, main-view updates, reopen without writes, teardown and cleanup, and absence of WebView2 in loaded modules/assemblies. It uses a temporary Unicode data directory. This is functional automation, not manual visual or accessibility acceptance. Running on a machine with WebView2 installed does not establish acceptance on a clean machine without its runtime. The Windows App SDK transitively restores the WebView2 package, but the host explicitly excludes all of its assets. A fresh output contains no WebView2 files or runtime dependency entries; the window smoke check also passes from that output. Existing output folders from older builds may still contain stale files; clean before checking deployment contents. SDK package restore and application runtime requirements are separate.
+
+## Complete replacement tracking and shared storage
+
+See [MIGRATION.md](MIGRATION.md) and [compatibility.json](compatibility.json) for the full replacement scope and unresolved acceptance gates. Check source coverage with `python native/tools/inventory.py --check`.
+
+`native/storage` compiles the existing model, database initialization, migrations, repositories and DPAPI code directly from their legacy source files. This is transitional source sharing, not a copied schema or a Tauri dependency; do not delete those files while either shell uses them. Validate with `cargo test --locked --manifest-path native/storage/Cargo.toml`. The initial 36 Windows tests cover whitespace/hash semantics, schema migrations, repository transaction rollback, attachments, sensitive tags and encrypted settings. The core runtime is not yet connected to this storage crate.
