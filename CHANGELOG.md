@@ -6,6 +6,10 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ## [Unreleased]
 
+### Added
+
+- Windows 原生迁移实验新增独立 Rust 设置核心与 C ABI，使用隔离数据库验证配置校验、原子保存和版本同步；现有 Tauri 应用保持原有行为。
+
 ## [0.3.13] - 2026-10-03
 
 ### Added

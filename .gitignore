@@ -53,3 +53,9 @@ git_log_out.txt
 
 # Sub-projects
 mobile-app/
+
+# Native migration builds and local tooling
+/native/**/target/
+/native/**/bin/
+/native/**/obj/
+/.tmp/
