@@ -15,14 +15,25 @@ public sealed class SettingsWindow : Window
     private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
     private readonly ComboBox language = new() { Header = "语言（配置值）", ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox theme = new() { Header = "外观", ItemsSource = new[] { "跟随系统", "浅色", "深色" }, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly ToggleSwitch deduplicate = new() { Header = "自动去重（待接入采集服务）" };
+    private readonly ToggleSwitch deduplicate = new() { Header = "自动去重" };
     private readonly ToggleSwitch showSearch = new() { Header = "显示主窗口搜索框" };
+    private readonly ToggleSwitch persistent = new() { Header = "保存采集历史到磁盘", OffContent = "仅保留本次会话", OnContent = "持久化保存" };
+    private readonly ToggleSwitch captureFiles = new() { Header = "采集文件路径" };
+    private readonly ToggleSwitch captureRichText = new() { Header = "采集富文本和表格原始格式" };
+    private readonly ToggleSwitch privacy = new() { Header = "自动标记敏感内容" };
+    private readonly ToggleSwitch limitEnabled = new() { Header = "限制磁盘历史数量（置顶和有标签条目不计入）" };
+    private readonly TextBox limit = new() { Header = "最多保留普通历史条数（0–1000000）" };
+    private readonly TextBox privacyKinds = new() { Header = "敏感匹配类别（逗号分隔）" };
+    private readonly TextBox privacyRules = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox cleanupRules = new() { Header = "清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox appPolicies = new() { Header = "按应用清理策略（JSON 数组）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
     private readonly Button save = new() { Content = "保存设置", IsEnabled = false };
     private readonly InfoBar message = new() { IsOpen = false, IsClosable = true };
     private readonly TextBlock revision = new() { Opacity = 0.6 };
     private bool loading;
     private bool dirty;
     private ulong expectedRevision;
+    private SettingsSnapshot? loadedSnapshot;
     internal ulong DisplayedRevision => expectedRevision;
 
     public SettingsWindow(NativeCore core)
@@ -34,6 +45,12 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", Opacity = 0.6 });
         panel.Children.Add(language); panel.Children.Add(theme);
         panel.Children.Add(deduplicate); panel.Children.Add(showSearch);
+        panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
+        panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
+        var rules = new StackPanel { Spacing = 12 };
+        rules.Children.Add(privacyKinds); rules.Children.Add(privacyRules);
+        rules.Children.Add(cleanupRules); rules.Children.Add(appPolicies);
+        panel.Children.Add(new Expander { Header = "隐私与清理规则", Content = rules, HorizontalAlignment = HorizontalAlignment.Stretch });
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         var reload = new Button { Content = "重新载入" };
         actions.Children.Add(save); actions.Children.Add(reload);
@@ -45,6 +62,10 @@ public sealed class SettingsWindow : Window
         theme.SelectionChanged += (_, _) => MarkDirty();
         deduplicate.Toggled += (_, _) => MarkDirty();
         showSearch.Toggled += (_, _) => MarkDirty();
+        foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
+            toggle.Toggled += (_, _) => MarkDirty();
+        foreach (var input in new[] { limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
+            input.TextChanged += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
         reload.Click += (_, _) =>
         {
@@ -58,8 +79,9 @@ public sealed class SettingsWindow : Window
 
     private void MarkDirty()
     {
-        if (loading) return;
-        dirty = true; save.IsEnabled = true; message.IsOpen = false;
+        if (loading || loadedSnapshot is null) return;
+        dirty = CurrentValues().Any(pair => loadedSnapshot.Values[pair.Key] != pair.Value);
+        save.IsEnabled = dirty; message.IsOpen = false;
     }
 
     private void Load(SettingsSnapshot snapshot)
@@ -68,10 +90,21 @@ public sealed class SettingsWindow : Window
         try
         {
             expectedRevision = snapshot.Revision;
+            loadedSnapshot = snapshot;
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
             deduplicate.IsOn = snapshot.Values["app.deduplicate"] == "true";
             showSearch.IsOn = snapshot.Values["app.show_search_box"] == "true";
+            persistent.IsOn = snapshot.Values["app.persistent"] == "true";
+            captureFiles.IsOn = snapshot.Values["app.capture_files"] == "true";
+            captureRichText.IsOn = snapshot.Values["app.capture_rich_text"] == "true";
+            privacy.IsOn = snapshot.Values["app.privacy_protection"] == "true";
+            limitEnabled.IsOn = snapshot.Values["app.persistent_limit_enabled"] == "true";
+            limit.Text = snapshot.Values["app.persistent_limit"];
+            privacyKinds.Text = snapshot.Values["app.privacy_protection_kinds"];
+            privacyRules.Text = snapshot.Values["app.privacy_protection_custom_rules"];
+            cleanupRules.Text = snapshot.Values["app.cleanup_rules"];
+            appPolicies.Text = snapshot.Values["app.app_cleanup_policies"];
             panel.RequestedTheme = ViewTheme.From(snapshot);
             revision.Text = $"已保存配置版本 {snapshot.Revision}";
             dirty = false; save.IsEnabled = false;
@@ -89,18 +122,31 @@ public sealed class SettingsWindow : Window
         Load(snapshot);
     }
 
+    private Dictionary<string, string> CurrentValues() =>
+        new Dictionary<string, string>
+        {
+            ["app.language"] = Languages[language.SelectedIndex],
+            ["app.color_mode"] = Themes[theme.SelectedIndex],
+            ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
+            ["app.show_search_box"] = showSearch.IsOn ? "true" : "false",
+            ["app.persistent"] = persistent.IsOn ? "true" : "false",
+            ["app.capture_files"] = captureFiles.IsOn ? "true" : "false",
+            ["app.capture_rich_text"] = captureRichText.IsOn ? "true" : "false",
+            ["app.privacy_protection"] = privacy.IsOn ? "true" : "false",
+            ["app.persistent_limit_enabled"] = limitEnabled.IsOn ? "true" : "false",
+            ["app.persistent_limit"] = limit.Text,
+            ["app.privacy_protection_kinds"] = privacyKinds.Text,
+            ["app.privacy_protection_custom_rules"] = privacyRules.Text,
+            ["app.cleanup_rules"] = cleanupRules.Text,
+            ["app.app_cleanup_policies"] = appPolicies.Text
+        };
+
     private void Save()
     {
         save.IsEnabled = false;
         try
         {
-            core.Update(new Dictionary<string, string>
-            {
-                ["app.language"] = Languages[language.SelectedIndex],
-                ["app.color_mode"] = Themes[theme.SelectedIndex],
-                ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
-                ["app.show_search_box"] = showSearch.IsOn ? "true" : "false"
-            }, expectedRevision);
+            core.Update(CurrentValues(), expectedRevision);
             Load(core.Snapshot);
             message.Severity = InfoBarSeverity.Success;
             message.Message = "设置已保存，主窗口已同步。"; message.IsOpen = true;
@@ -117,10 +163,24 @@ public sealed class SettingsWindow : Window
         message.Severity = InfoBarSeverity.Error; message.Message = text; message.IsOpen = true;
     }
 
+    internal bool HasError => message.IsOpen && message.Severity == InfoBarSeverity.Error;
+    internal string DraftLimit => limit.Text;
+    internal void SetSmokeLimit(string value) => limit.Text = value;
+    internal void InvokeSettingsSave() => InvokeSaveButton();
+
+    internal bool CaptureOptionsLoaded => captureFiles.IsOn && captureRichText.IsOn && !persistent.IsOn
+        && privacy.IsOn && limitEnabled.IsOn && limit.Text == "500";
+
     internal void InvokeSmokeSave()
     {
         language.SelectedIndex = 2; theme.SelectedIndex = 2;
         deduplicate.IsOn = false; showSearch.IsOn = false;
+        captureFiles.IsOn = true; captureRichText.IsOn = true;
+        InvokeSaveButton();
+    }
+
+    private void InvokeSaveButton()
+    {
         var peer = new ButtonAutomationPeer(save);
         ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)).Invoke();
     }

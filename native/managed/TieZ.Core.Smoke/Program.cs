@@ -24,7 +24,8 @@ try
         disposed = core;
         int notifications = 0;
         core.Changed += _ => notifications++;
-        Check(core.Snapshot.Revision == 0 && core.Snapshot.Values.Count == 4, "Initial snapshot");
+        Check(core.Snapshot.Revision == 0 && core.Snapshot.Values["app.persistent"] == "false"
+            && core.Snapshot.Values["app.privacy_protection"] == "true", "Initial snapshot");
         Expect("already_open", () => { using var duplicate = new NativeCore(database); });
         Check(!core.Update(new Dictionary<string, string> { ["app.language"] = "zh" }, 0), "No-op");
         Check(core.Update(new Dictionary<string, string> { ["app.language"] = "tw", ["app.color_mode"] = "dark" }, 0), "Save");
@@ -38,6 +39,7 @@ try
         }).GetAwaiter().GetResult();
         Check(threadRejected, "Thread ownership");
         historyId = HistorySmoke.Run(core);
+        CaptureSmoke.Run(core);
         revision = core.Snapshot.Revision;
     }
     disposed.Dispose();
@@ -49,6 +51,7 @@ try
         Check(reopened.GetEntryAsync(historyId).GetAwaiter().GetResult().Content == " managed 中文 %_ \r\n ", "History reopen persistence");
     }
     HistorySmoke.DisposeQueued(database);
-    Console.WriteLine("PASS: real Rust DLL interop, Unicode path, shared ownership, validation, conflicts, no-op events, thread/dispose guards, persistence");
+    CaptureSmoke.DisposeActive(database);
+    Console.WriteLine("PASS: real Rust DLL interop, Unicode path, shared ownership, validation, conflicts, no-op events, thread/dispose guards, persistence, native capture lifecycle and policy");
 }
 finally { Directory.Delete(directory, recursive: true); }

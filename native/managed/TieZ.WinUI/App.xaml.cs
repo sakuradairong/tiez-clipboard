@@ -22,7 +22,7 @@ public partial class App : Application
         {
             Directory.CreateDirectory(directory);
             core = new NativeCore(Path.Combine(directory, "settings.db"));
-            main = new MainWindow(core, directory);
+            main = new MainWindow(core, directory, captureOnStartup: report is null);
             main.Closed += (_, _) =>
             {
                 main.CloseSettings();

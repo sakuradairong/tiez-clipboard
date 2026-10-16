@@ -17,6 +17,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly HashSet<TextBox> compositions = [];
     private NativeCore? core;
+    private CaptureStatus? captureStatus;
+    private bool startCapture, captureBusy;
+    private int captureGeneration;
     private DispatcherQueueTimer? debounce;
     private DispatcherQueueTimer? poll;
     private ScrollViewer? listScroll;
@@ -64,7 +67,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
             started = true;
             poll!.Start();
             _ = ReloadAsync();
+            _ = SetCaptureAsync(startCapture);
         };
+        CaptureButton.Click += async (_, _) => await SetCaptureAsync(captureStatus?.Running != true);
         AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", value => core!.AddManualAsync(value));
         EditButton.Click += async (_, _) =>
         {
@@ -89,10 +94,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
         UpdateCommands();
     }
 
-    internal void Initialize(NativeCore sharedCore)
+    internal void Initialize(NativeCore sharedCore, bool captureOnStartup)
     {
         if (core is not null) throw new InvalidOperationException("A history view borrows exactly one core.");
         core = sharedCore;
+        startCapture = captureOnStartup;
         debounce = DispatcherQueue.CreateTimer();
         debounce.Interval = TimeSpan.FromMilliseconds(250);
         debounce.IsRepeating = false;
@@ -100,6 +106,47 @@ public sealed partial class HistoryView : UserControl, IDisposable
         poll = DispatcherQueue.CreateTimer();
         poll.Interval = TimeSpan.FromSeconds(1);
         poll.Tick += OnPoll;
+    }
+
+    private void ApplyCapture(CaptureStatus status)
+    {
+        captureStatus = status;
+        CaptureButton.Label = status.Running ? "暂停采集" : "开始采集";
+        CaptureButton.Icon = new SymbolIcon(status.Running ? Symbol.Pause : Symbol.Play);
+        CaptureInfo.Severity = status.LastError is null ? InfoBarSeverity.Informational : InfoBarSeverity.Warning;
+        string state = status.Running ? "采集中" : "采集已停止";
+        CaptureInfo.Message = $"{state} · 已接收 {status.Accepted} 条 · 忽略 {status.Ignored} 条 · 失败 {status.Failed} 次。使用独立数据库；粘贴仍在迁移。"
+            + (status.LastError is null ? "" : $" 服务错误：{status.LastError}");
+    }
+
+    private async Task SetCaptureAsync(bool enabled)
+    {
+        if (disposed || captureBusy) return;
+        captureBusy = true;
+        captureGeneration++;
+        CaptureButton.IsEnabled = false;
+        try
+        {
+            var status = enabled ? await core!.StartCaptureAsync(lifetime.Token)
+                : await core!.StopCaptureAsync(lifetime.Token);
+            if (!disposed) ApplyCapture(status);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (Exception error)
+        {
+            if (!disposed)
+            {
+                CaptureInfo.Severity = InfoBarSeverity.Error;
+                CaptureInfo.Message = $"采集状态未确认：{error.Message}";
+                ShowError(error.Message);
+            }
+        }
+        finally
+        {
+            captureBusy = false;
+            if (!disposed) CaptureButton.IsEnabled = true;
+        }
     }
 
     internal bool SearchVisible
@@ -211,6 +258,13 @@ public sealed partial class HistoryView : UserControl, IDisposable
         int current = generation;
         try
         {
+            if (!captureBusy)
+            {
+                int captureRead = captureGeneration;
+                var status = await core!.GetCaptureStatusAsync(lifetime.Token);
+                if (disposed) return;
+                if (captureRead == captureGeneration && !captureBusy) ApplyCapture(status);
+            }
             var changes = await core!.GetHistoryChangesAsync(observedRevision ?? revision.Value, lifetime.Token);
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             observedRevision = changes.Revision;
@@ -450,7 +504,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
 
     // Smoke helpers operate the real controls; they do not bypass production click handlers.
-    internal bool IsBusy => loading || mutating || filterPending;
+    internal bool IsBusy => loading || mutating || filterPending || captureBusy;
+    internal bool CaptureRunning => captureStatus?.Running == true;
+    internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;
     internal string Detail => DetailText.Text;
     internal bool CanReveal => RevealButton.Visibility == Visibility.Visible;
@@ -472,7 +528,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         var button = name switch
         {
-            "add" => (ButtonBase)AddButton, "edit" => EditButton, "pin" => PinButton,
+            "capture" => (ButtonBase)CaptureButton, "add" => AddButton, "edit" => EditButton, "pin" => PinButton,
             "tags" => TagsButton, "delete" => DeleteButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))
         };

@@ -13,6 +13,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private int phase;
     private bool ticking;
     private long entryId;
+    private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
     private static string Lines(string value) => value.Replace("\r\n", "\n").Replace("\r", "\n");
@@ -46,6 +47,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
             {
                 case 0:
                     Require(core.Snapshot.Revision == 0, "Initial window binding wrote configuration.");
+                    Require(!view.CaptureRunning && (await core.GetCaptureStatusAsync()).Starts == 0, "Smoke capture must be explicitly controlled.");
                     main.OpenSettings();
                     var first = main.Settings;
                     main.OpenSettings();
@@ -61,6 +63,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(main.Settings is null, "Settings window was not released.");
                     main.OpenSettings();
                     Require(main.Settings!.DisplayedRevision == 1 && core.Refresh().Revision == 1, "Reopen wrote configuration.");
+                    Require(main.Settings.CaptureOptionsLoaded, "Capture settings did not reload accepted values.");
                     main.CloseSettings();
                     core.Update(new Dictionary<string, string> { ["app.show_search_box"] = "true" }, 1);
                     break;
@@ -158,7 +161,42 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     await view.ReloadAsync(entryId); break;
                 case 29:
                     Require(view.Detail == "" && view.CanReveal, "Refresh did not enforce new sensitive tag.");
-                    // Close with a pending debounce/read to exercise disposal guards.
+                    view.Invoke("capture");
+                    break;
+                case 30:
+                    Require(view.CaptureRunning && view.CaptureStarts == 1, "Capture control did not start native service.");
+                    main.OpenSettings();
+                    captureSettingsRevision = core.Snapshot.Revision;
+                    break;
+                case 31:
+                    Require(main.Settings!.CaptureOptionsLoaded, "Capture options lost after reopening.");
+                    main.Settings.SetSmokeLimit("-1");
+                    break;
+                case 32: main.Settings!.InvokeSettingsSave(); break;
+                case 33:
+                    Require(main.Settings!.HasError && main.Settings.DraftLimit == "-1", "Rejected capture policy lost its draft.");
+                    Require(core.Snapshot.Revision == captureSettingsRevision && core.Snapshot.Values["app.persistent_limit"] == "500", "Invalid capture policy changed accepted state.");
+                    main.Settings.SetSmokeLimit("501");
+                    break;
+                case 34: main.Settings!.InvokeSettingsSave(); break;
+                case 35:
+                    Require(!main.Settings!.HasError && main.Settings.DraftLimit == "501" && core.Snapshot.Values["app.persistent_limit"] == "501"
+                        && core.Snapshot.Revision == captureSettingsRevision + 1, "Capture policy correction did not save.");
+                    main.CloseSettings();
+                    break;
+                case 36:
+                    Require(view.CaptureRunning && view.CaptureStarts == 1, "Settings lifetime restarted or stopped capture.");
+                    Require((await core.GetCaptureStatusAsync()).PolicyRevision == core.Snapshot.Revision, "Worker policy revision not acknowledged.");
+                    view.Invoke("capture");
+                    break;
+                case 37:
+                    Require(!view.CaptureRunning, "Pause did not stop and join native capture.");
+                    view.Invoke("capture");
+                    break;
+                case 38:
+                    Require(view.CaptureRunning && view.CaptureStarts == 2, "Capture restart failed.");
+                    captureStarts = view.CaptureStarts;
+                    // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
                     var assemblies = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "");
@@ -179,7 +217,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         try { main.Close(); Directory.Delete(directory, recursive: true); }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, phases = phase + 1,
-            framework = "WinUI 3", revision, webView2ModuleLoaded, loaded, realized,
+            framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,
             elapsedSeconds = elapsed.Elapsed.TotalSeconds }));
         Environment.ExitCode = passed ? 0 : 1;
     }

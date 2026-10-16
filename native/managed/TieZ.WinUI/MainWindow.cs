@@ -12,7 +12,7 @@ public sealed partial class MainWindow : Window
     internal ElementTheme CurrentTheme => MainRoot.RequestedTheme;
     internal HistoryView History => HistoryWorkspace;
 
-    public MainWindow(NativeCore core, string directory)
+    public MainWindow(NativeCore core, string directory, bool captureOnStartup = true)
     {
         this.core = core;
         InitializeComponent();
@@ -24,7 +24,7 @@ public sealed partial class MainWindow : Window
             if (args.IsSettingsInvoked) OpenSettings();
             Navigation.SelectedItem = HistoryNav;
         };
-        HistoryWorkspace.Initialize(core);
+        HistoryWorkspace.Initialize(core, captureOnStartup);
         core.Changed += Apply;
         Closed += (_, _) =>
         {
