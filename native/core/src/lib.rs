@@ -51,6 +51,21 @@ enum Request {
         rules: String,
         text: String,
     },
+    TagPage {
+        handle: u64,
+        query: history::TagQuery,
+    },
+    TagCreate {
+        handle: u64,
+        name: String,
+        expected_revision: u64,
+    },
+    TagColor {
+        handle: u64,
+        name: String,
+        color: Option<String>,
+        expected_revision: u64,
+    },
     HistoryPage {
         handle: u64,
         query: HistoryQuery,
@@ -269,6 +284,39 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             result["side_effect_error"] = json!(effect_error);
             Ok(result)
         }
+        Request::TagPage { handle, query } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .tag_page(query)?)),
+        Request::TagCreate {
+            handle,
+            name,
+            expected_revision,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .create_tag(name, expected_revision)?)),
+        Request::TagColor {
+            handle,
+            name,
+            color,
+            expected_revision,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .set_tag_color(name, color, expected_revision)?)),
         Request::HistoryPage { handle, query } => Ok(json!(registry
             .services
             .get(&handle)

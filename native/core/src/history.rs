@@ -1,3 +1,6 @@
+mod tags;
+pub use tags::TagQuery;
+
 use crate::{CoreError, CoreResult};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};

@@ -15,6 +15,7 @@ string directory = Path.Combine(Path.GetTempPath(), $"TieZ-原生-{Guid.NewGuid(
 Directory.CreateDirectory(directory);
 try
 {
+    TagSmoke.Run(Path.Combine(directory, "标签目录"));
     string database = Path.Combine(directory, "设置.db");
     ulong revision;
     long historyId;
