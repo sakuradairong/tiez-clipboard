@@ -25,10 +25,8 @@ public sealed class SettingsWindow : Window
     private readonly ToggleSwitch privacy = new() { Header = "自动标记敏感内容" };
     private readonly ToggleSwitch limitEnabled = new() { Header = "限制磁盘历史数量（置顶和有标签条目不计入）" };
     private readonly TextBox limit = new() { Header = "最多保留普通历史条数（0–1000000）" };
-    private readonly TextBox privacyKinds = new() { Header = "敏感匹配类别（逗号分隔）" };
-    private readonly TextBox privacyRules = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
-    private readonly TextBox cleanupRules = new() { Header = "清理规则（每行：正则 => 替换文本）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
-    private readonly TextBox appPolicies = new() { Header = "按应用清理策略（JSON 数组）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
+    private readonly Button advanced = new() { Content = "高级设置 · 隐私与清理规则" };
+    internal event Action? AdvancedRequested;
     private readonly Button save = new() { Content = "保存设置", IsEnabled = false };
     private readonly InfoBar message = new() { IsOpen = false, IsClosable = true };
     private readonly TextBlock revision = new() { Opacity = 0.6 };
@@ -50,10 +48,8 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(deduplicate); panel.Children.Add(showSearch); panel.Children.Add(compact);
         panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
         panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
-        var rules = new StackPanel { Spacing = 12 };
-        rules.Children.Add(privacyKinds); rules.Children.Add(privacyRules);
-        rules.Children.Add(cleanupRules); rules.Children.Add(appPolicies);
-        panel.Children.Add(new Expander { Header = "隐私与清理规则", Content = rules, HorizontalAlignment = HorizontalAlignment.Stretch });
+        panel.Children.Add(advanced);
+        advanced.Click += (_, _) => AdvancedRequested?.Invoke();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         var reload = new Button { Content = "重新载入" };
         actions.Children.Add(save); actions.Children.Add(reload);
@@ -68,7 +64,7 @@ public sealed class SettingsWindow : Window
         compact.Toggled += (_, _) => MarkDirty();
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
-        foreach (var input in new[] { hotkey, limit, privacyKinds, privacyRules, cleanupRules, appPolicies })
+        foreach (var input in new[] { hotkey, limit })
             // TextChanged is deferred; drafts must be current before Save or an external snapshot.
             input.TextChanging += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
@@ -108,10 +104,6 @@ public sealed class SettingsWindow : Window
             privacy.IsOn = snapshot.Values["app.privacy_protection"] == "true";
             limitEnabled.IsOn = snapshot.Values["app.persistent_limit_enabled"] == "true";
             limit.Text = snapshot.Values["app.persistent_limit"];
-            privacyKinds.Text = snapshot.Values["app.privacy_protection_kinds"];
-            privacyRules.Text = snapshot.Values["app.privacy_protection_custom_rules"];
-            cleanupRules.Text = snapshot.Values["app.cleanup_rules"];
-            appPolicies.Text = snapshot.Values["app.app_cleanup_policies"];
             panel.RequestedTheme = ViewTheme.From(snapshot);
             revision.Text = $"已保存配置版本 {snapshot.Revision}";
             dirty = false; save.IsEnabled = false;
@@ -121,6 +113,7 @@ public sealed class SettingsWindow : Window
 
     private void OnChanged(SettingsSnapshot snapshot)
     {
+        panel.RequestedTheme = ViewTheme.From(snapshot);
         if (dirty && snapshot.Revision != expectedRevision)
         {
             ShowError("配置已变化。请重新载入后再修改；当前草稿尚未保存。");
@@ -144,10 +137,6 @@ public sealed class SettingsWindow : Window
             ["app.privacy_protection"] = privacy.IsOn ? "true" : "false",
             ["app.persistent_limit_enabled"] = limitEnabled.IsOn ? "true" : "false",
             ["app.persistent_limit"] = limit.Text,
-            ["app.privacy_protection_kinds"] = privacyKinds.Text,
-            ["app.privacy_protection_custom_rules"] = privacyRules.Text,
-            ["app.cleanup_rules"] = cleanupRules.Text,
-            ["app.app_cleanup_policies"] = appPolicies.Text
         };
 
     private void Save()
@@ -175,6 +164,7 @@ public sealed class SettingsWindow : Window
         message.Severity = InfoBarSeverity.Error; message.Message = text; message.IsOpen = true;
     }
 
+    internal ElementTheme CurrentTheme => panel.RequestedTheme;
     internal bool IsContentReady => panel.IsLoaded && panel.XamlRoot is not null;
     internal bool HasError => message.IsOpen && message.Severity == InfoBarSeverity.Error;
     internal string DraftLimit => limit.Text;
@@ -184,6 +174,10 @@ public sealed class SettingsWindow : Window
     internal void SetCompactMode(bool enabled) => compact.IsOn = enabled;
     internal bool HasDraft => dirty && save.IsEnabled;
     internal void SetSmokeLimit(string value) => limit.Text = value;
+    internal void OpenAdvanced()
+    {
+        ((IInvokeProvider)new ButtonAutomationPeer(advanced).GetPattern(PatternInterface.Invoke)).Invoke();
+    }
     internal void InvokeSettingsSave() => InvokeSaveButton();
 
     internal bool CaptureOptionsLoaded => captureFiles.IsOn && captureRichText.IsOn && !persistent.IsOn

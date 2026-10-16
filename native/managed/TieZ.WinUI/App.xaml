@@ -7,6 +7,9 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+            <Style x:Key="NativeSettingsSurfaceStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
+            </Style>
             <Style x:Key="NativeCompactPreviewStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
                 <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}"/>

@@ -24,6 +24,10 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private TimeSpan compactRequestedAt;
     private PointInt32 compactMainPosition;
     private bool compactValidated, compactFocusPreserved;
+    private string compactInvalidation = "none", compactActivation = "none";
+    private AdvancedSettingsWindow? advancedWindow;
+    private ulong advancedRevision;
+    private const string OriginalAdvancedRules = "first => one\r\nsecond => two";
     private const string CompactText = "  紧凑文本\r\n  ";
     private const string DocumentHtml = "<h2>原生文档</h2><p><b>bold</b> &amp; 中文 <i>italic</i> <a href='https://example.invalid/native'>link</a></p><table><tr><th rowspan=2>H<th colspan=2>top<tr><td>one<td>two</table><img src='https://example.invalid/no-request' alt='logo'><script>never-render-script</script>";
     private const string PreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
@@ -38,11 +42,17 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private const string Edited = "  修改后中文 %_ \r\n  ";
     internal void Start()
     {
+        main.History.PreviewInvalidated += OnPreviewInvalidated;
+        main.Activated += OnSmokeActivation;
         timer = main.DispatcherQueue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(500);
         timer.Tick += Tick;
         timer.Start();
     }
+
+    private void OnPreviewInvalidated() => compactInvalidation = $"phase={phase}: {new StackTrace(1, false)}";
+    private void OnSmokeActivation(object sender, WindowActivatedEventArgs args) =>
+        compactActivation = $"phase={phase}: {args.WindowActivationState}";
 
     private static void Require(bool value, string message)
     {
@@ -618,16 +628,111 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 101:
                     Require(main.CompactPreview.WindowHandle == 0 && !main.CompactPreview.Visible, "Closed preview was retained.");
                     view.PreviewRow(compactTextId);
+                    Require(main.CompactPreview.HasPending, $"Reopen request was rejected immediately; {compactInvalidation}; {compactActivation}");
                     break;
                 case 102:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Closed preview could not reopen.");
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, $"Closed preview could not reopen; {compactInvalidation}; {compactActivation}");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.WindowsCreated == 2 && main.CompactPreview.DisplayedId == compactTextId
                         && (await core.GetCaptureStatusAsync()).Starts == 2 && (await core.GetTargetStatusAsync()).Starts == 2,
                         "Reopened preview duplicated windows or core services.");
                     compactValidated = true;
-                    view.PreviewRow(imageFirst);
-                    // Close with capture running and a pending read to exercise disposal guards.
+                    core.Update(new Dictionary<string, string> { ["app.cleanup_rules"] = OriginalAdvancedRules }, core.Snapshot.Revision);
+                    advancedRevision = core.Snapshot.Revision;
+                    main.OpenSettings(); main.Settings!.OpenAdvanced();
+                    break;
+                case 103:
+                    if (main.Settings?.IsContentReady != true || main.AdvancedSettings?.IsContentReady != true) return;
+                    advancedWindow = main.AdvancedSettings;
+                    Require(!advancedWindow.HasDraft && advancedWindow.DisplayedRevision == advancedRevision
+                        && core.Snapshot.Revision == advancedRevision, "Advanced window initialization wrote settings.");
+                    main.Settings.OpenAdvanced();
+                    Require(ReferenceEquals(advancedWindow, main.AdvancedSettings), "Repeated advanced open duplicated the window.");
+                    advancedWindow.SetRules("email", advancedWindow.PrivacyDraft, advancedWindow.CleanupDraft, advancedWindow.PolicyDraft);
+                    Require(advancedWindow.HasDraft, "Advanced rules did not create an independent draft.");
+                    advancedWindow.SetRules(core.Snapshot.Values["app.privacy_protection_kinds"], advancedWindow.PrivacyDraft,
+                        advancedWindow.CleanupDraft, advancedWindow.PolicyDraft);
+                    Require(!advancedWindow.HasDraft && core.Snapshot.Values["app.cleanup_rules"] == OriginalAdvancedRules,
+                        "Unchanged advanced TextBox line endings created a draft or changed storage.");
+                    main.Settings.SetSmokeHotkey("Ctrl++");
+                    advancedWindow.SetRules("email", "", "[( => broken", "[]");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasError && advancedWindow.HasDraft && advancedWindow.CleanupDraft == "[( => broken"
+                        && core.Snapshot.Revision == advancedRevision && core.Snapshot.Values["app.cleanup_rules"] == OriginalAdvancedRules,
+                        "Invalid advanced cleanup was saved or its draft was lost.");
+                    break;
+                case 104:
+                    advancedWindow!.SetRules("email", "secret\\d+", "foo => bar", "not JSON");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasError && advancedWindow.HasDraft && advancedWindow.PolicyDraft == "not JSON"
+                        && core.Snapshot.Revision == advancedRevision && core.Snapshot.Values["app.cleanup_rules"] == OriginalAdvancedRules,
+                        "Invalid policy caused a partial settings save.");
+                    break;
+                case 105:
+                    advancedWindow!.SetRules("email", "secret\\d+", "foo => bar", "[]");
+                    advancedWindow.InvokeSave();
+                    Require(!advancedWindow.HasError && !advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision + 1
+                        && core.Snapshot.Values["app.cleanup_rules"] == "foo => bar"
+                        && core.Snapshot.Values["app.privacy_protection_custom_rules"] == "secret\\d+",
+                        "Accepted advanced correction failed to save.");
+                    advancedRevision = core.Snapshot.Revision;
+                    Require(main.Settings!.HasDraft && main.Settings.HasError && main.Settings.DraftHotkey == "Ctrl++",
+                        "Advanced save overwrote the ordinary settings draft.");
+                    main.Settings.InvokeSettingsSave();
+                    Require(main.Settings.HasError && main.Settings.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Conflicted ordinary draft overwrote advanced rules.");
+                    break;
+                case 106:
+                    advancedWindow!.SetRules("phone", advancedWindow.PrivacyDraft, advancedWindow.CleanupDraft, advancedWindow.PolicyDraft);
+                    core.Update(new Dictionary<string, string> { ["app.color_mode"] = "light" }, core.Snapshot.Revision);
+                    advancedRevision = core.Snapshot.Revision;
+                    Require(advancedWindow.HasDraft && advancedWindow.HasError && advancedWindow.KindsDraft == "phone"
+                        && advancedWindow.CurrentTheme == ElementTheme.Light, "External snapshot lost advanced draft or theme.");
+                    Require(main.Settings!.CurrentTheme == ElementTheme.Light && main.Settings.HasDraft
+                        && main.Settings.DraftHotkey == "Ctrl++", "Ordinary settings did not follow accepted theme while preserving draft.");
+                    main.CloseSettings();
+                    Require(main.Settings is null && ReferenceEquals(main.AdvancedSettings, advancedWindow)
+                        && (await core.GetCaptureStatusAsync()) is { Running: true, Starts: 2 },
+                        "Closing normal settings closed advanced settings or restarted capture.");
+                    advancedWindow.InvokeSave();
+                    Require(advancedWindow.HasDraft && advancedWindow.HasError && core.Snapshot.Revision == advancedRevision
+                        && core.Snapshot.Values["app.privacy_protection_kinds"] == "email", "Stale advanced draft was saved.");
+                    break;
+                case 107:
+                    advancedWindow!.InvokeReload();
+                    Require(!advancedWindow.HasDraft && !advancedWindow.HasError && advancedWindow.KindsDraft == "email"
+                        && advancedWindow.DisplayedRevision == advancedRevision, "Advanced reload did not discard conflicted draft explicitly.");
+                    main.CloseAdvancedSettings();
+                    Require(main.AdvancedSettings is null && (await core.GetTargetStatusAsync()) is { Running: true, Starts: 2 },
+                        "Closing advanced settings stopped the shared target service.");
+                    main.OpenAdvancedSettings();
+                    break;
+                case 108:
+                    if (main.AdvancedSettings?.IsContentReady != true) return;
+                    Require(!ReferenceEquals(advancedWindow, main.AdvancedSettings) && !main.AdvancedSettings.HasDraft
+                        && main.AdvancedSettings.DisplayedRevision == advancedRevision && main.AdvancedSettings.CleanupDraft == "foo => bar"
+                        && core.Snapshot.Revision == advancedRevision, "Reopened advanced window wrote or lost accepted settings.");
+                    advancedWindow = main.AdvancedSettings;
+                    main.OpenAdvancedSettings();
+                    Require(ReferenceEquals(advancedWindow, main.AdvancedSettings), "Advanced reopen created duplicate subscribers/windows.");
+                    main.OpenSettings();
+                    break;
+                case 109:
+                    if (main.Settings?.IsContentReady != true) return;
+                    Require(!main.Settings.HasDraft && main.Settings.DisplayedRevision == advancedRevision
+                        && !advancedWindow!.HasDraft && core.Snapshot.Revision == advancedRevision,
+                        "Reopening ordinary settings wrote defaults or affected advanced drafts.");
+                    main.CloseSettings(); main.ShowMain();
+                    await view.ReloadAsync(compactTextId);
+                    break;
+                case 110:
+                    Require(main.AdvancedSettings is not null && (await core.GetCaptureStatusAsync()) is { Running: true, Starts: 2 },
+                        "Independent advanced lifecycle changed core ownership.");
+                    view.Invoke("preview");
+                    break;
+                case 111:
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Quit fixture lost the pending preview.");
+                    // Close with advanced settings, capture and a pending preview still active.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
                     var assemblies = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetName().Name ?? "");
@@ -704,6 +809,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private void Finish(bool passed, string? error)
     {
         timer!.Stop();
+        main.History.PreviewInvalidated -= OnPreviewInvalidated;
+        main.Activated -= OnSmokeActivation;
         ulong revision = core.Snapshot.Revision;
         try { hotkeyProbe?.Dispose(); hotkeyProbe = null; }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
@@ -711,7 +818,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         {
             main.Quit();
             if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending
-                && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == "", "Quit retained compact native resources.");
+                && main.CompactPreview.WindowHandle == 0 && main.CompactPreview.Text == ""
+                && main.Settings is null && main.AdvancedSettings is null, "Quit retained native windows/resources.");
             Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = failure.ToString(); }

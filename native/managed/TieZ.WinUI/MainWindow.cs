@@ -11,6 +11,7 @@ public sealed partial class MainWindow : Window
     internal CompactPreviewController CompactPreview => compactPreview;
     private bool residentMode, quitting, active;
     internal SettingsWindow? Settings { get; private set; }
+    internal AdvancedSettingsWindow? AdvancedSettings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
     internal ElementTheme CurrentTheme => MainRoot.RequestedTheme;
     internal HistoryView History => HistoryWorkspace;
@@ -45,6 +46,7 @@ public sealed partial class MainWindow : Window
         core.Changed += Apply;
         Closed += (_, _) =>
         {
+            CloseAdvancedSettings();
             core.Changed -= Apply;
             HistoryWorkspace.PreviewRequested -= compactPreview.Request;
             HistoryWorkspace.PreviewInvalidated -= compactPreview.Cancel;
@@ -83,7 +85,7 @@ public sealed partial class MainWindow : Window
     internal void Quit()
     {
         if (quitting) return;
-        quitting = true; CloseSettings(); Close();
+        quitting = true; CloseAdvancedSettings(); CloseSettings(); Close();
     }
     internal bool ResidentMode => residentMode;
 
@@ -91,12 +93,28 @@ public sealed partial class MainWindow : Window
     {
         if (Settings is null)
         {
-            Settings = new SettingsWindow(core);
-            Settings.Closed += (_, _) => Settings = null;
+            var created = new SettingsWindow(core); Settings = created;
+            created.AdvancedRequested += OpenAdvancedSettings;
+            created.Closed += (_, _) =>
+            {
+                created.AdvancedRequested -= OpenAdvancedSettings;
+                if (ReferenceEquals(Settings, created)) Settings = null;
+            };
         }
         Settings.Activate();
     }
 
+    internal void OpenAdvancedSettings()
+    {
+        if (quitting) return;
+        if (AdvancedSettings is null)
+        {
+            var created = new AdvancedSettingsWindow(core); AdvancedSettings = created;
+            created.Closed += (_, _) => { if (ReferenceEquals(AdvancedSettings, created)) AdvancedSettings = null; };
+        }
+        AdvancedSettings.Activate();
+    }
+    internal void CloseAdvancedSettings() => AdvancedSettings?.Close();
     internal void CloseSettings() => Settings?.Close();
 
     private void Apply(SettingsSnapshot snapshot)
