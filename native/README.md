@@ -39,3 +39,26 @@ dotnet run --project native/managed/TieZ.Core.Smoke
 ```
 
 The managed client owns one core on the creating thread, copies UTF-8 responses before freeing native memory in `finally`, and publishes accepted snapshots only after a changed save. The smoke program loads the real DLL and uses a temporary Unicode database directory that it removes on exit. For Release, build Rust with `--release` before using `-c Release`.
+
+## WinUI 3 host
+
+This unpackaged Windows x64 prototype requires .NET 10 Desktop Runtime and Windows App Runtime 1.8 (or their SDK/development installations). It uses WinUI controls with no HTML renderer. Build Rust first, then:
+
+```powershell
+dotnet build native/managed/TieZ.WinUI/TieZ.WinUI.csproj
+dotnet run --project native/managed/TieZ.WinUI
+```
+
+The main window opens one independent settings window. Repeated opens activate it; closing it releases its subscriptions, while the application keeps the shared core alive. Accepted saves update both windows; initialization/reopening never writes settings. Closing the main window closes settings and disposes the core. Theme and search visibility affect the main view; language and deduplication are stored prototype settings only. Clipboard history/capture/paste, full localization, migration of existing settings and packaging remain future work.
+
+Normal runs use `%LOCALAPPDATA%/TieZ.Native.Prototype/settings.db`, separate from installed TieZ. To run an actual window smoke check after building:
+
+```powershell
+$exe = Resolve-Path native/managed/TieZ.WinUI/bin/Debug/net10.0-windows10.0.19041.0/win-x64/TieZ.WinUI.exe
+$report = Join-Path $PWD .tmp/winui-smoke.json
+# Create the report's parent directory first if it does not exist.
+Start-Process -FilePath $exe -ArgumentList @('--smoke', $report) -Wait
+Get-Content $report
+```
+
+The check invokes the native Save button through its automation peer and verifies shared settings, duplicate-open handling, main-view updates, reopen without writes, teardown and cleanup, and absence of WebView2 in loaded modules/assemblies. It uses a temporary Unicode data directory. This is functional automation, not manual visual or accessibility acceptance. Running on a machine with WebView2 installed does not establish acceptance on a clean machine without its runtime. The Windows App SDK transitively restores WebView2 SDK assets even though this host does not use them.

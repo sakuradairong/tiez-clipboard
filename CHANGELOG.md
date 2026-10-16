@@ -9,6 +9,7 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 ### Added
 
 - Windows 原生迁移实验新增独立 Rust 设置核心与 C ABI，使用隔离数据库验证配置校验、原子保存和版本同步；现有 Tauri 应用保持原有行为。
+- 新增 WinUI 3 原型主窗口、独立设置窗口与 C# 调用层，验证共享设置保存、主题和搜索框同步、窗口重开及原生核心释放。
 
 ## [0.3.13] - 2026-10-03
 
