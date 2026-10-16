@@ -1,4 +1,6 @@
-//! Tauri-free prototype settings core. See ../README.md for the C ABI contract.
+//! Tauri-free Windows core. See native/README.md for the C ABI contract.
+mod history;
+pub use history::{HistoryQuery, HistoryService};
 mod settings;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -12,7 +14,11 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 #[derive(Default)]
 struct Registry {
     next_handle: u64,
-    services: HashMap<u64, SettingsService>,
+    services: HashMap<u64, CoreRuntime>,
+}
+struct CoreRuntime {
+    settings: SettingsService,
+    history: HistoryService,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 
@@ -29,6 +35,45 @@ enum Request {
         handle: u64,
         expected_revision: u64,
         patch: BTreeMap<String, String>,
+    },
+    HistoryPage {
+        handle: u64,
+        query: HistoryQuery,
+    },
+    HistoryEntry {
+        handle: u64,
+        id: i64,
+    },
+    HistoryAdd {
+        handle: u64,
+        content_type: String,
+        content: String,
+        html_content: Option<String>,
+        #[serde(default)]
+        tags: Vec<String>,
+    },
+    HistoryPin {
+        handle: u64,
+        id: i64,
+        is_pinned: bool,
+    },
+    HistoryEdit {
+        handle: u64,
+        id: i64,
+        content: String,
+    },
+    HistoryTags {
+        handle: u64,
+        id: i64,
+        tags: Vec<String>,
+    },
+    HistoryDelete {
+        handle: u64,
+        id: i64,
+    },
+    HistoryChanges {
+        handle: u64,
+        after_revision: u64,
     },
     Close {
         handle: u64,
@@ -50,6 +95,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     "Share the existing core between windows",
                 ));
             }
+            let history = HistoryService::open(Path::new(&database_path))?;
             let service = SettingsService::open(Path::new(&database_path))?;
             let snapshot = service.snapshot()?;
             let handle = registry
@@ -57,12 +103,18 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .checked_add(1)
                 .ok_or_else(|| CoreError::new("internal", "Core handle space exhausted"))?;
             registry.next_handle = handle;
-            registry.services.insert(handle, service);
+            registry.services.insert(
+                handle,
+                CoreRuntime {
+                    settings: service,
+                    history,
+                },
+            );
             Ok(json!({ "handle": handle, "snapshot": snapshot }))
         }
         Request::Snapshot { handle } => {
             let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
-            Ok(json!({ "snapshot": service.snapshot()? }))
+            Ok(json!({ "snapshot": service.settings.snapshot()? }))
         }
         Request::Update {
             handle,
@@ -74,10 +126,75 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .get_mut(&handle)
                 .ok_or_else(invalid_handle)?;
             Ok(
-                serde_json::to_value(service.update(expected_revision, patch)?)
+                serde_json::to_value(service.settings.update(expected_revision, patch)?)
                     .expect("serializable settings"),
             )
         }
+        Request::HistoryPage { handle, query } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .page(query)?)),
+        Request::HistoryEntry { handle, id } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .entry(id)?)),
+        Request::HistoryChanges {
+            handle,
+            after_revision,
+        } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .changes(after_revision)?)),
+        Request::HistoryAdd {
+            handle,
+            content_type,
+            content,
+            html_content,
+            tags,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .add_manual(content_type, content, html_content, tags)?)),
+        Request::HistoryPin {
+            handle,
+            id,
+            is_pinned,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .pin(id, is_pinned)?)),
+        Request::HistoryEdit {
+            handle,
+            id,
+            content,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .edit(id, content)?)),
+        Request::HistoryTags { handle, id, tags } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .set_tags(id, tags)?)),
+        Request::HistoryDelete { handle, id } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .delete(id)?)),
         Request::Close { handle } => {
             registry
                 .services
@@ -181,6 +298,36 @@ mod tests {
             json!({"op":"update","handle":handle,"expected_revision":0,"patch":{"app.language":"en"}}),
         );
         assert_eq!(changed["result"]["snapshot"]["revision"], 1);
+        let added = call(
+            json!({"op":"history_add","handle":handle,"content_type":"rich_text","content":" 中 \r\n","html_content":"<b>中</b>"}),
+        );
+        assert_eq!(added["ok"], true, "{added}");
+        let id = added["result"]["id"].as_i64().unwrap();
+        let page = call(json!({"op":"history_page","handle":handle,"query":{"limit":1}}));
+        assert_eq!(page["result"]["items"][0]["id"], id);
+        assert_eq!(
+            call(json!({"op":"history_entry","handle":handle,"id":id}))["result"]["html_content"],
+            "<b>中</b>"
+        );
+        assert_eq!(
+            call(json!({"op":"history_pin","handle":handle,"id":id,"is_pinned":true}))["ok"],
+            true
+        );
+        assert_eq!(
+            call(json!({"op":"history_tags","handle":handle,"id":id,"tags":["密码"]}))["ok"],
+            true
+        );
+        assert_eq!(
+            call(json!({"op":"history_edit","handle":handle,"id":id,"content":" changed \n"}))
+                ["ok"],
+            true
+        );
+        assert_eq!(
+            call(json!({"op":"history_changes","handle":handle,"after_revision":0}))["result"]
+                ["revision"],
+            4
+        );
+
         assert_eq!(call(json!({"op":"close", "handle":handle}))["ok"], true);
         assert_eq!(
             call(json!({"op":"close", "handle":handle}))["error"]["code"],
@@ -194,6 +341,14 @@ mod tests {
         let next = reopened["result"]["handle"].as_u64().unwrap();
         assert_ne!(next, handle);
         assert_eq!(reopened["result"]["snapshot"]["revision"], 1);
+        assert_eq!(
+            call(json!({"op":"history_entry","handle":next,"id":id}))["result"]["content"],
+            " changed \n"
+        );
+        assert_eq!(
+            call(json!({"op":"history_delete","handle":next,"id":id}))["ok"],
+            true
+        );
         assert_eq!(call(json!({"op":"close", "handle":next}))["ok"], true);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(dir).unwrap();

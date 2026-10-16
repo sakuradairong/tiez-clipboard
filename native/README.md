@@ -67,4 +67,25 @@ The check invokes the native Save button through its automation peer and verifie
 
 See [MIGRATION.md](MIGRATION.md) and [compatibility.json](compatibility.json) for the full replacement scope and unresolved acceptance gates. Check source coverage with `python native/tools/inventory.py --check`.
 
-`native/storage` compiles the existing model, database initialization, migrations, repositories and DPAPI code directly from their legacy source files. This is transitional source sharing, not a copied schema or a Tauri dependency; do not delete those files while either shell uses them. Validate with `cargo test --locked --manifest-path native/storage/Cargo.toml`. The initial 36 Windows tests cover whitespace/hash semantics, schema migrations, repository transaction rollback, attachments, sensitive tags and encrypted settings. The core runtime is not yet connected to this storage crate.
+`native/storage` compiles the existing model, database initialization, migrations, repositories and DPAPI code directly from their legacy source files. This is transitional source sharing, not a copied schema or a Tauri dependency; do not delete those files while either shell uses them. Validate with `cargo test --locked --manifest-path native/storage/Cargo.toml`. The initial 36 Windows tests cover whitespace/hash semantics, schema migrations, repository transaction rollback, attachments, sensitive tags and encrypted settings. The shared core now uses this crate for its history database, with the prototype settings connection opening the same explicit database file.
+
+## Core history API (native UI integration pending)
+
+ABI v1 now accepts the following operations in addition to settings. All use the same application-owned handle:
+
+```json
+{"op":"history_page","handle":1,"query":{"limit":50,"offset":0,"search":"中文"}}
+{"op":"history_entry","handle":1,"id":1}
+{"op":"history_add","handle":1,"content_type":"rich_text","content":" text ","html_content":"<b>text</b>","tags":[]}
+{"op":"history_pin","handle":1,"id":1,"is_pinned":true}
+{"op":"history_edit","handle":1,"id":1,"content":" revised "}
+{"op":"history_tags","handle":1,"id":1,"tags":["work"]}
+{"op":"history_delete","handle":1,"id":1}
+{"op":"history_changes","handle":1,"after_revision":0}
+```
+
+History revisions are per core lifetime and separate from settings revisions. A page contains summaries (preview at most 500 characters, no original HTML/body); fetch original content with `history_entry`. Database page limits are 1..200. Like the legacy list, the first page additionally includes all matching bounded session-only entries. Use the returned `next_offset` and `revision` as the next query's `offset` and `expected_revision`. A revision mismatch requires restarting at offset zero. Each filtered call scans at most 2,000 stored rows; an empty page with `has_more=true` is not the end. Query filters also include `content_type`, exact `tag`, `tag_only`, and `pinned_only`. Search includes decrypted content, source, tags and valid non-sensitive OCR/QR records; `%` and `_` are literal characters.
+
+Manual entries are persisted as in the old manual-entry command. Rust `record_processed` accepts pipeline-processed entries and provides bounded negative-ID session storage; it does not implement OS capture, cleanup or deduplication. Pinning/tagging a session item returns its positive ID and `replaced_id`; failure preserves the old item. Mutations return IDs/revision and queue a bounded change record. Consumers behind the 128-record feed receive `resync_required`. Successful persisted changes set `persistent_sync_pending`; a sync worker is not integrated yet, so this never claims remote delivery.
+
+Sensitive save/tag changes validate encryption and commit tags, encrypted fields and OCR cleanup atomically. Same-source DPAPI and portable behavior is retained. Native default and portable core test suites each currently pass 13 tests; storage source tests pass 36. Full capture/paste, batch/clear/tag-management UI, global-tag APIs and network acceptance remain pending. Requests still have a 64 KiB cap; oversized edits/imports need a chunked transport before complete replacement. No actual user database has been opened.

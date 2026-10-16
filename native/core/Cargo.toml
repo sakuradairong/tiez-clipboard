@@ -9,7 +9,11 @@ publish = false
 name = "tiez_native_core"
 crate-type = ["rlib", "cdylib"]
 
+[features]
+portable = ["tiez-storage/portable"]
+
 [dependencies]
+tiez-storage = { path = "../storage" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
