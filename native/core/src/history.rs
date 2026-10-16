@@ -136,6 +136,13 @@ pub struct HistoryImagePreview {
     #[serde(flatten)]
     pub raster: tiez_content::preview::RasterPreview,
 }
+#[derive(Debug, Serialize)]
+pub struct HistoryDocumentPreview {
+    pub id: i64,
+    pub revision: u64,
+    #[serde(flatten)]
+    pub document: tiez_content::document::DocumentPreview,
+}
 pub struct HistoryService {
     connection: Arc<Mutex<Connection>>,
     repository: SqliteClipboardRepository,
@@ -747,6 +754,49 @@ impl HistoryService {
         }
         self.session.retain(|entry| !ids.contains(&entry.id));
         Ok(self.committed(revision, first, None, ids.into_iter().collect(), persisted))
+    }
+    pub fn document_preview(
+        &self,
+        id: i64,
+        expected_revision: u64,
+        allow_sensitive: bool,
+    ) -> CoreResult<HistoryDocumentPreview> {
+        if expected_revision != self.revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; refresh before previewing",
+            ));
+        }
+        let entry = self.entry(id)?;
+        if has_sensitive_tag(&entry.tags) && !allow_sensitive {
+            return Err(CoreError::new(
+                "sensitive_confirmation",
+                "Reveal sensitive content before previewing",
+            ));
+        }
+        if entry.content_type != "rich_text" {
+            return Err(CoreError::new(
+                "unsupported_preview",
+                "Entry is not rich text",
+            ));
+        }
+        let html = entry.html_content.as_deref().ok_or_else(|| {
+            CoreError::new(
+                "document_unavailable",
+                "This entry has no HTML preview; original text remains available",
+            )
+        })?;
+        let document = tiez_content::document::parse(html).map_err(|code| {
+            CoreError::new(
+                code,
+                "Document preview could not be prepared; original content unchanged",
+            )
+        })?;
+        Ok(HistoryDocumentPreview {
+            id,
+            revision: self.revision,
+            document,
+        })
     }
     pub fn image_preview(
         &self,
@@ -1807,6 +1857,73 @@ mod tests {
                 .unwrap_err()
                 .code,
             "not_found"
+        );
+    }
+    #[test]
+    fn document_preview_is_readonly_and_guards_sensitive_revision_and_type() {
+        let mut s = service();
+        let html =
+            "<p><b>bold</b> &amp; 中文</p><table><tr><th>head</th><td>cell</td></tr></table>";
+        let id = s
+            .add_manual(
+                "rich_text".into(),
+                "原始\r\n文本".into(),
+                Some(html.into()),
+                vec![],
+            )
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        let before = s.entry(id).unwrap();
+        let preview = s.document_preview(id, revision, false).unwrap();
+        assert_eq!(
+            (preview.id, preview.revision, preview.document.blocks.len()),
+            (id, revision, 2)
+        );
+        assert_eq!(s.revision, revision);
+        assert_eq!(s.entry(id).unwrap().content, before.content);
+        assert_eq!(s.entry(id).unwrap().html_content, before.html_content);
+        s.set_tags(id, vec!["sensitive".into()]).unwrap();
+        assert_eq!(
+            s.document_preview(id, revision, true).unwrap_err().code,
+            "history_conflict"
+        );
+        assert_eq!(
+            s.document_preview(id, s.revision, false).unwrap_err().code,
+            "sensitive_confirmation"
+        );
+        assert!(s.document_preview(id, s.revision, true).is_ok());
+        let text = add(&mut s, "text");
+        assert_eq!(
+            s.document_preview(text, s.revision, false)
+                .unwrap_err()
+                .code,
+            "unsupported_preview"
+        );
+        assert_eq!(
+            s.document_preview(i64::MAX, s.revision, true)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+    }
+    #[test]
+    fn document_preview_accepts_session_html_and_rejects_missing_html() {
+        let mut s = service();
+        let mut entry = processed("session rich");
+        entry.content_type = "rich_text".into();
+        entry.html_content = Some("<i>session rich</i>".into());
+        let id = s.record_capture(entry, false, false, false).unwrap().id;
+        assert!(id < 0);
+        assert_eq!(s.document_preview(id, s.revision, false).unwrap().id, id);
+        assert!(!s.persistent_sync_pending);
+        let id = s
+            .add_manual("rich_text".into(), "RTF only".into(), None, vec![])
+            .unwrap()
+            .id;
+        assert_eq!(
+            s.document_preview(id, s.revision, false).unwrap_err().code,
+            "document_unavailable"
         );
     }
 }

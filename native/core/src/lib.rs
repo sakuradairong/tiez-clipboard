@@ -92,6 +92,13 @@ enum Request {
         handle: u64,
         expected_revision: u64,
     },
+    HistoryDocumentPreview {
+        handle: u64,
+        id: i64,
+        expected_revision: u64,
+        #[serde(default)]
+        allow_sensitive: bool,
+    },
     HistoryImagePreview {
         handle: u64,
         id: i64,
@@ -349,6 +356,19 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .clear(expected_revision)?)),
+        Request::HistoryDocumentPreview {
+            handle,
+            id,
+            expected_revision,
+            allow_sensitive,
+        } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .document_preview(id, expected_revision, allow_sensitive)?)),
         Request::HistoryImagePreview {
             handle,
             id,

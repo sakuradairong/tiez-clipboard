@@ -85,6 +85,7 @@
                                  TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
                                  AutomationProperties.Name="所选记录的原始文本"/>
                         <local:ImagePreviewView x:Name="ImagePreview"/>
+                        <local:DocumentPreviewView x:Name="DocumentPreview"/>
                     </Grid>
                 </Grid>
             </Border>

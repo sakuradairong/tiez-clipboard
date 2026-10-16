@@ -351,6 +351,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         var token = detailCancellation.Token;
         selectedEntry = null;
         ImagePreview.Clear();
+        DocumentPreview.Clear();
         DetailText.Visibility = Visibility.Visible;
         DetailText.Text = "";
         RevealButton.Visibility = Visibility.Collapsed;
@@ -391,6 +392,23 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 {
                     if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
                     DetailText.Text = "图片预览不可用，原始内容未修改。";
+                    ShowError(error.Message);
+                }
+            }
+            else if (entry.ContentType == "rich_text")
+            {
+                try
+                {
+                    var preview = await core.GetDocumentPreviewAsync(entry.Id, revision!.Value, reveal, token);
+                    if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    DetailText.Text = entry.Content;
+                    DocumentPreview.Show(preview, entry.Content);
+                    DetailText.Visibility = Visibility.Collapsed;
+                }
+                catch (CoreException error) when (error.Code is not "history_conflict" and not "sensitive_confirmation")
+                {
+                    if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    DetailText.Text = entry.Content;
                     ShowError(error.Message);
                 }
             }
@@ -674,6 +692,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         activeDialog?.Hide();
         selectedEntry = null;
         ImagePreview.Clear();
+        DocumentPreview.Clear();
         DetailText.Text = "";
         loadCancellation?.Dispose();
         detailCancellation?.Dispose();
@@ -686,6 +705,14 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;
     internal string Detail => DetailText.Text;
+    internal bool HasDocumentPreview => DocumentPreview.HasDocument;
+    internal long? PreviewedDocumentId => DocumentPreview.DisplayedId;
+    internal int DocumentCells => DocumentPreview.CellCount;
+    internal int DocumentMergedCells => DocumentPreview.MergedCellCount;
+    internal int DocumentEmphasis => DocumentPreview.EmphasizedRuns;
+    internal int DocumentLinks => DocumentPreview.SafeLinkCount;
+    internal bool DocumentOmittedMedia => DocumentPreview.OmittedMedia;
+    internal string DocumentText => DocumentPreview.RenderedText;
     internal bool HasImagePreview => ImagePreview.HasImage;
     internal long? PreviewedImageId => ImagePreview.DisplayedId;
     internal int ImagePixelWidth => ImagePreview.PixelWidth;

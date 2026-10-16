@@ -8,6 +8,7 @@ pub use tiez_storage::{database, domain};
 pub mod capture;
 pub mod write;
 pub mod preview;
+pub mod document;
 #[path = "../../../src-tauri/src/services/clipboard/write_helpers.rs"]
 mod write_helpers;
 #[path = "../../../src-tauri/src/services/clipboard/capture_helpers.rs"]

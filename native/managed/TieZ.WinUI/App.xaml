@@ -7,6 +7,12 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+            <Style x:Key="NativeDocumentCellStyle" TargetType="Border">
+                <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+            </Style>
+            <Style x:Key="NativeDocumentHeaderStyle" TargetType="Border" BasedOn="{StaticResource NativeDocumentCellStyle}">
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+            </Style>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

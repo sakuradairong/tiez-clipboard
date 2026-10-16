@@ -18,7 +18,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private ulong batchRevision;
     private long clearPinned, clearTagged, clearOrdinary, clearLate;
     private ulong clearRevision;
-    private long imageFirst, imageSecond;
+    private long imageFirst, imageSecond, documentId;
+    private const string DocumentHtml = "<h2>原生文档</h2><p><b>bold</b> &amp; 中文 <i>italic</i> <a href='https://example.invalid/native'>link</a></p><table><tr><th rowspan=2>H<th colspan=2>top<tr><td>one<td>two</table><img src='https://example.invalid/no-request' alt='logo'><script>never-render-script</script>";
     private const string PreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
     private const string SecondPreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAADklEQVR4nGNg+I8G0QUABykP8RHZtOEAAAAASUVORK5CYII=";
     private ulong captureStarts, captureSettingsRevision;
@@ -430,6 +431,51 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     break;
                 case 74:
                     Require(view.CanReveal && !view.HasImagePreview && !view.CanCopy, "Stale decode bypassed final sensitive selection.");
+                    documentId = (await core.AddManualAsync("原始文档\r\n文本", "rich_text", DocumentHtml)).Id;
+                    await view.ReloadAsync(documentId);
+                    break;
+                case 75:
+                    if (!view.HasDocumentPreview) return;
+                    Require(view.PreviewedDocumentId == documentId && view.DocumentCells == 4 && view.DocumentMergedCells == 2
+                        && view.DocumentEmphasis >= 3 && view.DocumentLinks == 1 && view.DocumentOmittedMedia
+                        && view.DocumentText.Contains("& 中文") && !view.DocumentText.Contains("never-render-script"),
+                        "Native rich document/table was not rendered correctly.");
+                    Require((await core.GetEntryAsync(documentId)).HtmlContent == DocumentHtml, "Preview changed original rich formats.");
+                    view.SelectMany(documentId, imageFirst);
+                    Require(!view.HasDocumentPreview && !view.HasImagePreview && !view.CanCopy, "Multi-selection kept native document visible.");
+                    view.Select(documentId);
+                    break;
+                case 76:
+                    if (!view.HasDocumentPreview) return;
+                    await core.SetTagsAsync(documentId, ["sensitive"]);
+                    break;
+                case 77:
+                    if (!view.ExternalPending) return;
+                    Require(!view.HasDocumentPreview && !view.CanCopy, "Sensitive transition retained native document.");
+                    await view.ReloadAsync(documentId);
+                    break;
+                case 78:
+                    Require(view.CanReveal && !view.HasDocumentPreview, "Sensitive document rendered before reveal.");
+                    view.Invoke("reveal");
+                    break;
+                case 79:
+                    if (!view.HasDocumentPreview) return;
+                    Require(view.PreviewedDocumentId == documentId && view.DocumentCells == 4, "Sensitive document reveal failed.");
+                    view.Search("不存在的文档");
+                    Require(!view.HasDocumentPreview && !view.CanCopy, "Search retained native document.");
+                    break;
+                case 80:
+                    view.Search(""); await view.ReloadAsync(documentId);
+                    view.Invoke("reveal"); view.Select(imageFirst);
+                    break;
+                case 81:
+                    if (!view.HasImagePreview) return;
+                    Require(!view.HasDocumentPreview && view.PreviewedImageId == imageFirst, "Stale document replaced final image selection.");
+                    view.Select(documentId);
+                    break;
+                case 82:
+                    Require(view.CanReveal && !view.HasDocumentPreview && !view.HasImagePreview && !view.CanCopy,
+                        "Stale native preview bypassed sensitive final selection.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

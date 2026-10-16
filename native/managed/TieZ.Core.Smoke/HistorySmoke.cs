@@ -111,7 +111,24 @@ internal static class HistorySmoke
         Check(Read(core.GetImagePreviewAsync(imageId, sensitiveRevision, true)).Width == 2, "Sensitive confirmed preview");
         Expect("preview_dimensions", () => Read(core.GetImagePreviewAsync(imageId, sensitiveRevision, true, maxEdge: 1025)));
         Read(core.DeleteEntriesAsync([imageId], sensitiveRevision));
-        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch/clear/image previews, conflicts, change feed, cancellation");
+        const string documentHtml = "<p><b>bold</b> &amp; 中文</p><table><tr><th rowspan=2>H<th colspan=2>T<tr><td>one<td>two</table>";
+        long documentId = Read(core.AddManualAsync("document\r\ntext", "rich_text", documentHtml)).Id;
+        ulong documentRevision = Read(core.GetHistoryAsync(new())).Revision;
+        var document = Read(core.GetDocumentPreviewAsync(documentId, documentRevision));
+        Check(document.Id == documentId && document.Blocks.Count == 2
+            && document.Blocks[0].Runs!.Any(run => run.Bold)
+            && document.Blocks[1].Cells!.Count == 4
+            && document.Blocks[1].Cells![0].RowSpan == 2, "Document DTO/semantic table");
+        Check(Read(core.GetHistoryAsync(new())).Revision == documentRevision
+            && Read(core.GetEntryAsync(documentId)).HtmlContent == documentHtml, "Document preview mutated original HTML");
+        Read(core.SetTagsAsync(documentId, ["sensitive"]));
+        ulong documentSensitiveRevision = Read(core.GetHistoryAsync(new())).Revision;
+        Expect("history_conflict", () => Read(core.GetDocumentPreviewAsync(documentId, documentRevision, true)));
+        Expect("sensitive_confirmation", () => Read(core.GetDocumentPreviewAsync(documentId, documentSensitiveRevision)));
+        Check(Read(core.GetDocumentPreviewAsync(documentId, documentSensitiveRevision, true)).Blocks.Count == 2,
+            "Sensitive document reveal");
+        Read(core.DeleteEntriesAsync([documentId], documentSensitiveRevision));
+        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch/clear/image/document previews, conflicts, change feed, cancellation");
         return saved.Id;
     }
 
