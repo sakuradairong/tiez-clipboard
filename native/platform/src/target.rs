@@ -188,12 +188,24 @@ unsafe extern "system" fn event_callback(
 fn observe(window: HWND) {
     CONTEXT.with(|context| {
         if let Some(context) = context.borrow().as_ref() {
-            if let Ok(target) = Identity::read(window, context.own_process) {
-                let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Err(code) = state.record(target) {
-                    state.last_error = Some(code);
-                    context.stop.store(true, Ordering::Release);
+            let observed = Identity::read(window, context.own_process);
+            let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
+            let update = match observed {
+                Ok(target) => state.record(target),
+                // Own windows and shell overlays intentionally preserve the last input target.
+                Err("target_own_or_missing" | "target_system_surface") => Ok(()),
+                // An external target we cannot inspect must not leave an older app armed.
+                Err(_) => {
+                    if state.target.take().is_some() {
+                        state.advance()
+                    } else {
+                        Ok(())
+                    }
                 }
+            };
+            if let Err(code) = update {
+                state.last_error = Some(code);
+                context.stop.store(true, Ordering::Release);
             }
         }
     });
@@ -566,6 +578,34 @@ mod tests {
             );
         }
         assert!(state.lock().unwrap().target.is_none());
+    }
+    #[test]
+    fn unavailable_foreground_disarms_previous_target() {
+        let state = Arc::new(Mutex::new(State::default()));
+        state
+            .lock()
+            .unwrap()
+            .record(Identity {
+                window: 42,
+                process: 10,
+                thread: 11,
+                created: 100,
+                application: "fixture.exe".into(),
+            })
+            .unwrap();
+        let generation = state.lock().unwrap().generation;
+        CONTEXT.with(|context| {
+            *context.borrow_mut() = Some(Context {
+                state: state.clone(),
+                stop: Arc::new(AtomicBool::new(false)),
+                own_process: 0,
+            })
+        });
+        let _reset = ResetContext;
+        observe(HWND::default());
+        let state = state.lock().unwrap();
+        assert!(state.target.is_none());
+        assert_eq!(state.generation, generation + 1);
     }
     #[test]
     fn generation_exhaustion_never_replaces_old_identity() {

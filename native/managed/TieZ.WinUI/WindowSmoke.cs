@@ -12,7 +12,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private DispatcherQueueTimer? timer;
     private int phase;
     private bool ticking;
-    private long entryId, invalidImageId;
+    private long entryId, invalidImageId, pasteGuardId;
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
@@ -211,7 +211,21 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     await view.ReloadAsync();
                     break;
                 case 41:
-                    Require(!view.CanCopy, "Copy was enabled without loaded detail.");
+                    Require(!view.CanCopy && !view.CanPaste, "Clipboard commands were enabled without loaded detail.");
+                    await core.StopTargetTrackingAsync();
+                    pasteGuardId = (await core.AddManualAsync("paste guard fixture")).Id;
+                    await view.ReloadAsync(pasteGuardId);
+                    break;
+                case 42:
+                    if (view.TargetTrackingRunning) return; // Allow the real polling path to observe stop.
+                    Require(view.CanCopy && !view.CanPaste, "Stopped target tracking left paste enabled for a loaded entry.");
+                    await core.DeleteEntryAsync(pasteGuardId);
+                    await view.ReloadAsync();
+                    view.Invoke("target-start");
+                    break;
+                case 43:
+                    if (!view.TargetTrackingRunning) return;
+                    Require((await core.GetTargetStatusAsync()).Starts == 2 && !view.CanPaste, "Target restart or empty-selection paste guard failed.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

@@ -13,7 +13,7 @@
         <StackPanel Grid.Row="1" Spacing="6">
         <InfoBar x:Name="CaptureInfo" IsOpen="True" IsClosable="False" Severity="Informational"
                  Title="使用独立数据"
-                 Message="正在准备原生采集，使用独立数据库。粘贴仍在迁移。"/>
+                 Message="正在准备原生采集，使用独立数据库。"/>
         <TextBlock x:Name="TargetInfo" Text="正在读取上次输入窗口" TextWrapping="Wrap"
                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
         </StackPanel>
@@ -40,6 +40,8 @@
             <AppBarButton x:Name="StartTargetButton" Label="启用目标跟踪" Icon="Find"/>
             <AppBarSeparator/>
             <AppBarButton x:Name="AddButton" Label="新增" Icon="Add"/>
+            <AppBarButton x:Name="PasteButton" Label="粘贴原始格式" Icon="Paste"/>
+            <AppBarButton x:Name="PastePlainButton" Label="粘贴纯文本" Icon="Paste"/>
             <AppBarButton x:Name="CopyButton" Label="复制原始格式" Icon="Copy"/>
             <AppBarButton x:Name="CopyPlainButton" Label="复制为纯文本" Icon="Document"/>
             <AppBarButton x:Name="EditButton" Label="编辑" Icon="Edit"/>

@@ -324,6 +324,11 @@ pub struct ClipboardWriteResult {
     pub id: i64,
     pub clipboard_sequence: u32,
 }
+pub(crate) struct PreparedCopy {
+    id: i64,
+    payload: tiez_content::write::PreparedWrite,
+    marker: Echo,
+}
 impl CaptureService {
     /// Copy an authoritative history snapshot; never accept a UI-provided body.
     pub fn copy_entry(
@@ -332,6 +337,15 @@ impl CaptureService {
         plain_text: bool,
         allow_sensitive: bool,
     ) -> CoreResult<ClipboardWriteResult> {
+        let prepared = self.prepare_copy(id, plain_text, allow_sensitive)?;
+        self.commit_copy(prepared, || Ok(()))
+    }
+    pub(crate) fn prepare_copy(
+        &self,
+        id: i64,
+        plain_text: bool,
+        allow_sensitive: bool,
+    ) -> CoreResult<PreparedCopy> {
         let entry = self
             .history
             .lock()
@@ -368,7 +382,7 @@ impl CaptureService {
         }
         let (exact, text, image) =
             tiez_content::with_data_directory(&self.directory, || Echo::key(&identity));
-        let mut marker = Echo {
+        let marker = Echo {
             expires: Instant::now() + Duration::from_secs(10),
             exact,
             text,
@@ -376,10 +390,28 @@ impl CaptureService {
             sequence: None,
             aliases: Vec::new(),
         };
+        Ok(PreparedCopy {
+            id,
+            payload: prepared,
+            marker,
+        })
+    }
+    pub(crate) fn commit_copy(
+        &self,
+        prepared: PreparedCopy,
+        before_write: impl FnOnce() -> CoreResult<()>,
+    ) -> CoreResult<ClipboardWriteResult> {
+        let PreparedCopy {
+            id,
+            payload,
+            mut marker,
+        } = prepared;
         // The worker holds this same gate before accepting a read. Publish the marker
         // before releasing it, even if a multi-format OS write only partially succeeds.
         let _policy = self.policy.lock().unwrap_or_else(|e| e.into_inner());
-        match prepared.commit() {
+        before_write()?;
+        marker.expires = Instant::now() + Duration::from_secs(10);
+        match payload.commit() {
             Ok(receipt) => {
                 marker.sequence = Some(receipt.sequence);
                 if let Some(path) = receipt.temporary_image_path {
@@ -748,6 +780,36 @@ mod tests {
                 "current after copy"
             );
             assert_eq!(service.status().accepted, 1);
+        });
+    }
+    #[test]
+    fn rejected_precommit_guard_leaves_echo_and_history_unchanged() {
+        fixture(|service, _, _| {
+            let id = service
+                .history
+                .lock()
+                .unwrap()
+                .add_manual("text".into(), "  prepared ".into(), None, vec![])
+                .unwrap()
+                .id;
+            let revision = service
+                .history
+                .lock()
+                .unwrap()
+                .page(Default::default())
+                .unwrap()
+                .revision;
+            let prepared = service.prepare_copy(id, false, false).unwrap();
+            let error = service
+                .commit_copy(prepared, || {
+                    Err(CoreError::new("target_changed", "fixture guard"))
+                })
+                .unwrap_err();
+            assert_eq!(error.code, "target_changed");
+            assert!(service.echo.lock().unwrap().is_none());
+            let history = service.history.lock().unwrap();
+            assert_eq!(history.page(Default::default()).unwrap().revision, revision);
+            assert_eq!(history.entry(id).unwrap().content, "  prepared ");
         });
     }
     #[test]

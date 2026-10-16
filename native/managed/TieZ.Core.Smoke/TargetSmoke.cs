@@ -16,8 +16,12 @@ internal static class TargetSmoke
         Check(Read(core.StartTargetTrackingAsync()).Starts == 1, "Idempotent target start");
         try { Read(core.RestoreTargetFocusAsync(ulong.MaxValue)); throw new InvalidOperationException("Stale focus request accepted"); }
         catch (CoreException error) when (error.Code == "target_changed") { }
+        try { Read(core.PasteEntryAsync(99999, ulong.MaxValue)); throw new InvalidOperationException("Stale paste request accepted"); }
+        catch (CoreException error) when (error.Code == "target_changed") { }
         var stopped = Read(core.StopTargetTrackingAsync());
         Check(!stopped.Running && !stopped.HasTarget && stopped.Generation > started.Generation, "Target stop/join and ticket invalidation");
+        try { Read(core.PasteEntryAsync(99999, stopped.Generation)); throw new InvalidOperationException("Stopped tracker accepted paste"); }
+        catch (CoreException error) when (error.Code == "target_tracker_stopped") { }
         Check(!Read(core.StopTargetTrackingAsync()).Running, "Idempotent target stop");
         Check(Read(core.StartTargetTrackingAsync()).Starts == 2, "Target hook restart");
     }

@@ -75,6 +75,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", value => core!.AddManualAsync(value));
         ReturnTargetButton.Click += async (_, _) => await ReturnTargetAsync();
         StartTargetButton.Click += async (_, _) => await StartTargetAsync();
+        PasteButton.Click += async (_, _) => await PasteSelectedAsync(false);
+        PastePlainButton.Click += async (_, _) => await PasteSelectedAsync(true);
         CopyButton.Click += async (_, _) => await CopySelectedAsync(false);
         CopyPlainButton.Click += async (_, _) => await CopySelectedAsync(true);
         EditButton.Click += async (_, _) =>
@@ -393,6 +395,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         AddButton.IsEnabled = available && !externalPending;
         EditButton.IsEnabled = available && !externalPending && selectedEntry is not null;
         CopyButton.IsEnabled = CopyPlainButton.IsEnabled = available && !externalPending && selectedEntry is not null && selected is { IsStale: false };
+        PasteButton.IsEnabled = PastePlainButton.IsEnabled = CopyButton.IsEnabled && targetStatus is { Running: true, HasTarget: true };
         PinButton.IsEnabled = TagsButton.IsEnabled = DeleteButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
         PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
         RefreshButton.IsEnabled = available;
@@ -415,6 +418,31 @@ public sealed partial class HistoryView : UserControl, IDisposable
             {
                 Feedback.Title = "已复制";
                 Feedback.Message = plainText ? "已复制为纯文本。" : "已按原始格式复制到剪贴板。";
+                Feedback.Severity = InfoBarSeverity.Success;
+                Feedback.IsOpen = true;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (Exception error) { if (!disposed) ShowError(error.Message); }
+        finally { mutating = false; if (!disposed) UpdateCommands(); }
+    }
+
+    private async Task PasteSelectedAsync(bool plainText)
+    {
+        if (disposed || mutating || loading || filterPending || externalPending || targetBusy || activeDialog is not null
+            || targetStatus is not { Running: true, HasTarget: true } target || selectedEntry is not { } entry
+            || HistoryList.SelectedItem is not HistoryRow { IsStale: false } row) return;
+        mutating = true;
+        UpdateCommands();
+        try
+        {
+            await core!.PasteEntryAsync(entry.Id, target.Generation, plainText,
+                allowSensitive: row.Summary.IsSensitive, lifetime.Token);
+            if (!disposed)
+            {
+                Feedback.Title = "粘贴按键已发送";
+                Feedback.Message = "目标程序的接收结果需在目标窗口确认。";
                 Feedback.Severity = InfoBarSeverity.Success;
                 Feedback.IsOpen = true;
             }
@@ -583,6 +611,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal IReadOnlyList<HistoryRow> Rows => rows;
     internal string Detail => DetailText.Text;
     internal bool CanCopy => CopyButton.IsEnabled;
+    internal bool CanPaste => PasteButton.IsEnabled;
+    internal bool TargetTrackingRunning => targetStatus?.Running == true;
     internal bool CanReveal => RevealButton.Visibility == Visibility.Visible;
     internal bool ExternalPending => externalPending;
     internal bool HasDialog => activeDialog is not null;
@@ -603,6 +633,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         var button = name switch
         {
             "capture" => (ButtonBase)CaptureButton, "add" => AddButton,
+            "paste" => PasteButton, "paste-plain" => PastePlainButton, "target-start" => StartTargetButton,
             "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
             "tags" => TagsButton, "delete" => DeleteButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))

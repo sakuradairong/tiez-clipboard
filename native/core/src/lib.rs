@@ -1,5 +1,6 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
 mod capture;
+mod paste;
 pub use capture::{CaptureService, CaptureStatus};
 mod history;
 pub use history::{HistoryQuery, HistoryService};
@@ -82,6 +83,15 @@ enum Request {
     ClipboardCopy {
         handle: u64,
         id: i64,
+        #[serde(default)]
+        plain_text: bool,
+        #[serde(default)]
+        allow_sensitive: bool,
+    },
+    ClipboardPaste {
+        handle: u64,
+        id: i64,
+        expected_generation: u64,
         #[serde(default)]
         plain_text: bool,
         #[serde(default)]
@@ -262,6 +272,22 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .ok_or_else(invalid_handle)?
             .capture
             .copy_entry(id, plain_text, allow_sensitive)?)),
+        Request::ClipboardPaste {
+            handle,
+            id,
+            expected_generation,
+            plain_text,
+            allow_sensitive,
+        } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(paste::paste_entry(
+                service,
+                id,
+                plain_text,
+                allow_sensitive,
+                expected_generation
+            )?))
+        }
         Request::TargetStart { handle } => {
             let service = registry
                 .services

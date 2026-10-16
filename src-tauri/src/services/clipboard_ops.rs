@@ -1155,27 +1155,7 @@ unsafe fn send_paste_inputs(inputs: &[INPUT], pending_keys: &mut Vec<PasteKey>) 
 }
 
 #[cfg(any(target_os = "windows", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PasteKey {
-    virtual_key: u16,
-    scan_code: u16,
-    flags: u32,
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn track_accepted_paste_keys(
-    pending_keys: &mut Vec<PasteKey>,
-    keys: &[(PasteKey, bool)],
-    sent: u32,
-) {
-    for (key, is_key_up) in keys.iter().take(sent as usize) {
-        if *is_key_up {
-            pending_keys.retain(|pending| pending != key);
-        } else if !pending_keys.contains(key) {
-            pending_keys.push(*key);
-        }
-    }
-}
+use crate::services::paste_input_rules::{track_accepted_paste_keys, PasteKey};
 
 #[cfg(target_os = "windows")]
 fn paste_key_cleanup_inputs(pending_keys: &[PasteKey]) -> Vec<INPUT> {

@@ -14,3 +14,5 @@ pub mod paste_queue;
 pub mod relay_key;
 pub mod sensitive_align;
 pub(crate) mod paste_rules;
+
+pub(crate) mod paste_input_rules;

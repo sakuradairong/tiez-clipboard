@@ -11,3 +11,7 @@ pub use listener::{ClipboardEvents, ClipboardListener, ClipboardSignal};
 #[path = "../../../src-tauri/src/services/paste_rules.rs"]
 mod paste_rules;
 pub mod target;
+
+#[path = "../../../src-tauri/src/services/paste_input_rules.rs"]
+mod paste_input_rules;
+pub mod keyboard;
