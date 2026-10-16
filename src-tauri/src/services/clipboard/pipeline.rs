@@ -6,22 +6,13 @@ use crate::infrastructure::windows_api::window_tracker::{
     get_clipboard_source_app_info, ActiveAppInfo,
 };
 use crate::services::clipboard::utils::*;
-use base64::Engine;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
 
-fn normalize_text_preserving_edge_whitespace(content: &str) -> String {
-    content.replace("\r\n", "\n").replace('\r', "\n")
-}
+use super::processing::normalize_text_preserving_edge_whitespace;
 
-#[derive(Debug, Clone)]
-pub enum ClipboardData {
-    Text(String),
-    RichText { text: String, html: String },
-    Image { data_url: String },
-    Files(Vec<String>),
-}
+pub use super::data::ClipboardData;
 
 pub struct PipelineContext {
     pub data: ClipboardData,
@@ -96,104 +87,7 @@ impl ClipboardPipeline {
 pub struct DiscoveryStage;
 impl PipelineStage for DiscoveryStage {
     fn process(&self, ctx: &mut PipelineContext) {
-        let (content_type, content, html_content) = match &ctx.data {
-            ClipboardData::Text(t) => (detect_content_type(t), t.clone(), None),
-            ClipboardData::RichText { text, html } => (
-                "rich_text".to_string(),
-                derive_rich_text_content(text, Some(html)),
-                Some(html.clone()),
-            ),
-            ClipboardData::Image { data_url } => ("image".to_string(), data_url.clone(), None),
-            ClipboardData::Files(f) => {
-                let content = f.join("\n");
-                if f.len() == 1 {
-                    let path = &f[0];
-                    let lower = path.to_lowercase();
-                    if lower.ends_with(".gif") {
-                        ("image".to_string(), path.clone(), None)
-                    } else if lower.ends_with(".png")
-                        || lower.ends_with(".jpg")
-                        || lower.ends_with(".jpeg")
-                        || lower.ends_with(".bmp")
-                        || lower.ends_with(".webp")
-                    {
-                        if let Ok(img_data) = std::fs::read(path) {
-                            if is_gif_signature(&img_data) {
-                                let b64 =
-                                    base64::engine::general_purpose::STANDARD.encode(&img_data);
-                                (
-                                    "image".to_string(),
-                                    format!("data:image/gif;base64,{}", b64),
-                                    None,
-                                )
-                            } else if is_animated_webp_payload(&img_data) {
-                                let b64 =
-                                    base64::engine::general_purpose::STANDARD.encode(&img_data);
-                                (
-                                    "image".to_string(),
-                                    format!("data:image/webp;base64,{}", b64),
-                                    None,
-                                )
-                            } else if let Ok(img) = image::load_from_memory(&img_data) {
-                                let mut bytes: Vec<u8> = Vec::new();
-                                let mut cursor = std::io::Cursor::new(&mut bytes);
-                                if img.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
-                                    let b64 =
-                                        base64::engine::general_purpose::STANDARD.encode(bytes);
-                                    (
-                                        "image".to_string(),
-                                        format!("data:image/png;base64,{}", b64),
-                                        None,
-                                    )
-                                } else {
-                                    ("file".to_string(), content, None)
-                                }
-                            } else {
-                                ("file".to_string(), content, None)
-                            }
-                        } else {
-                            ("file".to_string(), content, None)
-                        }
-                    } else if lower.ends_with(".mp4")
-                        || lower.ends_with(".mkv")
-                        || lower.ends_with(".avi")
-                        || lower.ends_with(".mov")
-                        || lower.ends_with(".wmv")
-                        || lower.ends_with(".flv")
-                        || lower.ends_with(".webm")
-                    {
-                        ("video".to_string(), path.clone(), None)
-                    } else {
-                        ("file".to_string(), content, None)
-                    }
-                } else {
-                    ("file".to_string(), content, None)
-                }
-            }
-        };
-
-        let preview = build_entry_preview(&content_type, &content, html_content.as_deref());
-
-        let is_external =
-            (content_type == "file" || content_type == "video" || content_type == "image")
-                && !content.starts_with("data:");
-
-        ctx.entry = Some(ClipboardEntry {
-            id: 0,
-            content_type,
-            content,
-            html_content,
-            source_app: ctx.source_app.clone(),
-            source_app_path: ctx.source_app_path.clone(),
-            timestamp: ctx.timestamp,
-            preview,
-            is_pinned: false,
-            tags: Vec::new(),
-            use_count: 0,
-            is_external,
-            pinned_order: 0,
-            file_preview_exists: true,
-        });
+        ctx.entry = Some(super::processing::discover(&ctx.data, &ctx.source_app, ctx.source_app_path.as_deref(), ctx.timestamp));
     }
 }
 
@@ -201,91 +95,18 @@ impl PipelineStage for DiscoveryStage {
 pub struct TransformationStage;
 impl PipelineStage for TransformationStage {
     fn process(&self, ctx: &mut PipelineContext) {
-        let entry = ctx.entry.as_mut().unwrap();
         let settings = ctx.app_handle.state::<SettingsState>();
-
-        // Normalize line endings, but preserve meaningful leading/trailing whitespace.
-        entry.content = normalize_text_preserving_edge_whitespace(&entry.content);
-
-        let app_cleanup_policies_raw = settings.app_cleanup_policies.lock().unwrap().clone();
-        if !app_cleanup_policies_raw.trim().is_empty() {
-            let app_cleanup_policies = parse_app_cleanup_policies(&app_cleanup_policies_raw);
-            for policy in app_cleanup_policies {
-                if !app_cleanup_policy_matches(
-                    &policy,
-                    &ctx.source_app,
-                    ctx.source_app_path.as_deref(),
-                    &entry.content_type,
-                ) {
-                    continue;
-                }
-
-                if policy.action.eq_ignore_ascii_case("ignore") {
-                    ctx.should_stop = true;
-                    return;
-                }
-
-                if is_text_type(&entry.content_type) && !policy.cleanup_rules.trim().is_empty() {
-                    let rules = parse_cleanup_rules(&policy.cleanup_rules);
-                    if !rules.is_empty() {
-                        let cleaned = apply_cleanup_rules(&entry.content, &rules);
-                        if cleaned.trim().is_empty() || cleaned == "__IGNORE_CAPTURE__" {
-                            ctx.should_stop = true;
-                            return;
-                        }
-                        entry.content = normalize_text_preserving_edge_whitespace(&cleaned);
-                        entry.preview =
-                            build_entry_preview(&entry.content_type, &entry.content, None);
-                    }
-                }
-            }
-        }
-
-        if is_text_type(&entry.content_type) {
-            let cleanup_rules_raw = settings.cleanup_rules.lock().unwrap().clone();
-            if !cleanup_rules_raw.trim().is_empty() {
-                let cleanup_rules = parse_cleanup_rules(&cleanup_rules_raw);
-                if !cleanup_rules.is_empty() {
-                    let cleaned = apply_cleanup_rules(&entry.content, &cleanup_rules);
-                    if cleaned.trim().is_empty() || cleaned == "__IGNORE_CAPTURE__" {
-                        ctx.should_stop = true;
-                        return;
-                    }
-                    entry.content = normalize_text_preserving_edge_whitespace(&cleaned);
-                    entry.preview = build_entry_preview(&entry.content_type, &entry.content, None);
-                }
-            }
-        }
-
-        // Sensitive Info
-        let protect_kinds = settings.privacy_protection_kinds.lock().unwrap().clone();
-        let custom_rules = settings
-            .privacy_protection_custom_rules
-            .lock()
-            .unwrap()
-            .clone();
-        if settings.privacy_protection.load(Ordering::Relaxed) && is_text_type(&entry.content_type)
-        {
-            if contains_sensitive_info(&entry.content, &protect_kinds, &custom_rules) {
-                entry.tags.push("sensitive".to_string());
-            }
-        }
-
-        // Rich Text Image Processing
-        if let Some(html) = &entry.html_content {
-            let app_data_dir = ctx.app_handle.state::<AppDataDir>();
-            let data_dir = app_data_dir.0.lock().unwrap().clone();
-
-            entry.html_content = if settings.persistent.load(Ordering::Relaxed) {
-                let html_with_local_assets = process_local_images_in_html(html, &data_dir);
-                Some(externalize_rich_image_fallback(
-                    &html_with_local_assets,
-                    &data_dir,
-                ))
-            } else {
-                Some(embed_local_images(html, &data_dir))
-            };
-        }
+        let options = super::processing::TransformOptions {
+            persistent: settings.persistent.load(Ordering::Relaxed),
+            cleanup_rules: settings.cleanup_rules.lock().unwrap().clone(),
+            app_cleanup_policies: settings.app_cleanup_policies.lock().unwrap().clone(),
+            privacy_protection: settings.privacy_protection.load(Ordering::Relaxed),
+            privacy_kinds: settings.privacy_protection_kinds.lock().unwrap().clone(),
+            privacy_custom_rules: settings.privacy_protection_custom_rules.lock().unwrap().clone(),
+        };
+        let app_data_dir = ctx.app_handle.state::<AppDataDir>();
+        let data_dir = app_data_dir.0.lock().unwrap().clone();
+        ctx.should_stop = !super::processing::transform(ctx.entry.as_mut().unwrap(), &options, &data_dir);
     }
 }
 

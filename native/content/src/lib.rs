@@ -5,6 +5,18 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 pub use tiez_storage::{database, domain};
+pub mod capture;
+#[path = "../../../src-tauri/src/services/clipboard/capture_helpers.rs"]
+mod capture_helpers;
+#[path = "../../../src-tauri/src/services/clipboard/data.rs"]
+pub mod data;
+#[path = "../../../src-tauri/src/services/clipboard/processing.rs"]
+pub mod processing;
+use std::sync::atomic::AtomicU64;
+pub static LAST_APP_SET_HASH: AtomicU64 = AtomicU64::new(0);
+pub static LAST_APP_SET_HASH_ALT: AtomicU64 = AtomicU64::new(0);
+pub static LAST_APP_SET_IMAGE_VISUAL_HASH: AtomicU64 = AtomicU64::new(0);
+pub static LAST_APP_SET_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 #[path = "../../../src-tauri/src/services/local_image_resource.rs"]
 pub(crate) mod local_image_resource;
 #[path = "../../../src-tauri/src/services/clipboard/utils.rs"]
@@ -16,6 +28,7 @@ pub mod services {
 pub mod infrastructure {
     pub mod windows_api {
         pub use tiez_native_platform::clipboard_formats as win_clipboard;
+        pub use tiez_native_platform::source_app as window_tracker;
     }
 }
 

@@ -5,4 +5,5 @@
 #[path = "../../../src-tauri/src/infrastructure/windows_api/win_clipboard.rs"]
 pub mod clipboard_formats;
 mod listener;
+pub mod source_app;
 pub use listener::{ClipboardEvents, ClipboardListener, ClipboardSignal};

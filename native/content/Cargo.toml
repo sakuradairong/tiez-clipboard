@@ -9,6 +9,7 @@ publish = false
 portable = ["tiez-storage/portable"]
 
 [dependencies]
+arboard = { version = "3", features = ["wayland-data-control"] }
 tiez-storage = { path = "../storage" }
 tiez-native-platform = { path = "../platform" }
 base64 = "0.22"
