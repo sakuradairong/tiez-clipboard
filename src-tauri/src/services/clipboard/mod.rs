@@ -1,3 +1,4 @@
+pub(crate) mod write_helpers;
 mod capture_helpers;
 mod data;
 mod processing;

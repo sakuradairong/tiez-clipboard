@@ -6,6 +6,9 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 pub use tiez_storage::{database, domain};
 pub mod capture;
+pub mod write;
+#[path = "../../../src-tauri/src/services/clipboard/write_helpers.rs"]
+mod write_helpers;
 #[path = "../../../src-tauri/src/services/clipboard/capture_helpers.rs"]
 mod capture_helpers;
 #[path = "../../../src-tauri/src/services/clipboard/data.rs"]
