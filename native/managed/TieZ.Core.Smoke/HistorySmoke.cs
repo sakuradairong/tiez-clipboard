@@ -94,7 +94,24 @@ internal static class HistorySmoke
         Expect("not_found", () => Read(core.GetEntryAsync(clearCandidate)));
         Check(Read(core.GetHistoryChangesAsync(currentPreview.Revision)).ResyncRequired, "Clear did not invalidate old change feeds");
         Check(!Read(core.ClearHistoryAsync(clearResult.Revision)).Changed, "Empty clear advanced revision");
-        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch/clear, conflicts, change feed, cancellation");
+        const string png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
+        long imageId = Read(core.AddManualAsync(png, "image")).Id;
+        string originalImage = Read(core.GetEntryAsync(imageId)).Content;
+        ulong imageRevision = Read(core.GetHistoryAsync(new())).Revision;
+        var previewImage = Read(core.GetImagePreviewAsync(imageId, imageRevision));
+        Check(previewImage.Id == imageId && previewImage.Revision == imageRevision
+            && previewImage.Width == 2 && previewImage.Height == 3
+            && Convert.FromBase64String(previewImage.PngBase64).Take(4).SequenceEqual(new byte[] { 137, 80, 78, 71 }), "Native preview DTO/PNG");
+        Check(Read(core.GetHistoryAsync(new())).Revision == imageRevision
+            && Read(core.GetEntryAsync(imageId)).Content == originalImage, "Preview mutated stored content");
+        Read(core.SetTagsAsync(imageId, ["sensitive"]));
+        ulong sensitiveRevision = Read(core.GetHistoryAsync(new())).Revision;
+        Expect("history_conflict", () => Read(core.GetImagePreviewAsync(imageId, imageRevision, true)));
+        Expect("sensitive_confirmation", () => Read(core.GetImagePreviewAsync(imageId, sensitiveRevision)));
+        Check(Read(core.GetImagePreviewAsync(imageId, sensitiveRevision, true)).Width == 2, "Sensitive confirmed preview");
+        Expect("preview_dimensions", () => Read(core.GetImagePreviewAsync(imageId, sensitiveRevision, true, maxEdge: 1025)));
+        Read(core.DeleteEntriesAsync([imageId], sensitiveRevision));
+        Console.WriteLine("PASS: real DLL history DTOs, paging, full formats, pin/tags/edit/delete/batch/clear/image previews, conflicts, change feed, cancellation");
         return saved.Id;
     }
 

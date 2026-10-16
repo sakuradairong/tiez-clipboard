@@ -18,6 +18,9 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private ulong batchRevision;
     private long clearPinned, clearTagged, clearOrdinary, clearLate;
     private ulong clearRevision;
+    private long imageFirst, imageSecond;
+    private const string PreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
+    private const string SecondPreviewPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAADklEQVR4nGNg+I8G0QUABykP8RHZtOEAAAAASUVORK5CYII=";
     private ulong captureStarts, captureSettingsRevision;
     private int realized, loaded;
     private string savedText = "";
@@ -210,11 +213,11 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     await view.ReloadAsync(invalidImageId);
                     break;
                 case 39:
-                    Require(view.CanCopy && view.Detail == "data:image/png;base64,bad!", "Copy command did not bind to loaded detail.");
+                    Require(view.CanCopy && !view.HasImagePreview && view.Detail == "图片预览不可用，原始内容未修改。", "Copy command did not bind to loaded detail.");
                     view.Invoke("copy");
                     break;
                 case 40:
-                    Require(view.HasError && view.CanCopy && view.Detail == "data:image/png;base64,bad!", "Failed payload preparation lost selection or hid error.");
+                    Require(view.HasError && view.CanCopy && !view.HasImagePreview && view.Detail == "图片预览不可用，原始内容未修改。", "Failed payload preparation lost selection or hid error.");
                     await core.DeleteEntryAsync(invalidImageId);
                     await view.ReloadAsync();
                     break;
@@ -388,6 +391,45 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                 case 67:
                     Require(!view.HasDialog && !view.HasError && (await core.GetHistoryAsync(new())).Revision == clearRevision,
                         "Empty clear showed a confirmation/error or advanced history revision.");
+                    imageFirst = (await core.AddManualAsync(PreviewPng, "image")).Id;
+                    imageSecond = (await core.AddManualAsync(SecondPreviewPng, "image")).Id;
+                    view.Search(""); await view.ReloadAsync(imageFirst);
+                    break;
+                case 68:
+                    if (!view.HasImagePreview) return;
+                    Require(view.PreviewedImageId == imageFirst && view.ImagePixelWidth == 2 && view.CanCopy,
+                        "WinUI did not decode/render the selected native PNG.");
+                    view.SelectMany(imageFirst, imageSecond);
+                    Require(!view.HasImagePreview && !view.CanCopy, "Multiple selection retained image preview.");
+                    view.Select(imageSecond);
+                    break;
+                case 69:
+                    if (!view.HasImagePreview) return;
+                    Require(view.PreviewedImageId == imageSecond && view.ImagePixelWidth == 4, "Previous image decode replaced the new selection.");
+                    await core.SetTagsAsync(imageSecond, ["sensitive"]);
+                    break;
+                case 70:
+                    if (!view.ExternalPending) return;
+                    Require(!view.HasImagePreview && !view.CanCopy, "External sensitive transition kept decoded image visible.");
+                    await view.ReloadAsync(imageSecond);
+                    break;
+                case 71:
+                    Require(view.CanReveal && !view.HasImagePreview, "Sensitive image was rendered before reveal.");
+                    view.Invoke("reveal");
+                    break;
+                case 72:
+                    if (!view.HasImagePreview) return;
+                    Require(view.PreviewedImageId == imageSecond && view.ImagePixelWidth == 4, "Sensitive reveal did not decode native image.");
+                    view.Search("不存在的图片");
+                    Require(!view.HasImagePreview && !view.CanCopy, "Search retained revealed image.");
+                    break;
+                case 73:
+                    view.Search(""); await view.ReloadAsync();
+                    // Start two native detail loads back-to-back; only the final selection may publish.
+                    view.Select(imageFirst); view.Select(imageSecond);
+                    break;
+                case 74:
+                    Require(view.CanReveal && !view.HasImagePreview && !view.CanCopy, "Stale decode bypassed final sensitive selection.");
                     // Close with capture running and a pending read to exercise disposal guards.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);

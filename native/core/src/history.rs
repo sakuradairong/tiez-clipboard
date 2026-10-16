@@ -129,6 +129,13 @@ pub struct HistoryClearResult {
     pub persistent_sync_pending: bool,
     pub compaction_error: Option<&'static str>,
 }
+#[derive(Debug, Serialize)]
+pub struct HistoryImagePreview {
+    pub id: i64,
+    pub revision: u64,
+    #[serde(flatten)]
+    pub raster: tiez_content::preview::RasterPreview,
+}
 pub struct HistoryService {
     connection: Arc<Mutex<Connection>>,
     repository: SqliteClipboardRepository,
@@ -740,6 +747,54 @@ impl HistoryService {
         }
         self.session.retain(|entry| !ids.contains(&entry.id));
         Ok(self.committed(revision, first, None, ids.into_iter().collect(), persisted))
+    }
+    pub fn image_preview(
+        &self,
+        id: i64,
+        expected_revision: u64,
+        allow_sensitive: bool,
+        max_edge: u32,
+    ) -> CoreResult<HistoryImagePreview> {
+        if expected_revision != self.revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; refresh before previewing",
+            ));
+        }
+        let entry = self.entry(id)?;
+        if has_sensitive_tag(&entry.tags) && !allow_sensitive {
+            return Err(CoreError::new(
+                "sensitive_confirmation",
+                "Reveal sensitive content before previewing",
+            ));
+        }
+        if entry.content_type != "image" {
+            return Err(CoreError::new(
+                "unsupported_preview",
+                "Entry is not an image",
+            ));
+        }
+        let mut roots = tiez_content::clipboard_image_roots(&self.data_dir);
+        if entry.is_external {
+            let path = Path::new(&entry.content);
+            if path.is_absolute() {
+                if let Some(parent) = path.parent() {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+        let raster =
+            tiez_content::preview::raster(&entry.content, &roots, max_edge).map_err(|code| {
+                CoreError::new(
+                    code,
+                    "Image preview could not be prepared; original content unchanged",
+                )
+            })?;
+        Ok(HistoryImagePreview {
+            id,
+            revision: self.revision,
+            raster,
+        })
     }
     pub fn clear_preview(&self) -> CoreResult<HistoryClearPreview> {
         let connection = self.connection.lock().map_err(failure)?;
@@ -1674,5 +1729,84 @@ mod tests {
         assert!(s.changes(revision).unwrap().resync_required);
         drop(statement);
         assert!(!s.clear(s.revision).unwrap().changed);
+    }
+
+    const PREVIEW_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAC56t6BAAAAEUlEQVR4nGP4z8DQAMIMGAwAfcEI+4thakwAAAAASUVORK5CYII=";
+    #[test]
+    fn image_preview_is_read_only_and_requires_current_sensitive_confirmation() {
+        let mut s = service();
+        let directory = std::env::temp_dir().join(format!(
+            "TieZ-preview-core-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        s.data_dir = directory.clone();
+        let id = s
+            .add_manual("image".into(), PREVIEW_PNG.into(), None, vec![])
+            .unwrap()
+            .id;
+        let revision = s.revision;
+        let before = s.entry(id).unwrap();
+        let before_bytes = std::fs::read(&before.content).unwrap();
+        let preview = s.image_preview(id, revision, false, 512).unwrap();
+        assert_eq!(
+            (
+                preview.raster.original_width,
+                preview.raster.original_height
+            ),
+            (2, 3)
+        );
+        assert_eq!((preview.id, preview.revision), (id, revision));
+        assert_eq!(s.entry(id).unwrap().content, before.content);
+        assert_eq!(std::fs::read(&before.content).unwrap(), before_bytes);
+        assert_eq!(s.revision, revision);
+        assert!(s.changes(revision).unwrap().changes.is_empty());
+        s.set_tags(id, vec!["sensitive".into()]).unwrap();
+        assert_eq!(
+            s.image_preview(id, revision, true, 512).unwrap_err().code,
+            "history_conflict"
+        );
+        assert_eq!(
+            s.image_preview(id, s.revision, false, 512)
+                .unwrap_err()
+                .code,
+            "sensitive_confirmation"
+        );
+        assert!(s.image_preview(id, s.revision, true, 512).is_ok());
+        assert_eq!(
+            s.image_preview(id, s.revision, true, 1025)
+                .unwrap_err()
+                .code,
+            "preview_dimensions"
+        );
+        drop(s);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn image_preview_supports_session_ids_and_rejects_non_images_and_missing_rows() {
+        let mut s = service();
+        let mut image = processed(PREVIEW_PNG);
+        image.content_type = "image".into();
+        let session = s.record_capture(image, false, false, false).unwrap().id;
+        assert!(session < 0);
+        assert_eq!(
+            s.image_preview(session, s.revision, false, 512).unwrap().id,
+            session
+        );
+        assert!(!s.persistent_sync_pending);
+        let text = add(&mut s, "text");
+        assert_eq!(
+            s.image_preview(text, s.revision, false, 512)
+                .unwrap_err()
+                .code,
+            "unsupported_preview"
+        );
+        assert_eq!(
+            s.image_preview(i64::MAX, s.revision, false, 512)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
     }
 }

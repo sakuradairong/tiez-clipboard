@@ -47,7 +47,10 @@ pub struct WriteError {
     pub clipboard_changed: bool,
 }
 
-fn image_bytes(payload: &str, roots: &[std::path::PathBuf]) -> Result<Vec<u8>, &'static str> {
+pub(crate) fn image_bytes(
+    payload: &str,
+    roots: &[std::path::PathBuf],
+) -> Result<Vec<u8>, &'static str> {
     if let Some(data) = payload.strip_prefix("data:image/") {
         let (_, encoded) = data.split_once(";base64,").ok_or("image_encoding")?;
         if encoded.len() > MAX_IMAGE_BYTES * 4 / 3 + 4 {
@@ -75,7 +78,7 @@ fn image_bytes(payload: &str, roots: &[std::path::PathBuf]) -> Result<Vec<u8>, &
         .map(|image| image.bytes)
         .ok_or("image_resource_unavailable")
 }
-fn validate_dimensions(width: u32, height: u32) -> Result<(), &'static str> {
+pub(crate) fn validate_dimensions(width: u32, height: u32) -> Result<(), &'static str> {
     if width == 0
         || height == 0
         || width > 16_384

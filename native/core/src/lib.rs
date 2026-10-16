@@ -92,6 +92,14 @@ enum Request {
         handle: u64,
         expected_revision: u64,
     },
+    HistoryImagePreview {
+        handle: u64,
+        id: i64,
+        expected_revision: u64,
+        #[serde(default)]
+        allow_sensitive: bool,
+        max_edge: u32,
+    },
     HistoryChanges {
         handle: u64,
         after_revision: u64,
@@ -341,6 +349,25 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .clear(expected_revision)?)),
+        Request::HistoryImagePreview {
+            handle,
+            id,
+            expected_revision,
+            allow_sensitive,
+            max_edge,
+        } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .image_preview(
+                id,
+                expected_revision,
+                allow_sensitive,
+                max_edge
+            )?)),
         Request::ClipboardCopy {
             handle,
             id,

@@ -350,6 +350,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         detailCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         var token = detailCancellation.Token;
         selectedEntry = null;
+        ImagePreview.Clear();
+        DetailText.Visibility = Visibility.Visible;
         DetailText.Text = "";
         RevealButton.Visibility = Visibility.Collapsed;
         if (disposed) return;
@@ -374,8 +376,26 @@ public sealed partial class HistoryView : UserControl, IDisposable
             var entry = await core!.GetEntryAsync(row.Id, token);
             if (disposed || token.IsCancellationRequested || current != detailGeneration ||
                 (HistoryList.SelectedItem as HistoryRow)?.Id != row.Id) return;
+            if (entry.ContentType == "image")
+            {
+                try
+                {
+                    var preview = await core.GetImagePreviewAsync(entry.Id, revision!.Value, reveal,
+                        cancellationToken: token);
+                    if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    await ImagePreview.ShowAsync(preview, token);
+                    if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    DetailText.Visibility = Visibility.Collapsed;
+                }
+                catch (CoreException error) when (error.Code is not "history_conflict" and not "sensitive_confirmation")
+                {
+                    if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    DetailText.Text = "图片预览不可用，原始内容未修改。";
+                    ShowError(error.Message);
+                }
+            }
+            else DetailText.Text = entry.Content;
             selectedEntry = entry;
-            DetailText.Text = entry.Content;
             UpdateCommands();
         }
         catch (OperationCanceledException) { }
@@ -653,6 +673,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
         activeDialog?.Hide();
         selectedEntry = null;
+        ImagePreview.Clear();
         DetailText.Text = "";
         loadCancellation?.Dispose();
         detailCancellation?.Dispose();
@@ -665,6 +686,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;
     internal string Detail => DetailText.Text;
+    internal bool HasImagePreview => ImagePreview.HasImage;
+    internal long? PreviewedImageId => ImagePreview.DisplayedId;
+    internal int ImagePixelWidth => ImagePreview.PixelWidth;
     internal bool CanCopy => CopyButton.IsEnabled;
     internal bool CanPaste => PasteButton.IsEnabled;
     internal bool TargetTrackingRunning => targetStatus?.Running == true;

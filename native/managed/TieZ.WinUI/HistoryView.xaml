@@ -80,9 +80,12 @@
                     <TextBlock x:Name="DetailMetadata" Grid.Row="1" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     <Button x:Name="RevealButton" Grid.Row="2" Content="显示敏感内容" Visibility="Collapsed"/>
-                    <TextBox x:Name="DetailText" Grid.Row="3" IsReadOnly="True" AcceptsReturn="True"
-                             TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                             AutomationProperties.Name="所选记录的原始文本"/>
+                    <Grid Grid.Row="3">
+                        <TextBox x:Name="DetailText" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 AutomationProperties.Name="所选记录的原始文本"/>
+                        <local:ImagePreviewView x:Name="ImagePreview"/>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>
