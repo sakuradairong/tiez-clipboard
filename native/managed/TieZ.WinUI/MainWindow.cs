@@ -9,12 +9,13 @@ public sealed partial class MainWindow : Window
     private readonly NativeCore core;
     private readonly CompactPreviewController compactPreview;
     internal CompactPreviewController CompactPreview => compactPreview;
-    private bool residentMode, quitting, active;
+    private bool residentMode, quitting, active, tagPageActive;
     internal SettingsWindow? Settings { get; private set; }
     internal AdvancedSettingsWindow? AdvancedSettings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
     internal ElementTheme CurrentTheme => MainRoot.RequestedTheme;
     internal HistoryView History => HistoryWorkspace;
+    internal TagManagementView Tags => TagWorkspace;
 
     public MainWindow(NativeCore core, string directory, bool captureOnStartup = true)
     {
@@ -37,11 +38,19 @@ public sealed partial class MainWindow : Window
         HideButton.Click += (_, _) => HideToTray();
         QuitButton.Click += (_, _) => Quit();
         Navigation.SelectedItem = HistoryNav;
-        Navigation.ItemInvoked += (_, args) =>
+        Navigation.SelectionChanged += (_, args) =>
         {
-            if (args.IsSettingsInvoked) OpenSettings();
-            Navigation.SelectedItem = HistoryNav;
+            if (args.IsSettingsSelected)
+            {
+                OpenSettings(); Navigation.SelectedItem = tagPageActive ? TagsNav : HistoryNav; return;
+            }
+            tagPageActive = ReferenceEquals(args.SelectedItem, TagsNav);
+            HistoryWorkspace.CancelPreview();
+            HistoryWorkspace.Visibility = tagPageActive ? Visibility.Collapsed : Visibility.Visible;
+            TagWorkspace.Visibility = tagPageActive ? Visibility.Visible : Visibility.Collapsed;
+            TagWorkspace.SetActive(tagPageActive && AppWindow.IsVisible);
         };
+        TagWorkspace.Initialize(core); TagWorkspace.FilterRequested += FilterByTag;
         HistoryWorkspace.Initialize(core, captureOnStartup);
         core.Changed += Apply;
         Closed += (_, _) =>
@@ -51,6 +60,7 @@ public sealed partial class MainWindow : Window
             HistoryWorkspace.PreviewRequested -= compactPreview.Request;
             HistoryWorkspace.PreviewInvalidated -= compactPreview.Cancel;
             compactPreview.Dispose();
+            TagWorkspace.FilterRequested -= FilterByTag; TagWorkspace.Dispose();
             HistoryWorkspace.Dispose();
         };
         Apply(core.Snapshot);
@@ -68,7 +78,7 @@ public sealed partial class MainWindow : Window
     internal void HideToTray()
     {
         compactPreview.Cancel();
-        if (residentMode && !quitting) AppWindow.Hide();
+        if (residentMode && !quitting) { TagWorkspace.SetActive(false); AppWindow.Hide(); }
     }
     internal void ToggleMain()
     {
@@ -80,7 +90,7 @@ public sealed partial class MainWindow : Window
         if (quitting) return;
         if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
             && presenter.State == Microsoft.UI.Windowing.OverlappedPresenterState.Minimized) presenter.Restore();
-        AppWindow.Show(); Activate();
+        AppWindow.Show(); Activate(); TagWorkspace.SetActive(tagPageActive);
     }
     internal void Quit()
     {
@@ -88,6 +98,9 @@ public sealed partial class MainWindow : Window
         quitting = true; CloseAdvancedSettings(); CloseSettings(); Close();
     }
     internal bool ResidentMode => residentMode;
+    internal void NavigateTags() => Navigation.SelectedItem = TagsNav;
+    internal void NavigateHistory() => Navigation.SelectedItem = HistoryNav;
+    private void FilterByTag(string name) { NavigateHistory(); HistoryWorkspace.ShowTag(name); }
 
     internal void OpenSettings()
     {

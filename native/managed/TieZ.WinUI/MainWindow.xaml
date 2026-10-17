@@ -14,6 +14,9 @@
                 <NavigationViewItem x:Name="HistoryNav" Content="剪贴板" Tag="history">
                     <NavigationViewItem.Icon><SymbolIcon Symbol="Copy"/></NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="TagsNav" Content="标签" Tag="tags">
+                    <NavigationViewItem.Icon><SymbolIcon Symbol="Tag"/></NavigationViewItem.Icon>
+                </NavigationViewItem>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
                 <StackPanel Spacing="8" Margin="12">
@@ -27,6 +30,7 @@
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="后台服务状态"/>
                 <local:HistoryView x:Name="HistoryWorkspace" Grid.Row="1"/>
+                <local:TagManagementView x:Name="TagWorkspace" Grid.Row="1" Visibility="Collapsed"/>
             </Grid>
         </NavigationView>
     </Grid>

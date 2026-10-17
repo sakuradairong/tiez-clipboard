@@ -35,6 +35,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private int detailGeneration;
     private bool started, disposed, loading, mutating, polling, filterPending, hasMore, externalPending;
     private ClipboardEntry? selectedEntry;
+    private string? exactTagFilter;
     private FrameworkElement? hoveredAnchor;
     private bool compactMode;
     internal event Action<CompactPreviewRequest>? PreviewRequested;
@@ -76,6 +77,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             // Invalidate selection synchronously; debounce only the query itself.
             input.TextChanging += (_, _) => ScheduleSearch();
         }
+        TagFilter.TextChanging += (_, _) => exactTagFilter = null;
         TypeFilter.SelectionChanged += (_, _) => ScheduleSearch();
         PinnedOnly.Checked += (_, _) => ScheduleSearch();
         PinnedOnly.Unchecked += (_, _) => ScheduleSearch();
@@ -266,7 +268,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         var query = new HistoryQuery(Limit: 50, Offset: reset ? 0 : offset,
             ExpectedRevision: reset ? null : revision, Search: SearchText.Text,
             ContentType: Types[Math.Max(0, TypeFilter.SelectedIndex)],
-            Tag: string.IsNullOrWhiteSpace(TagFilter.Text) ? null : TagFilter.Text.Trim(),
+            Tag: exactTagFilter ?? (string.IsNullOrWhiteSpace(TagFilter.Text) ? null : TagFilter.Text.Trim()),
             TagOnly: TagOnly.IsChecked == true, PinnedOnly: PinnedOnly.IsChecked == true);
         loading = true;
         UpdateCommands();
@@ -711,7 +713,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true;
+        disposed = true; exactTagFilter = null;
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         generation++;
         detailGeneration++;
@@ -746,12 +748,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
     private void RequestPreview(HistoryRow row, FrameworkElement anchor, bool requireHover)
     {
-        if (revision is not { } expected || !compactMode || disposed || row.IsStale || externalPending
+        if (Visibility != Visibility.Visible || revision is not { } expected || !compactMode || disposed || row.IsStale || externalPending
             || loading || mutating || filterPending || activeDialog is not null || row.Summary.ContentType == "file") return;
         bool allowSensitive = selectedEntry?.Id == row.Id && HistoryList.SelectedItems.Count == 1;
         if (row.Summary.IsSensitive && !allowSensitive) return;
         PreviewRequested?.Invoke(new(row.Summary, expected, allowSensitive, anchor, () =>
-            !disposed && compactMode && !externalPending && !loading && !mutating && !filterPending
+            !disposed && Visibility == Visibility.Visible && compactMode && !externalPending && !loading && !mutating && !filterPending
             && activeDialog is null && revision == expected && rows.Contains(row) && anchor.IsLoaded
             && (ReferenceEquals(anchor, HistoryList) || (anchor.DataContext is HistoryRow current && current.Id == row.Id))
             && (!requireHover || ReferenceEquals(hoveredAnchor, anchor))));
@@ -794,6 +796,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal string DialogText => dialogInput?.Text ?? "";
     internal bool HasError => Feedback.IsOpen && Feedback.Severity == InfoBarSeverity.Error;
     internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => HistoryList.ContainerFromIndex(index) is not null);
+    internal string ActiveTagFilter => exactTagFilter ?? TagFilter.Text.Trim();
+    internal void ShowTag(string name)
+    {
+        SearchText.Text = ""; TypeFilter.SelectedIndex = 0; PinnedOnly.IsChecked = TagOnly.IsChecked = false;
+        TagFilter.Text = name; exactTagFilter = name; ScheduleSearch();
+    }
     internal void Search(string text) => SearchText.Text = text;
     internal void Filter(int typeIndex, string tag, bool pinned)
     {

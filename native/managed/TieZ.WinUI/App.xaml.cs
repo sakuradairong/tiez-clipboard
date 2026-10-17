@@ -38,7 +38,11 @@ public partial class App : Application
                 Exit();
             };
             main.Activate();
-            if (report is not null) new WindowSmoke(main, core, directory, report, rulesOnly: arguments.Contains("--rules-only")).Start();
+            if (report is not null)
+            {
+                if (arguments.Contains("--tags-only")) new TagWindowSmoke(main, core, directory, report).Start();
+                else new WindowSmoke(main, core, directory, report, rulesOnly: arguments.Contains("--rules-only")).Start();
+            }
         }
         catch (Exception e)
         {
