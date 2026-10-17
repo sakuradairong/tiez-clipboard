@@ -55,7 +55,10 @@ impl HistoryService {
             return Ok(self.unchanged(id));
         }
         for name in &tags {
-            if name.trim().is_empty() && !entry.tags.contains(name) {
+            if name.trim().is_empty()
+                && !entry.tags.contains(name)
+                && !self.session.iter().any(|other| other.tags.contains(name))
+            {
                 let present:bool=self.connection.lock().map_err(failure)?.query_row(
                     "SELECT EXISTS(SELECT 1 FROM saved_tags WHERE name=?1 UNION ALL SELECT 1 FROM entry_tags WHERE tag=?1)",
                     [name],|row|row.get(0)).map_err(failure)?;
@@ -235,6 +238,35 @@ mod tests {
                 .code,
             "sensitive_confirmation"
         );
+    }
+    #[test]
+    fn exact_selection_accepts_legacy_empty_names_from_other_session_entries() {
+        let mut service = service();
+        let id = add(&mut service);
+        let mut session = service.entry(id).unwrap();
+        session.id = -17;
+        session.tags = vec![" \t ".into(), "".into()];
+        service.session.push_back(session);
+        let snapshot = service.tag_selection(id).unwrap();
+        let catalog = service.tag_page(Default::default()).unwrap();
+        assert!(catalog
+            .items
+            .iter()
+            .any(|tag| tag.name == " \t " && tag.session_count == 1));
+        let saved = service
+            .set_tags_exact(id, vec![" \t ".into(), "".into()], snapshot.revision)
+            .unwrap();
+        assert!(saved.changed);
+        assert_eq!(service.tag_selection(id).unwrap().tags, [" \t ", ""]);
+        assert_eq!(service.tag_selection(-17).unwrap().tags, [" \t ", ""]);
+        assert_eq!(service.session.len(), 1);
+        service.session.clear();
+        let again = service
+            .set_tags_exact(id, vec!["".into(), " \t ".into()], saved.revision)
+            .unwrap();
+        assert!(!again.changed);
+        assert_eq!(again.revision, saved.revision);
+        assert_eq!(service.tag_selection(id).unwrap().tags, [" \t ", ""]);
     }
     #[test]
     fn exact_sensitive_transitions_and_failed_sql_or_commit_are_atomic() {
