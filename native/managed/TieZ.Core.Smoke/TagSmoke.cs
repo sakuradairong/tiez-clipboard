@@ -58,6 +58,7 @@ internal static class TagSmoke
             Check(feed.ResyncRequired && feed.PersistentSyncPending, "Tag metadata did not invalidate stale consumers");
             Rename(core);
             Delete(core);
+            Ordering(core);
             Check(core.Snapshot.Revision == 0 && notifications == 0, "Tag metadata wrote settings or emitted setting events");
         }
         using var reopened = new NativeCore(database);
@@ -131,6 +132,32 @@ internal static class TagSmoke
         Check(core.DeleteTagAsync(name, empty.Revision).GetAwaiter().GetResult().RemovedCount == 0, "Zero-use tag delete removed history");
         core.DeleteEntryAsync(kept.Id).GetAwaiter().GetResult();
         Console.WriteLine("Tag delete: read-only preview, whole-entry scope, pins/sensitive, stale/cancel/no-op, zero count and resync passed.");
+    }
+
+    private static void Ordering(NativeCore core)
+    {
+        ulong revision = core.GetTagsAsync().GetAwaiter().GetResult().Revision;
+        for (int index = 0; index < 205; index++)
+            revision = core.CreateTagAsync($"sort-{index:000}", revision).GetAwaiter().GetResult().Revision;
+        var first = core.AddManualAsync("ordered first", tags: new[] { "sort-204" }).GetAwaiter().GetResult();
+        var second = core.AddManualAsync("ordered second", tags: new[] { "sort-204", "sort-203" }).GetAwaiter().GetResult();
+        var expected = All(core).OrderByDescending(tag => tag.Count).ThenBy(tag => tag.Name, StringComparer.Ordinal).Select(tag => tag.Name).ToArray();
+        var names = new List<string>(); string? after = null; ulong? accepted = null;
+        do
+        {
+            var page = core.GetTagsAsync(new TagQuery(7, after, accepted, "count")).GetAwaiter().GetResult();
+            Check(page.Items.Count <= 7 && page.Revision == second.Revision, "Count paging limits/revision");
+            names.AddRange(page.Items.Select(tag => tag.Name)); accepted = page.Revision; after = page.NextAfter;
+            Check(page.HasMore == (after is not null), "Count paging cursor contract");
+        } while (after is not null);
+        Check(names.SequenceEqual(expected) && names[0] == "sort-204", "Count paging sorted only the current page or skipped ties");
+        Check(core.GetTagsAsync(new TagQuery(uint.MaxValue, Sort: "count")).GetAwaiter().GetResult().Items.Count == 200, "Count limit was not clamped");
+        Expect("invalid_tag_cursor", () => core.GetTagsAsync(new TagQuery(After: "missing-sort", ExpectedRevision: accepted, Sort: "count")).GetAwaiter().GetResult());
+        Expect("invalid_request", () => core.GetTagsAsync(new TagQuery(Sort: "unknown")).GetAwaiter().GetResult());
+        core.DeleteEntryAsync(first.Id).GetAwaiter().GetResult();
+        Expect("history_conflict", () => core.GetTagsAsync(new TagQuery(After: names[0], ExpectedRevision: accepted, Sort: "count")).GetAwaiter().GetResult());
+        core.DeleteEntryAsync(second.Id).GetAwaiter().GetResult();
+        Console.WriteLine("Tag count sorting: full-catalog order, deterministic ties, bounded paging, invalid/stale cursors and compatibility default passed.");
     }
 
 }

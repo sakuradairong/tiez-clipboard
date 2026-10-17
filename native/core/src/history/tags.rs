@@ -1,4 +1,5 @@
 mod delete;
+mod order;
 
 use super::{failure, HistoryService};
 use crate::{CoreError, CoreResult};
@@ -8,9 +9,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use tiez_storage::database::has_sensitive_tag;
 use tiez_storage::infrastructure::repository::tag_repo::{SqliteTagRepository, TagRepository};
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagSort {
+    #[default]
+    Name,
+    Count,
+}
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TagQuery {
+    pub sort: TagSort,
     pub limit: u32,
     pub after: Option<String>,
     pub expected_revision: Option<u64>,
@@ -18,6 +27,7 @@ pub struct TagQuery {
 impl Default for TagQuery {
     fn default() -> Self {
         Self {
+            sort: TagSort::Name,
             limit: 100,
             after: None,
             expected_revision: None,
@@ -56,6 +66,9 @@ impl HistoryService {
                 "history_conflict",
                 "Tags changed; refresh before continuing",
             ));
+        }
+        if matches!(query.sort, TagSort::Count) {
+            return self.tag_page_by_count(query);
         }
         let limit = query.limit.clamp(1, 200) as usize;
         let connection = self.connection.lock().map_err(failure)?;
@@ -316,6 +329,7 @@ mod tests {
                     limit: 1,
                     after,
                     expected_revision: Some(revision),
+                    ..Default::default()
                 })
                 .unwrap();
             assert_eq!(page.revision, revision);

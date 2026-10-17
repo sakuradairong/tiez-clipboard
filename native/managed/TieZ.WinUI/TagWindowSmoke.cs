@@ -51,7 +51,8 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                 case 1:
                     if (!view.IsContentReady || view.DisplayedRevision is null) return;
                     Check(view.IsActive && view.Count == 100 && view.HasMore && view.DisplayedRevision == tagRevision
-                        && !view.HasDraft && core.Snapshot.Revision == 0, "Tag first page/read-only binding failed.");
+                        && !view.HasDraft && core.Snapshot.Revision == 0 && view.SortOrder == "count"
+                        && view.DisplayedTags[0].Name == Existing, "Tag first page/read-only count sort binding failed.");
                     realized = view.RealizedCount;
                     Check(realized > 0 && realized < view.Count, "Tag list did not virtualize its native rows.");
                     view.Invoke("more");
@@ -300,6 +301,41 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                     view.Invoke("delete");
                     break;
                 case 44:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 45:
+                    if (view.HasDialog) return;
+                    view.ChooseSort("name");
+                    break;
+                case 46:
+                    Check(view.SortOrder == "name" && view.SelectedTag == "delete-other"
+                        && view.DisplayedTags.Select(tag => tag.Name).SequenceEqual(view.DisplayedTags.Select(tag => tag.Name).Order(StringComparer.Ordinal)),
+                        "Name sort did not refresh all loaded pages or preserve selection.");
+                    view.ChooseSort("count");
+                    break;
+                case 47:
+                    Check(view.SortOrder == "count" && view.DisplayedTags[0].Name == "delete-other" && view.SelectedTag == "delete-other"
+                        && view.DisplayedTags.Select(tag => tag.Count).SequenceEqual(view.DisplayedTags.Select(tag => tag.Count).OrderDescending()),
+                        "Count sort was limited to the page or lost selection.");
+                    view.EditColor("#aabbcc"); view.ChooseSort("name");
+                    Check(view.HasDraft && view.SortOrder == "count" && view.ColorDraft == "#aabbcc", "Sort change discarded an unsaved color.");
+                    view.Invoke("reload");
+                    break;
+                case 48:
+                    Check(!view.HasDraft && view.SortOrder == "count" && view.DisplayedRevision == tagRevision, "Sort read saved metadata or failed draft reload.");
+                    view.ChooseSort("name");
+                    break;
+                case 49:
+                    Check(view.SortOrder == "name", "Second sort selection failed.");
+                    main.HideToTray(); main.ShowMain();
+                    break;
+                case 50:
+                    Check(view.SortOrder == "name" && view.SelectedTag == "delete-other" && view.DisplayedRevision == tagRevision
+                        && core.Snapshot.Revision == 1, "Hide/reopen changed sorting or persisted a readonly choice.");
+                    view.Invoke("delete");
+                    break;
+                case 51:
                     if (!view.HasDialog) return;
                     Finish(true, null); return;
             }

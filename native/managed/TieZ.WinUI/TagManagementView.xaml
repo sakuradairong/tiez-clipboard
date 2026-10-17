@@ -13,6 +13,10 @@
             <Button x:Name="ReloadButton" Grid.Column="2" Content="刷新" VerticalAlignment="Bottom"/>
         </Grid>
         <StackPanel Grid.Row="2" Spacing="6">
+            <ComboBox x:Name="SortChoice" Header="标签排序" SelectedIndex="0" HorizontalAlignment="Left" MinWidth="180">
+                <ComboBoxItem Content="历史数量（多到少）"/>
+                <ComboBoxItem Content="名称"/>
+            </ComboBox>
             <TextBlock x:Name="Status" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <InfoBar x:Name="Feedback" IsOpen="False" IsClosable="True"/>
         </StackPanel>
