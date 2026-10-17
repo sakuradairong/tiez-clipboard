@@ -78,7 +78,7 @@ public sealed partial class MainWindow : Window
     internal void HideToTray()
     {
         compactPreview.Cancel();
-        if (residentMode && !quitting) { TagWorkspace.SetActive(false); AppWindow.Hide(); }
+        if (residentMode && !quitting) { HistoryWorkspace.DismissTagPicker(); TagWorkspace.SetActive(false); AppWindow.Hide(); }
     }
     internal void ToggleMain()
     {

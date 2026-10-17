@@ -141,7 +141,12 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!view.HasDialog && Lines(view.Detail) == Lines(Edited), "Edit did not preserve original text.");
                     view.Invoke("tags");
                     break;
-                case 12: view.SetDialogText("password\n工作"); view.ConfirmDialog(); break;
+                case 12:
+                    var nativePicker = view.TagPicker ?? throw new InvalidOperationException("No native tag picker.");
+                    Require(nativePicker.CanSave, "Native tag picker did not load metadata/catalog.");
+                    nativePicker.NameDraft = "password"; nativePicker.Invoke("add");
+                    nativePicker.NameDraft = "工作"; nativePicker.Invoke("add");
+                    view.ConfirmDialog(); break;
                 case 13:
                     Require(!view.HasDialog && view.Rows.Single().Summary.IsSensitive && view.Detail == "" && view.CanReveal,
                         "Sensitive content leaked after tagging.");

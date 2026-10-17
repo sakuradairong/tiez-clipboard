@@ -56,6 +56,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private ContentDialog? activeDialog;
     private TextBox? dialogInput;
+    private TagPickerView? tagPicker;
+    internal TagPickerView? TagPicker => tagPicker;
 
     public HistoryView()
     {
@@ -114,8 +116,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         TagsButton.Click += async (_, _) =>
         {
             if (HistoryList.SelectedItem is HistoryRow row)
-                await ShowTextDialogAsync("标签（每行一个）", string.Join("\n", row.Summary.Tags),
-                    value => core!.SetTagsAsync(row.Id, value.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n')));
+                await ShowTagPickerAsync(row.Id);
         };
         PinButton.Click += async (_, _) =>
         {
@@ -345,6 +346,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 if (!targetBusy) ApplyTarget(target);
             }
             var changes = await core!.GetHistoryChangesAsync(observedRevision ?? revision.Value, lifetime.Token);
+            if (!disposed) tagPicker?.ObserveRevision(changes.Revision);
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             observedRevision = changes.Revision;
@@ -539,10 +541,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
         Feedback.IsOpen = true;
     }
 
-    private async Task<bool> MutateAsync(Func<Task<HistoryMutation>> action)
+    private async Task<bool> MutateAsync(Func<Task<HistoryMutation>> action, bool revisionGuarded = false)
     {
         if (disposed || mutating || loading || filterPending) return false;
-        if (externalPending)
+        // Only callers whose core mutation atomically checks an accepted revision may bypass this UI guard.
+        if (externalPending && !revisionGuarded)
         {
             ShowError("历史记录已更新，请取消后刷新再修改。草稿将保留在当前对话框中。");
             return false;
@@ -565,6 +568,40 @@ public sealed partial class HistoryView : UserControl, IDisposable
         finally
         {
             mutating = false;
+            if (!disposed) UpdateCommands();
+        }
+    }
+
+    internal void DismissTagPicker()
+    {
+        if (tagPicker is null) return;
+        tagPicker.Dispose(); activeDialog?.Hide();
+    }
+
+    private async Task ShowTagPickerAsync(long id)
+    {
+        if (disposed || core is null || activeDialog is not null || mutating || loading || filterPending || externalPending) return;
+        var picker = new TagPickerView();
+        var dialog = new ContentDialog { Title = "选择标签", Content = picker, PrimaryButtonText = "保存",
+            CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot,
+            IsPrimaryButtonEnabled = false };
+        tagPicker = picker; activeDialog = dialog;
+        void UpdateSave() => dialog.IsPrimaryButtonEnabled = picker.CanSave;
+        picker.StateChanged += UpdateSave;
+        dialog.PrimaryButtonClick += async (_, args) =>
+        {
+            var deferral = args.GetDeferral();
+            try { args.Cancel = !await picker.SaveAsync(action => MutateAsync(action, revisionGuarded: true)); }
+            finally { deferral.Complete(); }
+        };
+        dialog.Opened += async (_, _) => await picker.InitializeAsync(core, id);
+        UpdateCommands();
+        try { await dialog.ShowAsync(); }
+        catch (Exception error) { if (!disposed) ShowError(error.Message); }
+        finally
+        {
+            picker.StateChanged -= UpdateSave; picker.Dispose();
+            tagPicker = null; activeDialog = null;
             if (!disposed) UpdateCommands();
         }
     }
@@ -725,6 +762,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (debounce is not null) { debounce.Stop(); debounce.Tick -= OnDebounce; }
         if (poll is not null) { poll.Stop(); poll.Tick -= OnPoll; }
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
+        tagPicker?.Dispose();
         activeDialog?.Hide();
         selectedEntry = null;
         ImagePreview.Clear();
@@ -773,7 +811,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal void CancelPreview() { hoveredAnchor = null; PreviewInvalidated?.Invoke(); }
 
     // Smoke helpers operate the real controls; they do not bypass production click handlers.
-    internal bool IsBusy => loading || mutating || filterPending || captureBusy || targetBusy;
+    internal bool IsBusy => loading || mutating || filterPending || captureBusy || targetBusy || tagPicker?.IsBusy == true;
     internal bool CaptureRunning => captureStatus?.Running == true;
     internal ulong CaptureStarts => captureStatus?.Starts ?? 0;
     internal IReadOnlyList<HistoryRow> Rows => rows;
