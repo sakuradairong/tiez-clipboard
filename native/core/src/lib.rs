@@ -114,6 +114,16 @@ enum Request {
         id: i64,
         content: String,
     },
+    HistoryTagSelection {
+        handle: u64,
+        id: i64,
+    },
+    HistoryTagsExact {
+        handle: u64,
+        id: i64,
+        tags: Vec<String>,
+        expected_revision: u64,
+    },
     HistoryTags {
         handle: u64,
         id: i64,
@@ -443,6 +453,27 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .edit(id, content)?)),
+        Request::HistoryTagSelection { handle, id } => Ok(json!(registry
+            .services
+            .get(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .tag_selection(id)?)),
+        Request::HistoryTagsExact {
+            handle,
+            id,
+            tags,
+            expected_revision,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .set_tags_exact(id, tags, expected_revision)?)),
         Request::HistoryTags { handle, id, tags } => Ok(json!(registry
             .services
             .get_mut(&handle)

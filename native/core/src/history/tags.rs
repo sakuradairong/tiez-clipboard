@@ -2,6 +2,7 @@ mod delete;
 mod order;
 #[cfg(test)]
 mod search;
+mod selection;
 
 use super::{failure, HistoryService};
 use crate::{CoreError, CoreResult};

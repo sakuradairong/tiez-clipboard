@@ -59,6 +59,7 @@ internal static class TagSmoke
             Rename(core);
             Delete(core);
             Ordering(core);
+            TagSelectionSmoke.Run(core);
             Check(core.Snapshot.Revision == 0 && notifications == 0, "Tag metadata wrote settings or emitted setting events");
         }
         using var reopened = new NativeCore(database);

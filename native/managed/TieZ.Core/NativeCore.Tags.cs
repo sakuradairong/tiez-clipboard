@@ -1,5 +1,7 @@
 namespace TieZ.Core;
 
+public sealed record EntryTagSelection(long Id, ulong Revision, IReadOnlyList<string> Tags);
+
 public sealed record TagQuery(uint Limit = 100, string? After = null, ulong? ExpectedRevision = null, string Sort = "name", string Search = "");
 public sealed record TagInfo(string Name, long StoredCount, int SessionCount, string? Color, bool IsSensitive)
 {
@@ -17,6 +19,10 @@ public sealed record TagDeleteResult(ulong Revision, bool Changed, long RemovedC
 
 public sealed partial class NativeCore
 {
+    public Task<EntryTagSelection> GetTagSelectionAsync(long id, CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<EntryTagSelection>(new { op = "history_tag_selection", handle, id }, cancellationToken);
+    public Task<HistoryMutation> SetExactTagsAsync(long id, IReadOnlyList<string> tags, ulong expectedRevision, CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<HistoryMutation>(new { op = "history_tags_exact", handle, id, tags, expected_revision = expectedRevision }, cancellationToken);
     public Task<TagPage> GetTagsAsync(TagQuery? query = null, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<TagPage>(new { op = "tag_page", handle, query = query ?? new TagQuery() }, cancellationToken);
     public Task<TagMutation> CreateTagAsync(string name, ulong expectedRevision, CancellationToken cancellationToken = default) =>

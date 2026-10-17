@@ -985,13 +985,21 @@ impl HistoryService {
         })
     }
     pub fn set_tags(&mut self, id: i64, tags: Vec<String>) -> CoreResult<HistoryMutation> {
-        let mut e = self.entry(id)?;
+        let e = self.entry(id)?;
         let mut seen = BTreeSet::new();
         let tags = tags
             .into_iter()
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty() && seen.insert(t.clone()))
             .collect::<Vec<_>>();
+        self.commit_entry_tags(e, tags)
+    }
+    fn commit_entry_tags(
+        &mut self,
+        mut e: ClipboardEntry,
+        tags: Vec<String>,
+    ) -> CoreResult<HistoryMutation> {
+        let id = e.id;
         if e.tags == tags {
             return Ok(self.unchanged(id));
         }
