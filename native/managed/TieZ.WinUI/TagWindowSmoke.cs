@@ -15,7 +15,7 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
     private DispatcherQueueTimer? timer;
     private int phase, realized;
     private bool ticking;
-    private long entryId;
+    private long entryId, deleteSecond, deleteKept;
     private ulong tagRevision;
     private const string Existing = "tag-000", Legacy = "  tag-000  ", Created = "aaa-原生标签";
     private static void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
@@ -213,6 +213,93 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                     view.EditName("退出时清除"); view.NewNameDraft = "退出时清除"; view.Invoke("rename");
                     break;
                 case 28:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 29:
+                    if (view.HasDialog) return;
+                    view.Invoke("reload");
+                    break;
+                case 30:
+                    Check(!view.HasDraft && view.SelectedTag == Existing, "Tag delete setup did not discard the rename draft.");
+                    view.Invoke("delete");
+                    break;
+                case 31:
+                    if (!view.HasDialog) return;
+                    Check(view.DialogText.Contains("全部 1 条") && view.DialogText.Contains("置顶") && view.DialogText.Contains("整条删除")
+                        && view.DialogText.Contains("无法撤销"), "Delete confirmation omitted exact counts or destructive scope.");
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 32:
+                    if (view.HasDialog) return;
+                    Check(ReadTag(Existing).Count == 1 && view.DisplayedRevision == tagRevision, "Cancel deleted a tag or entry.");
+                    view.Invoke("delete");
+                    break;
+                case 33:
+                    if (!view.HasDialog) return;
+                    var secondDeleteFixture = await core.AddManualAsync("delete second", tags: new[] { Existing, "delete-other" });
+                    tagRevision = secondDeleteFixture.Revision; deleteSecond = secondDeleteFixture.Id;
+                    Check(deleteSecond != 0, "Tag delete conflict fixture was missing.");
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 34:
+                    if (view.HasDialog) return;
+                    Check(view.HasError && view.HasConflict && ReadTag(Existing).Count == 2, "Stale delete confirmation removed newly added tagged history.");
+                    tagRevision = (await core.SetPinnedAsync(entryId, true)).Revision;
+                    var survivor = await core.AddManualAsync("delete survivor", tags: new[] { "delete-other" });
+                    deleteKept = survivor.Id; tagRevision = survivor.Revision;
+                    view.Invoke("reload");
+                    break;
+                case 35:
+                    Check(!view.HasConflict && view.SelectedTag == Existing && ReadTag(Existing).Count == 2, "Refresh did not accept actual tag delete scope.");
+                    view.Invoke("delete");
+                    break;
+                case 36:
+                    if (!view.HasDialog) return;
+                    Check(view.DialogText.Contains("全部 2 条") && view.DialogText.Contains("已保存 2 条"), "Refreshed delete preview kept stale counts.");
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 37:
+                    Check(!view.HasDialog && !view.HasError && !view.HasDraft && view.SelectedTag is null && view.DisplayedRevision == tagRevision + 1,
+                        "Confirmed tag delete did not refresh selection/version.");
+                    tagRevision++;
+                    Check(!(await core.GetHistoryAsync(new HistoryQuery(Tag: Existing))).Items.Any(), "Confirmed delete left tagged history.");
+                    Check((await core.GetEntryAsync(deleteKept)).Content == "delete survivor", "Tag delete removed an unrelated entry.");
+                    Check((await core.GetHistoryChangesAsync(tagRevision - 1)).ResyncRequired, "Tag delete failed to invalidate other views.");
+                    view.Select(Created); // This previously merged tag no longer exists; no accidental action may target another row.
+                    Check(view.SelectedTag is null, "Selecting a deleted tag selected unrelated data.");
+                    view.NewNameDraft = "aaa-empty-delete"; view.Invoke("create");
+                    break;
+                case 38:
+                    Check(view.SelectedTag == "aaa-empty-delete" && ReadTag("aaa-empty-delete").Count == 0, "Zero-count delete fixture creation failed.");
+                    tagRevision++; view.Invoke("delete");
+                    break;
+                case 39:
+                    if (!view.HasDialog) return;
+                    Check(view.DialogText.Contains("全部 0 条"), "Zero-count tag delete preview was incorrect.");
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 40:
+                    Check(!view.HasError && view.SelectedTag is null && view.DisplayedRevision == tagRevision + 1, "Zero-count tag delete failed or removed another tag.");
+                    tagRevision++; view.Select("delete-other"); view.Invoke("filter");
+                    break;
+                case 41:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.Rows.Count == 1 && main.History.Rows[0].Id == deleteKept, "History did not reflect tag deletion and retained sibling.");
+                    main.NavigateTags(); view.Invoke("delete");
+                    break;
+                case 42:
+                    if (!view.HasDialog) return;
+                    main.HideToTray();
+                    Check(!view.IsActive, "Hide left tag delete confirmation active.");
+                    main.ShowMain();
+                    break;
+                case 43:
+                    if (view.HasDialog) return;
+                    Check(ReadTag("delete-other").Count == 1, "Hiding confirmation deleted history.");
+                    view.Invoke("delete");
+                    break;
+                case 44:
                     if (!view.HasDialog) return;
                     Finish(true, null); return;
             }

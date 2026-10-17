@@ -1,3 +1,5 @@
+mod delete;
+
 use super::{failure, HistoryService};
 use crate::{CoreError, CoreResult};
 use rusqlite::{params, OptionalExtension};

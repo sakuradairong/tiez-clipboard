@@ -57,6 +57,7 @@ internal static class TagSmoke
             var feed = core.GetHistoryChangesAsync(0).GetAwaiter().GetResult();
             Check(feed.ResyncRequired && feed.PersistentSyncPending, "Tag metadata did not invalidate stale consumers");
             Rename(core);
+            Delete(core);
             Check(core.Snapshot.Revision == 0 && notifications == 0, "Tag metadata wrote settings or emitted setting events");
         }
         using var reopened = new NativeCore(database);
@@ -94,6 +95,42 @@ internal static class TagSmoke
         core.DeleteEntryAsync(entry.Id).GetAwaiter().GetResult();
         Check(All(core).Single(tag => tag.Name == source).Count == 0, "Renamed tag disappeared after its last entry was deleted");
         Console.WriteLine("Tag rename/merge: colors, original formats, sensitive aliases, no-op/stale/invalid/cancellation passed.");
+    }
+
+    private static void Delete(NativeCore core)
+    {
+        const string name = "zz-delete-fixture", other = "zz-delete-other";
+        var first = core.AddManualAsync("pinned", tags: new[] { name, other }).GetAwaiter().GetResult();
+        core.SetPinnedAsync(first.Id, true).GetAwaiter().GetResult();
+        var second = core.AddManualAsync("secret", tags: new[] { name, "密码" }).GetAwaiter().GetResult();
+        var kept = core.AddManualAsync("keep", tags: new[] { other }).GetAwaiter().GetResult();
+        core.CreateTagAsync(name, kept.Revision).GetAwaiter().GetResult();
+        var preview = core.GetTagDeletePreviewAsync(name).GetAwaiter().GetResult();
+        Check(preview.Name == name && preview.Count == 2 && preview.StoredCount == 2 && preview.SessionCount == 0 && preview.SavedTag,
+            "Tag deletion preview DTO/counts");
+        Check(core.GetTagsAsync().GetAwaiter().GetResult().Revision == preview.Revision, "Tag deletion preview wrote history");
+        var late = core.CreateTagAsync("zz-delete-late", preview.Revision).GetAwaiter().GetResult();
+        Expect("history_conflict", () => core.DeleteTagAsync(name, preview.Revision).GetAwaiter().GetResult());
+        Check(core.GetEntryAsync(first.Id).GetAwaiter().GetResult().IsPinned, "Stale deletion removed pinned content");
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        try { core.DeleteTagAsync(name, late.Revision, cancelled.Token).GetAwaiter().GetResult(); throw new Exception("Cancelled delete ran"); }
+        catch (OperationCanceledException) { }
+        preview = core.GetTagDeletePreviewAsync(name).GetAwaiter().GetResult();
+        var result = core.DeleteTagAsync(name, preview.Revision).GetAwaiter().GetResult();
+        Check(result.Changed && result.Revision == preview.Revision + 1 && result.RemovedCount == 2 && result.StoredCount == 2
+            && result.SessionCount == 0 && result.PersistentSyncPending && result.CleanupError is null, "Tag deletion result DTO");
+        Expect("not_found", () => core.GetEntryAsync(first.Id).GetAwaiter().GetResult());
+        Expect("not_found", () => core.GetEntryAsync(second.Id).GetAwaiter().GetResult());
+        Check(core.GetEntryAsync(kept.Id).GetAwaiter().GetResult().Content == "keep", "Tag deletion removed unrelated record");
+        Check(core.GetHistoryChangesAsync(preview.Revision).GetAwaiter().GetResult().ResyncRequired, "Tag deletion failed to invalidate old consumers");
+        Expect("not_found", () => core.GetTagDeletePreviewAsync(name).GetAwaiter().GetResult());
+        Check(!core.DeleteTagAsync(name, result.Revision).GetAwaiter().GetResult().Changed, "Repeated missing-tag deletion wrote state");
+        var zero = core.CreateTagAsync(name, result.Revision).GetAwaiter().GetResult();
+        var empty = core.GetTagDeletePreviewAsync(name).GetAwaiter().GetResult();
+        Check(empty.Count == 0 && empty.Revision == zero.Revision && empty.SavedTag, "Zero-use saved tag preview");
+        Check(core.DeleteTagAsync(name, empty.Revision).GetAwaiter().GetResult().RemovedCount == 0, "Zero-use tag delete removed history");
+        core.DeleteEntryAsync(kept.Id).GetAwaiter().GetResult();
+        Console.WriteLine("Tag delete: read-only preview, whole-entry scope, pins/sensitive, stale/cancel/no-op, zero count and resync passed.");
     }
 
 }

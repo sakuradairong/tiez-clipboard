@@ -43,6 +43,9 @@
                     <TextBlock x:Name="SelectedName" Text="选择一个标签" FontSize="20" TextWrapping="Wrap"/>
                     <TextBlock x:Name="SelectedCounts" TextWrapping="Wrap"/>
                     <Button x:Name="FilterButton" Content="查看此标签的历史"/>
+                    <Button x:Name="DeleteButton" Content="删除标签及其历史…"/>
+                    <TextBlock Text="删除标签会同时删除所有带此标签的历史记录，包括置顶和带其他标签的记录。"
+                               TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     <TextBox x:Name="RenameName" Header="新名称" AcceptsReturn="True" TextWrapping="Wrap"/>
                     <Button x:Name="RenameButton" Content="重命名或合并…"/>
                     <TextBlock Text="名称已存在时会合并，保留目标标签颜色。敏感标签名称会改变内容保护状态。"

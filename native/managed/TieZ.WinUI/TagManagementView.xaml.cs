@@ -82,6 +82,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (!stale) Feedback.IsOpen = false; UpdateCommands();
         };
         RenameButton.Click += async (_, _) => await RenameAsync();
+        DeleteButton.Click += async (_, _) => await DeleteAsync();
         ColorText.TextChanging += (_, _) => ColorChanged();
         Picker.ColorChanged += (_, args) =>
         {
@@ -166,6 +167,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         ClearColorButton.IsEnabled = ready && selected is not null && !renameDirty && draftColor is not null;
         SaveColorButton.IsEnabled = ready && selected is not null && dirty && !renameDirty && !stale && !HasInvalidColor;
         FilterButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
+        DeleteButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
         Status.Text = loading ? "正在读取标签…" : saving ? "正在保存…" : $"已载入 {rows.Count} 个标签" + (hasMore ? " · 可继续载入" : "");
     }
     private void Message(string message, InfoBarSeverity severity)
@@ -283,6 +285,45 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         }
         finally { if (ReferenceEquals(activeDialog, dialog)) activeDialog = null; saving = false; if (!disposed) UpdateCommands(); }
     }
+    private async Task DeleteAsync()
+    {
+        if (disposed || core is null || !DeleteButton.IsEnabled || selected is null || activeDialog is not null) return;
+        string name = selected.Info.Name;
+        ContentDialog? dialog = null;
+        saving = true; UpdateCommands();
+        try
+        {
+            var preview = await core.GetTagDeletePreviewAsync(name, lifetime.Token);
+            if (disposed || !active) return;
+            dialog = new ContentDialog { Title = "删除标签及其历史？", XamlRoot = XamlRoot,
+                Content = new TextBlock { TextWrapping = TextWrapping.Wrap,
+                    Text = $"删除标签“{preview.Name}”，并永久删除带此标签的全部 {preview.Count} 条历史：已保存 {preview.StoredCount} 条、本次会话 {preview.SessionCount} 条。\n置顶或同时带其他标签的匹配记录也会整条删除；其关联数据和不再被引用的应用附件将清理。\n此操作无法撤销；仅删除标签标记并保留记录不是此操作的行为。" },
+                PrimaryButtonText = "删除标签及历史", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
+            activeDialog = dialog; saving = false; UpdateCommands();
+            var choice = await dialog.ShowAsync(); activeDialog = null;
+            if (disposed || !active || choice != ContentDialogResult.Primary) return;
+            saving = true; UpdateCommands();
+            var result = await core.DeleteTagAsync(preview.Name, preview.Revision, lifetime.Token);
+            if (disposed) return;
+            revision = result.Revision; refreshOnActivate = true; saving = false;
+            bool reloaded = active && await LoadAsync(reset: true);
+            if (!reloaded) stale = true;
+            if (!disposed) Message($"标签已删除，同时删除 {result.RemovedCount} 条历史（已保存 {result.StoredCount}、本次会话 {result.SessionCount}）。"
+                + (reloaded ? "" : " 目录尚未刷新，请刷新查看。")
+                + (result.CleanupError is null ? "" : " 附件清理未完成；历史删除已生效。"),
+                reloaded && result.CleanupError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (!disposed)
+            {
+                if (error is CoreException { Code: "history_conflict" or "not_found" }) stale = true;
+                Message($"未能删除，当前条目和输入已保留。请刷新并重新确认：{error.Message}", InfoBarSeverity.Error);
+            }
+        }
+        finally { if (ReferenceEquals(activeDialog, dialog)) activeDialog = null; saving = false; if (!disposed) UpdateCommands(); }
+    }
     private async void OnPoll(DispatcherQueueTimer sender, object args)
     {
         if (disposed || !active || IsBusy || polling || stale || revision is not { } expected) return;
@@ -332,7 +373,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     internal void ChooseColor(Color value) => Picker.Color = value;
     internal void Invoke(string command)
     {
-        var button = command switch { "rename" => RenameButton, "create" => CreateButton, "save" => SaveColorButton, "clear" => ClearColorButton,
+        var button = command switch { "delete" => DeleteButton, "rename" => RenameButton, "create" => CreateButton, "save" => SaveColorButton, "clear" => ClearColorButton,
             "reload" => ReloadButton, "more" => MoreButton, "filter" => FilterButton, _ => throw new ArgumentException(nameof(command)) };
         if (button.IsEnabled) ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     }
