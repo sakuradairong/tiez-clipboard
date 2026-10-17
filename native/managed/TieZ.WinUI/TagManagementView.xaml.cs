@@ -24,7 +24,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     private bool renameDirty;
     private ulong? revision;
     private string? after, acceptedColor, draftColor;
-    private string sortOrder = "count";
+    private string sortOrder = "count", searchTerm = "";
     private Color? knownPickerColor;
     private int generation;
     private bool active, disposed, loading, saving, polling, binding, dirty, stale, hasMore, refreshOnActivate;
@@ -42,6 +42,8 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     internal bool HasInvalidColor => dirty && draftColor is not null && !NativeTagColor.TryParse(draftColor, out _);
     internal int Count => rows.Count;
     internal string SortOrder => sortOrder;
+    internal string AcceptedSearch => searchTerm;
+    internal string SearchDraft { get => TagSearch.Text; set => TagSearch.Text = value; }
     internal IReadOnlyList<TagInfo> DisplayedTags => rows.Select(row => row.Info).ToArray();
     internal bool HasMore => hasMore;
     internal ulong? DisplayedRevision => revision;
@@ -52,7 +54,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => TagList.ContainerFromIndex(index) is not null);
     internal bool HasRetainedData => core is not null || rows.Count > 0 || selected is not null || revision is not null
         || acceptedColor is not null || draftColor is not null || ColorText.Text.Length > 0 || NewTagName.Text.Length > 0
-        || activeDialog is not null || RenameName.Text.Length > 0;
+        || activeDialog is not null || RenameName.Text.Length > 0 || searchTerm.Length > 0 || TagSearch.Text.Length > 0;
 
     public TagManagementView()
     {
@@ -68,6 +70,14 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             LoadSelected(TagList.SelectedItem as TagRow);
         };
         SortChoice.SelectionChanged += async (_, _) => await ChangeSortAsync();
+        TagSearch.TextChanging += (_, _) => { if (!binding) UpdateCommands(); };
+        SearchButton.Click += async (_, _) => await ApplySearchAsync();
+        ClearSearchButton.Click += async (_, _) => await ApplySearchAsync("");
+        TagSearch.KeyDown += async (_, args) =>
+        {
+            if (args.Key == Windows.System.VirtualKey.Enter && SearchButton.IsEnabled)
+            { args.Handled = true; await ApplySearchAsync(); }
+        };
         NewTagName.TextChanging += (_, _) => UpdateCommands();
         NewTagName.BeforeTextChanging += (_, args) =>
         {
@@ -159,7 +169,9 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     {
         if (disposed) return;
         bool ready = active && !IsBusy && activeDialog is null && revision is not null;
-        SortChoice.IsEnabled = ready && !HasDraft && !stale;
+        SortChoice.IsEnabled = TagSearch.IsEnabled = ready && !HasDraft && !stale;
+        SearchButton.IsEnabled = ready && !HasDraft && !stale && TagSearch.Text != searchTerm;
+        ClearSearchButton.IsEnabled = ready && !HasDraft && !stale && (TagSearch.Text.Length > 0 || searchTerm.Length > 0);
         CreateButton.IsEnabled = ready && !HasDraft && !stale && !string.IsNullOrWhiteSpace(NewTagName.Text);
         ReloadButton.IsEnabled = active && !IsBusy && activeDialog is null;
         MoreButton.IsEnabled = ready && hasMore && !HasDraft && !stale;
@@ -173,7 +185,8 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         SaveColorButton.IsEnabled = ready && selected is not null && dirty && !renameDirty && !stale && !HasInvalidColor;
         FilterButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
         DeleteButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
-        Status.Text = loading ? "正在读取标签…" : saving ? "正在保存…" : $"已载入 {rows.Count} 个标签" + (hasMore ? " · 可继续载入" : "");
+        Status.Text = loading ? "正在读取标签…" : saving ? "正在保存…" : $"已载入 {rows.Count} 个标签" + (hasMore ? " · 可继续载入" : "")
+            + (searchTerm.Length > 0 ? $" · 搜索“{searchTerm}”" : "");
     }
     private void Message(string message, InfoBarSeverity severity)
     { if (!disposed) { Feedback.Message = message; Feedback.Severity = severity; Feedback.IsOpen = true; } }
@@ -189,10 +202,18 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             binding = true; SortChoice.SelectedIndex = sortOrder == "name" ? 1 : 0; binding = false;
         }
     }
-    private async Task<bool> LoadAsync(bool reset, string? preferred = null, string? order = null)
+    private async Task ApplySearchAsync(string? requested = null)
+    {
+        if (disposed || !active || core is null || HasDraft || stale || IsBusy || activeDialog is not null) return;
+        string submitted = requested ?? TagSearch.Text;
+        if (submitted == searchTerm) { TagSearch.Text = submitted; UpdateCommands(); return; }
+        await LoadAsync(reset: true, search: submitted);
+    }
+    private async Task<bool> LoadAsync(bool reset, string? preferred = null, string? order = null, string? search = null)
     {
         if (disposed || !active || core is null || IsBusy || activeDialog is not null || (!reset && (!hasMore || HasDraft || stale))) return false;
         string requestedOrder = order ?? sortOrder;
+        string requestedSearch = search ?? searchTerm;
         preferred ??= selected?.Info.Name;
         int desired = reset ? Math.Max((int)PageSize, rows.Count) : (int)PageSize;
         readCancellation?.Cancel(); readCancellation?.Dispose();
@@ -204,7 +225,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             var staged = new List<TagRow>(); TagPage page;
             do
             {
-                page = await core.GetTagsAsync(new TagQuery(PageSize, cursor, expected, requestedOrder), cancellation.Token);
+                page = await core.GetTagsAsync(new TagQuery(PageSize, cursor, expected, requestedOrder, requestedSearch), cancellation.Token);
                 if (disposed || !active || current != generation || cancellation.IsCancellationRequested) return false;
                 if (page.HasMore && (page.NextAfter is null || page.NextAfter == cursor)) throw new InvalidDataException("Tag paging did not advance.");
                 staged.AddRange(page.Items.Select(info => new TagRow(info))); cursor = page.NextAfter; expected = page.Revision;
@@ -215,9 +236,10 @@ public sealed partial class TagManagementView : UserControl, IDisposable
                 if (reset) { TagList.SelectedItem = null; rows.Clear(); }
                 foreach (var row in staged) rows.Add(row);
                 TagList.SelectedItem = rows.FirstOrDefault(row => row.Info.Name == preferred);
+                if (search is not null) TagSearch.Text = requestedSearch;
             }
             finally { binding = false; }
-            sortOrder = requestedOrder;
+            sortOrder = requestedOrder; searchTerm = requestedSearch;
             revision = page.Revision; after = page.NextAfter; hasMore = page.HasMore; stale = false; refreshOnActivate = false;
             LoadSelected(TagList.SelectedItem as TagRow); Feedback.IsOpen = false; return true;
         }
@@ -366,7 +388,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         activeDialog?.Hide(); activeDialog = null;
         poll?.Stop(); if (poll is not null) poll.Tick -= OnPoll;
         readCancellation?.Dispose(); readCancellation = null; lifetime.Dispose();
-        binding = true; sortOrder = "count"; SortChoice.SelectedIndex = 0;
+        binding = true; sortOrder = "count"; searchTerm = ""; TagSearch.Text = ""; SortChoice.SelectedIndex = 0;
         TagList.SelectedItem = null; rows.Clear(); selected = null; acceptedColor = draftColor = after = null; revision = null; core = null;
         NewTagName.Text = ColorText.Text = RenameName.Text = SelectedName.Text = SelectedCounts.Text = Status.Text = "";
         Picker.Color = Colors.Transparent; knownPickerColor = null; Feedback.IsOpen = false; Feedback.Message = ""; FilterRequested = null;
@@ -393,7 +415,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     internal void ChooseColor(Color value) => Picker.Color = value;
     internal void Invoke(string command)
     {
-        var button = command switch { "delete" => DeleteButton, "rename" => RenameButton, "create" => CreateButton, "save" => SaveColorButton, "clear" => ClearColorButton,
+        var button = command switch { "search" => SearchButton, "clear-search" => ClearSearchButton, "delete" => DeleteButton, "rename" => RenameButton, "create" => CreateButton, "save" => SaveColorButton, "clear" => ClearColorButton,
             "reload" => ReloadButton, "more" => MoreButton, "filter" => FilterButton, _ => throw new ArgumentException(nameof(command)) };
         if (button.IsEnabled) ((IInvokeProvider)new ButtonAutomationPeer(button).GetPattern(PatternInterface.Invoke)).Invoke();
     }

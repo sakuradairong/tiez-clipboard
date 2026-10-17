@@ -157,7 +157,32 @@ internal static class TagSmoke
         core.DeleteEntryAsync(first.Id).GetAwaiter().GetResult();
         Expect("history_conflict", () => core.GetTagsAsync(new TagQuery(After: names[0], ExpectedRevision: accepted, Sort: "count")).GetAwaiter().GetResult());
         core.DeleteEntryAsync(second.Id).GetAwaiter().GetResult();
+        Search(core);
         Console.WriteLine("Tag count sorting: full-catalog order, deterministic ties, bounded paging, invalid/stale cursors and compatibility default passed.");
+    }
+
+    private static void Search(NativeCore core)
+    {
+        ulong revision = core.GetTagsAsync().GetAwaiter().GetResult().Revision;
+        const string label = "search-É ' %_ 标签";
+        core.CreateTagAsync(label, revision).GetAwaiter().GetResult();
+        var page = core.GetTagsAsync(new TagQuery(Search: "SEARCH-é ' %_", Sort: "count")).GetAwaiter().GetResult();
+        Check(page.Items.Count == 1 && page.Items[0].Name == label, "Unicode/literal tag search DTO");
+        var allExpected = All(core).Where(tag => tag.Name.Contains("%_", StringComparison.Ordinal)).Select(tag => tag.Name).ToArray();
+        Check(core.GetTagsAsync(new TagQuery(Search: "%_")).GetAwaiter().GetResult().Items.Select(tag => tag.Name).SequenceEqual(allExpected),
+            "Search treated percent/underscore as wildcard");
+        var expected = All(core).Where(tag => tag.Name.Contains("sort-20", StringComparison.Ordinal)).Select(tag => tag.Name).ToArray();
+        var names = new List<string>(); string? after = null; ulong? accepted = null;
+        do
+        {
+            var next = core.GetTagsAsync(new TagQuery(2, after, accepted, "name", "SORT-20")).GetAwaiter().GetResult();
+            names.AddRange(next.Items.Select(tag => tag.Name)); after = next.NextAfter; accepted = next.Revision;
+        } while (after is not null);
+        Check(names.SequenceEqual(expected) && names.Count == 5, "Search did not reach matches beyond the first 200 tags");
+        var missing = core.GetTagsAsync(new TagQuery(Search: "no-such-tag-filter")).GetAwaiter().GetResult();
+        Check(!missing.HasMore && missing.NextAfter is null && missing.Items.Count == 0, "Empty tag search retained results/cursor");
+        Check(core.GetTagsAsync().GetAwaiter().GetResult().Revision == accepted, "Search wrote history metadata");
+        Console.WriteLine("Tag search: Unicode/literal matches, whole-catalog filtered paging, exact names, empty results and readonly state passed.");
     }
 
 }

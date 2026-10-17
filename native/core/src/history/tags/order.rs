@@ -1,11 +1,11 @@
-use super::{failure, HistoryService, TagInfo, TagPage, TagQuery};
+use super::{failure, HistoryService, TagInfo, TagPage, TagQuery, TagSort};
 use crate::{CoreError, CoreResult};
-use rusqlite::params;
+use rusqlite::{functions::FunctionFlags, params};
 use std::collections::{BTreeMap, BTreeSet};
 use tiez_storage::database::has_sensitive_tag;
 
 impl HistoryService {
-    pub(super) fn tag_page_by_count(&self, query: TagQuery) -> CoreResult<TagPage> {
+    pub(super) fn tag_page_ranked(&self, query: TagQuery) -> CoreResult<TagPage> {
         // Session rows are bounded; count a repeated tag only once per row.
         let mut session_counts = BTreeMap::<&str, usize>::new();
         for entry in &self.session {
@@ -14,15 +14,32 @@ impl HistoryService {
             }
         }
         let connection = self.connection.lock().map_err(failure)?;
+        let term = query.search.to_lowercase();
+        let cursor_matches = query
+            .after
+            .as_ref()
+            .is_none_or(|name| name.to_lowercase().contains(&term));
+        // SQLite lower()/LIKE do not implement Unicode case folding. This connection-local
+        // deterministic function does not persist schema, settings or extension code.
+        connection
+            .create_scalar_function(
+                "tiez_tag_match",
+                1,
+                FunctionFlags::SQLITE_UTF8
+                    | FunctionFlags::SQLITE_DETERMINISTIC
+                    | FunctionFlags::SQLITE_INNOCUOUS,
+                move |context| Ok(context.get::<String>(0)?.to_lowercase().contains(&term)),
+            )
+            .map_err(failure)?;
         if let Some(after) = &query.after {
             let stored: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM saved_tags WHERE name=?1 UNION ALL SELECT 1 FROM entry_tags WHERE tag=?1)",
                 [after], |row| row.get(0),
             ).map_err(failure)?;
-            if !stored && !session_counts.contains_key(after.as_str()) {
+            if !cursor_matches || (!stored && !session_counts.contains_key(after.as_str())) {
                 return Err(CoreError::new(
                     "invalid_tag_cursor",
-                    "The count-order cursor tag does not exist",
+                    "The cursor tag does not exist in this search/sort query",
                 ));
             }
         }
@@ -34,19 +51,21 @@ impl HistoryService {
              counts AS (SELECT names.name, COALESCE(usage.stored_count,0) AS stored_count,
                         COALESCE(sessions.session_count,0) AS session_count, NULLIF(saved_tags.color,'') AS color,
                         COALESCE(usage.stored_count,0) + COALESCE(sessions.session_count,0) AS total
-                        FROM names LEFT JOIN usage USING(name) LEFT JOIN sessions USING(name) LEFT JOIN saved_tags USING(name)),
+                        FROM names LEFT JOIN usage USING(name) LEFT JOIN sessions USING(name) LEFT JOIN saved_tags USING(name) WHERE tiez_tag_match(names.name)),
              cursor AS (SELECT total FROM counts WHERE name=?2)
              SELECT name,stored_count,session_count,color FROM counts
-             WHERE (?2 IS NULL OR total < (SELECT total FROM cursor)
-                    OR (total = (SELECT total FROM cursor) AND name > ?2 COLLATE BINARY))
-             ORDER BY total DESC, name COLLATE BINARY LIMIT ?3"
+             WHERE (?2 IS NULL OR (?4=0 AND name > ?2 COLLATE BINARY)
+                    OR (?4=1 AND (total < (SELECT total FROM cursor)
+                        OR (total = (SELECT total FROM cursor) AND name > ?2 COLLATE BINARY))))
+             ORDER BY CASE WHEN ?4=1 THEN total END DESC, name COLLATE BINARY LIMIT ?3"
         ).map_err(failure)?;
         let rows = statement
             .query_map(
                 params![
                     serde_json::to_string(&session_counts).map_err(failure)?,
                     query.after,
-                    limit as i64 + 1
+                    limit as i64 + 1,
+                    matches!(query.sort, TagSort::Count)
                 ],
                 |row| {
                     let name: String = row.get(0)?;
@@ -169,6 +188,7 @@ mod tests {
                     limit: 7,
                     after,
                     expected_revision: Some(before),
+                    ..Default::default()
                 })
                 .unwrap();
             assert!(page.items.len() <= 7);

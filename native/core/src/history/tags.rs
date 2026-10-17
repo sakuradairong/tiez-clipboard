@@ -1,5 +1,7 @@
 mod delete;
 mod order;
+#[cfg(test)]
+mod search;
 
 use super::{failure, HistoryService};
 use crate::{CoreError, CoreResult};
@@ -20,6 +22,7 @@ pub enum TagSort {
 #[serde(default, deny_unknown_fields)]
 pub struct TagQuery {
     pub sort: TagSort,
+    pub search: String,
     pub limit: u32,
     pub after: Option<String>,
     pub expected_revision: Option<u64>,
@@ -28,6 +31,7 @@ impl Default for TagQuery {
     fn default() -> Self {
         Self {
             sort: TagSort::Name,
+            search: String::new(),
             limit: 100,
             after: None,
             expected_revision: None,
@@ -67,8 +71,8 @@ impl HistoryService {
                 "Tags changed; refresh before continuing",
             ));
         }
-        if matches!(query.sort, TagSort::Count) {
-            return self.tag_page_by_count(query);
+        if matches!(query.sort, TagSort::Count) || !query.search.is_empty() {
+            return self.tag_page_ranked(query);
         }
         let limit = query.limit.clamp(1, 200) as usize;
         let connection = self.connection.lock().map_err(failure)?;

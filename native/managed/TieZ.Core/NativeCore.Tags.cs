@@ -1,6 +1,6 @@
 namespace TieZ.Core;
 
-public sealed record TagQuery(uint Limit = 100, string? After = null, ulong? ExpectedRevision = null, string Sort = "name");
+public sealed record TagQuery(uint Limit = 100, string? After = null, ulong? ExpectedRevision = null, string Sort = "name", string Search = "");
 public sealed record TagInfo(string Name, long StoredCount, int SessionCount, string? Color, bool IsSensitive)
 {
     public long Count => StoredCount + SessionCount;

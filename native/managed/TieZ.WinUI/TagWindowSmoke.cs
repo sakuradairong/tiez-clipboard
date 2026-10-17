@@ -337,6 +337,58 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                     break;
                 case 51:
                     if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 52:
+                    if (view.HasDialog) return;
+                    view.SearchDraft = "TAG-10"; view.Invoke("search");
+                    break;
+                case 53:
+                    Check(view.Count == 5 && !view.HasMore && view.AcceptedSearch == "TAG-10"
+                        && view.DisplayedTags.All(tag => tag.Name.StartsWith("tag-10", StringComparison.Ordinal)), "Full catalog search omitted late tags.");
+                    view.ChooseSort("count");
+                    break;
+                case 54:
+                    Check(view.Count == 5 && view.SortOrder == "count" && view.AcceptedSearch == "TAG-10", "Sort discarded the active tag search.");
+                    view.SearchDraft = Legacy; view.Invoke("search");
+                    break;
+                case 55:
+                    Check(view.Count == 1 && view.DisplayedTags[0].Name == Legacy && view.AcceptedSearch == Legacy, "Search changed the raw legacy name/whitespace.");
+                    view.SearchDraft = "%_不存在"; view.Invoke("search");
+                    break;
+                case 56:
+                    Check(view.Count == 0 && !view.HasMore && view.SelectedTag is null && !view.HasError, "Empty search retained old rows or selection.");
+                    view.Invoke("clear-search");
+                    break;
+                case 57:
+                    Check(view.AcceptedSearch == "" && view.SearchDraft == "" && view.Count == 100 && view.HasMore
+                        && view.DisplayedTags.Select(tag => tag.Name).SequenceEqual(core.GetTagsAsync(new TagQuery(Sort: "count")).GetAwaiter().GetResult().Items.Select(tag => tag.Name)),
+                        "Clear search did not restore the bounded first catalog page.");
+                    view.SearchDraft = "delete-"; view.Invoke("search");
+                    break;
+                case 58:
+                    Check(view.Count == 1 && view.DisplayedTags[0].Name == "delete-other", "Tag search returned unrelated names.");
+                    view.Select("delete-other"); view.EditColor("#123456"); view.SearchDraft = "tag-"; view.Invoke("search");
+                    Check(view.HasDraft && view.AcceptedSearch == "delete-" && view.Count == 1, "Search discarded an unsaved color.");
+                    main.HideToTray(); main.ShowMain();
+                    break;
+                case 59:
+                    Check(view.HasDraft && view.ColorDraft == "#123456" && view.SearchDraft == "tag-" && view.AcceptedSearch == "delete-",
+                        "Hide/reopen lost the applied filter, pending search or tag draft.");
+                    view.Invoke("reload");
+                    break;
+                case 60:
+                    Check(!view.HasDraft && view.AcceptedSearch == "delete-" && view.SearchDraft == "tag-" && view.DisplayedRevision == tagRevision,
+                        "Refresh saved a search, discarded pending input or failed to discard the tag draft.");
+                    view.Invoke("clear-search");
+                    break;
+                case 61:
+                    Check(view.AcceptedSearch == "" && !view.HasError && view.DisplayedRevision == tagRevision && core.Snapshot.Revision == 1,
+                        "Readonly search changed settings/history revision.");
+                    view.Select("delete-other"); view.Invoke("delete");
+                    break;
+                case 62:
+                    if (!view.HasDialog) return;
                     Finish(true, null); return;
             }
             phase++;

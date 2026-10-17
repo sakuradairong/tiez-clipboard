@@ -13,6 +13,12 @@
             <Button x:Name="ReloadButton" Grid.Column="2" Content="刷新" VerticalAlignment="Bottom"/>
         </Grid>
         <StackPanel Grid.Row="2" Spacing="6">
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBox x:Name="TagSearch" PlaceholderText="搜索全部标签（不区分大小写）" AutomationProperties.Name="搜索标签目录"/>
+                <Button x:Name="SearchButton" Grid.Column="1" Content="搜索"/>
+                <Button x:Name="ClearSearchButton" Grid.Column="2" Content="清除搜索"/>
+            </Grid>
             <ComboBox x:Name="SortChoice" Header="标签排序" SelectedIndex="0" HorizontalAlignment="Left" MinWidth="180">
                 <ComboBoxItem Content="历史数量（多到少）"/>
                 <ComboBoxItem Content="名称"/>
