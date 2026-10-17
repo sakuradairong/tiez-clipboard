@@ -80,7 +80,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         {
             Require(elapsed.Elapsed < TimeSpan.FromSeconds(90), $"Timed out in phase {phase}.");
             var view = main.History;
-            if (view.IsBusy) return;
+            // A dialog reference is set before its popup template/buttons finish loading.
+            if (view.IsBusy || (view.HasDialog && !view.IsDialogReady)) return;
             switch (phase)
             {
                 case 0:

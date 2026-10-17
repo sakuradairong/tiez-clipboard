@@ -793,6 +793,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal bool CanReveal => RevealButton.Visibility == Visibility.Visible;
     internal bool ExternalPending => externalPending;
     internal bool HasDialog => activeDialog is not null;
+    internal bool IsDialogReady => activeDialog is { IsLoaded: true }
+        && Descendants<Button>(activeDialog).Any(button => button.Name == "PrimaryButton" && button.IsLoaded)
+        && Descendants<Button>(activeDialog).Any(button => button.Name == "CloseButton" && button.IsLoaded);
     internal string DialogText => dialogInput?.Text ?? "";
     internal bool HasError => Feedback.IsOpen && Feedback.Severity == InfoBarSeverity.Error;
     internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => HistoryList.ContainerFromIndex(index) is not null);
