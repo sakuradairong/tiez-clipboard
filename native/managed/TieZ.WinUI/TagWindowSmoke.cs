@@ -17,6 +17,7 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
     private bool ticking;
     private long entryId, deleteSecond, deleteKept;
     private ulong tagRevision;
+    private readonly List<long> sortIds = [];
     private const string Existing = "tag-000", Legacy = "  tag-000  ", Created = "aaa-原生标签";
     private static void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
     internal void Start()
@@ -388,6 +389,68 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                     view.Select("delete-other"); view.Invoke("delete");
                     break;
                 case 62:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 63:
+                    if (view.HasDialog) return;
+                    for (int index = 0; index < 210; index++)
+                    {
+                        var fixture = await core.AddManualAsync($"原生排序 {index:000}", tags: new[] { "order-fixture" });
+                        sortIds.Add(fixture.Id); tagRevision = fixture.Revision;
+                    }
+                    tagRevision = (await core.SetPinnedAsync(sortIds[0], true)).Revision;
+                    main.NavigateHistory(); main.History.ShowTag("order-fixture");
+                    break;
+                case 64:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.SortOrder == "time" && main.History.ActiveTagFilter == "order-fixture"
+                        && main.History.Rows.Count == 50 && main.History.Rows[0].Id == sortIds[^1],
+                        "Tag record default time sort or bounded first page failed.");
+                    main.History.Invoke("more");
+                    break;
+                case 65:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.Rows.Count == 100 && main.History.Rows.Select(row => row.Id).SequenceEqual(sortIds.AsEnumerable().Reverse().Take(100)),
+                        "Time sorting changed order or repeated records across pages.");
+                    main.History.ChooseSort("default");
+                    break;
+                case 66:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.SortOrder == "default" && main.History.Rows[0].Id == sortIds[0], "Explicit default sort lost pinned priority.");
+                    main.History.ChooseSort("usage");
+                    break;
+                case 67:
+                    if (main.History.IsBusy) return;
+                    var expectedOrder = await core.GetHistoryAsync(new(Tag: "order-fixture", Sort: "usage"));
+                    Check(main.History.SortOrder == "usage" && main.History.Rows.Select(row => row.Id).SequenceEqual(expectedOrder.Items.Select(row => row.Id))
+                        && main.History.Rows[0].Id == sortIds[0] && main.History.Rows[0].Metadata.Contains("使用 0 次"), "Native usage choice lost the core order, legacy tie priority or displayed count.");
+                    main.HideToTray(); main.ShowMain();
+                    break;
+                case 68:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.SortOrder == "usage" && main.History.ActiveTagFilter == "order-fixture", "Hide/reopen lost record sort/tag state.");
+                    main.History.ChooseSort("time");
+                    break;
+                case 69:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.SortOrder == "time" && main.History.Rows[0].Id == sortIds[^1], "Time switch failed after reopen.");
+                    main.History.Search("不存在的排序记录");
+                    break;
+                case 70:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.Rows.Count == 0 && !main.History.CanDelete && main.History.Detail == "", "Empty sorted search left stale rows/actions/content.");
+                    main.History.Search("");
+                    break;
+                case 71:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.Rows[0].Id == sortIds[^1] && core.Snapshot.Revision == 1, "Clearing sorted search changed settings or lost order.");
+                    main.NavigateTags(); view.Invoke("reload");
+                    break;
+                case 72:
+                    view.Select("delete-other"); view.Invoke("delete");
+                    break;
+                case 73:
                     if (!view.HasDialog) return;
                     Finish(true, null); return;
             }

@@ -79,6 +79,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         }
         TagFilter.TextChanging += (_, _) => exactTagFilter = null;
         TypeFilter.SelectionChanged += (_, _) => ScheduleSearch();
+        OrderChoice.SelectionChanged += (_, _) => ScheduleSearch();
         PinnedOnly.Checked += (_, _) => ScheduleSearch();
         PinnedOnly.Unchecked += (_, _) => ScheduleSearch();
         TagOnly.Checked += (_, _) => ScheduleSearch();
@@ -269,7 +270,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             ExpectedRevision: reset ? null : revision, Search: SearchText.Text,
             ContentType: Types[Math.Max(0, TypeFilter.SelectedIndex)],
             Tag: exactTagFilter ?? (string.IsNullOrWhiteSpace(TagFilter.Text) ? null : TagFilter.Text.Trim()),
-            TagOnly: TagOnly.IsChecked == true, PinnedOnly: PinnedOnly.IsChecked == true);
+            TagOnly: TagOnly.IsChecked == true, PinnedOnly: PinnedOnly.IsChecked == true, Sort: SortOrder);
         loading = true;
         UpdateCommands();
         try
@@ -459,6 +460,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = HistoryList.SelectedItems.Count == 1 ? HistoryList.SelectedItem as HistoryRow : null;
         bool available = !busy && activeDialog is null;
+        OrderChoice.IsEnabled = available;
         if (busy || activeDialog is not null || externalPending) PreviewInvalidated?.Invoke();
         PreviewButton.IsEnabled = available && !externalPending && compactMode && selected is { IsStale: false }
             && selected.Summary.ContentType != "file" && (!selected.Summary.IsSensitive || selectedEntry is not null);
@@ -713,7 +715,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; exactTagFilter = null;
+        disposed = true; exactTagFilter = null; OrderChoice.SelectedIndex = 0;
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         generation++;
         detailGeneration++;
@@ -800,10 +802,18 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal bool HasError => Feedback.IsOpen && Feedback.Severity == InfoBarSeverity.Error;
     internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => HistoryList.ContainerFromIndex(index) is not null);
     internal string ActiveTagFilter => exactTagFilter ?? TagFilter.Text.Trim();
+    internal string SortOrder => OrderChoice.SelectedIndex switch { 1 => "time", 2 => "usage", _ => "default" };
+    internal void ChooseSort(string sort)
+    {
+        if (!OrderChoice.IsEnabled) throw new InvalidOperationException("Record sort is disabled.");
+        OrderChoice.SelectedIndex = sort switch { "time" => 1, "usage" => 2, _ => 0 };
+    }
     internal void ShowTag(string name)
     {
         SearchText.Text = ""; TypeFilter.SelectedIndex = 0; PinnedOnly.IsChecked = TagOnly.IsChecked = false;
-        TagFilter.Text = name; exactTagFilter = name; ScheduleSearch();
+        TagFilter.Text = name; exactTagFilter = name;
+        if (OrderChoice.SelectedIndex == 0) OrderChoice.SelectedIndex = 1;
+        ScheduleSearch();
     }
     internal void Search(string text) => SearchText.Text = text;
     internal void Filter(int typeIndex, string tag, bool pinned)

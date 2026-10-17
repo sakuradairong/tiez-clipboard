@@ -16,6 +16,7 @@ internal static class HistorySmoke
 
     internal static long Run(NativeCore core)
     {
+        HistoryOrderingSmoke.Run(core);
         string body = " managed 中文 %_ \r\n ";
         var saved = Read(core.AddManualAsync(body));
         var rich = Read(core.AddManualAsync("managed rich", "rich_text", "<b>managed rich</b>"));

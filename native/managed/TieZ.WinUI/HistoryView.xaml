@@ -53,6 +53,11 @@
                 <CheckBox x:Name="PinnedOnly" Content="仅置顶"/>
                 <CheckBox x:Name="TagOnly" Content="仅搜索标签"/>
             </StackPanel>
+            <ComboBox x:Name="OrderChoice" Header="记录排序" SelectedIndex="0" MinWidth="180" HorizontalAlignment="Left">
+                <ComboBoxItem Content="默认（置顶优先）"/>
+                <ComboBoxItem Content="时间（新到旧）"/>
+                <ComboBoxItem Content="使用频率（高到低）"/>
+            </ComboBox>
         </StackPanel>
         <CommandBar Grid.Row="3" HorizontalContentAlignment="Left" DefaultLabelPosition="Right">
             <AppBarButton x:Name="CaptureButton" Label="开始采集" Icon="Play"/>

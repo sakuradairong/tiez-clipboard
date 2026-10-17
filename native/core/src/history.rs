@@ -1,3 +1,4 @@
+mod sorting;
 mod tags;
 pub use tags::TagQuery;
 
@@ -32,9 +33,18 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistorySort {
+    #[default]
+    Default,
+    Time,
+    Usage,
+}
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HistoryQuery {
+    pub sort: HistorySort,
     pub limit: u32,
     pub offset: u32,
     pub expected_revision: Option<u64>,
@@ -47,6 +57,7 @@ pub struct HistoryQuery {
 impl Default for HistoryQuery {
     fn default() -> Self {
         Self {
+            sort: HistorySort::Default,
             limit: 50,
             offset: 0,
             expected_revision: None,
@@ -251,6 +262,9 @@ impl HistoryService {
                 "history_conflict",
                 "History changed; restart paging from the first page",
             ));
+        }
+        if !matches!(q.sort, HistorySort::Default) {
+            return self.sorted_page(q);
         }
         let mut items = Vec::new();
         let (mut offset, mut scanned, mut count, mut has_more) = (q.offset, 0, 0, true);

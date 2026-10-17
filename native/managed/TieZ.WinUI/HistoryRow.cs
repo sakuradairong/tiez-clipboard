@@ -12,6 +12,7 @@ public sealed class HistoryRow(HistorySummary summary, bool isStale = false)
         Summary.IsPinned ? "置顶" : null,
         Summary.ContentType,
         Summary.SourceApp,
+        $"使用 {Summary.UseCount} 次",
         Summary.Id < 0 ? "仅本次会话" : null,
         Summary.Tags.Count > 0 ? string.Join(" / ", Summary.Tags) : null
     }.Where(value => !string.IsNullOrEmpty(value)));

@@ -4,7 +4,7 @@ namespace TieZ.Core;
 public sealed record HistoryQuery(
     uint Limit = 50, uint Offset = 0, ulong? ExpectedRevision = null,
     string Search = "", string? ContentType = null, string? Tag = null,
-    bool TagOnly = false, bool PinnedOnly = false);
+    bool TagOnly = false, bool PinnedOnly = false, string Sort = "default");
 
 public sealed record HistorySummary(
     long Id, string ContentType, string Preview, string SourceApp, long Timestamp,
