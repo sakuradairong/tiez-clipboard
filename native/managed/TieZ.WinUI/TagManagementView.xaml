@@ -43,6 +43,10 @@
                     <TextBlock x:Name="SelectedName" Text="选择一个标签" FontSize="20" TextWrapping="Wrap"/>
                     <TextBlock x:Name="SelectedCounts" TextWrapping="Wrap"/>
                     <Button x:Name="FilterButton" Content="查看此标签的历史"/>
+                    <TextBox x:Name="RenameName" Header="新名称" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <Button x:Name="RenameButton" Content="重命名或合并…"/>
+                    <TextBlock Text="名称已存在时会合并，保留目标标签颜色。敏感标签名称会改变内容保护状态。"
+                               TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     <TextBox x:Name="ColorText" Header="标签颜色" PlaceholderText="默认颜色；可输入 HEX、RGB、RGBA 或颜色名称"
                              AcceptsReturn="True" TextWrapping="Wrap"/>
                     <TextBlock x:Name="ColorHint" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
@@ -51,7 +55,7 @@
                         <Button x:Name="ClearColorButton" Content="使用默认颜色"/>
                         <Button x:Name="SaveColorButton" Content="保存颜色"/>
                     </StackPanel>
-                    <TextBlock Text="切换页面会保留颜色草稿。刷新会放弃当前颜色修改，并保留尚未添加的新标签名称。"
+                    <TextBlock Text="切换页面会保留草稿。颜色与名称请分别保存；刷新会放弃当前标签修改，并保留尚未添加的新标签名称。"
                                TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>
             </ScrollViewer>

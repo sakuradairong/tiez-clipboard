@@ -56,6 +56,7 @@ internal static class TagSmoke
             core.DeleteEntryAsync(added.Id).GetAwaiter().GetResult();
             var feed = core.GetHistoryChangesAsync(0).GetAwaiter().GetResult();
             Check(feed.ResyncRequired && feed.PersistentSyncPending, "Tag metadata did not invalidate stale consumers");
+            Rename(core);
             Check(core.Snapshot.Revision == 0 && notifications == 0, "Tag metadata wrote settings or emitted setting events");
         }
         using var reopened = new NativeCore(database);
@@ -66,4 +67,33 @@ internal static class TagSmoke
         Check(All(reopened).Single(tag => tag.Name == Name).Color is null, "Cleared tag color remained set");
         Console.WriteLine("Tag catalog/create/color: paging, counts, conflicts, cancellation, no-op/settings and reopen passed.");
     }
+    private static void Rename(NativeCore core)
+    {
+        const string source = "zz-rename-source", target = "zz-rename-target";
+        var entry = core.AddManualAsync("  rename\r\n ", "rich_text", "<b>original</b>", new[] { source, target }).GetAwaiter().GetResult();
+        var firstColor = core.SetTagColorAsync(source, "red", entry.Revision).GetAwaiter().GetResult();
+        var secondColor = core.SetTagColorAsync(target, "navy", firstColor.Revision).GetAwaiter().GetResult();
+        var result = core.RenameTagAsync(source, " " + target + " ", secondColor.Revision).GetAwaiter().GetResult();
+        Check(result.Changed && result.Revision == secondColor.Revision + 1 && result.PersistentSyncPending, "Tag rename mutation DTO/revision");
+        Check(!All(core).Any(tag => tag.Name == source) && All(core).Single(tag => tag.Name == target).Color == "navy", "Rename merge color/source removal");
+        var stored = core.GetEntryAsync(entry.Id).GetAwaiter().GetResult();
+        Check(stored.Tags.SequenceEqual(new[] { target }) && stored.Content == "  rename\r\n " && stored.HtmlContent == "<b>original</b>", "Rename changed entry payload or duplicated merged tag");
+        Expect("history_conflict", () => core.RenameTagAsync(target, source, secondColor.Revision).GetAwaiter().GetResult());
+        Expect("not_found", () => core.RenameTagAsync("no-such-tag", source, result.Revision).GetAwaiter().GetResult());
+        Expect("invalid_tag", () => core.RenameTagAsync(target, " ", result.Revision).GetAwaiter().GetResult());
+        Check(!core.RenameTagAsync(target, target, result.Revision).GetAwaiter().GetResult().Changed, "Rename same-name no-op advanced revision");
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        try { core.RenameTagAsync(target, source, result.Revision, cancelled.Token).GetAwaiter().GetResult(); throw new Exception("Cancelled rename ran"); }
+        catch (OperationCanceledException) { }
+        var sensitive = core.RenameTagAsync(target, "PASSWORD", result.Revision).GetAwaiter().GetResult();
+        Check(All(core).Single(tag => tag.Name == "PASSWORD").IsSensitive, "Renamed sensitive alias classification");
+        Expect("sensitive_confirmation", () => core.GetPreviewEntryAsync(entry.Id, sensitive.Revision, false).GetAwaiter().GetResult());
+        Check(core.GetEntryAsync(entry.Id).GetAwaiter().GetResult().HtmlContent == "<b>original</b>", "Sensitive rename lost original HTML");
+        var ordinary = core.RenameTagAsync("PASSWORD", source, sensitive.Revision).GetAwaiter().GetResult();
+        Check(core.GetPreviewEntryAsync(entry.Id, ordinary.Revision, false).GetAwaiter().GetResult().Content == "  rename\r\n ", "Rename out of sensitive failed");
+        core.DeleteEntryAsync(entry.Id).GetAwaiter().GetResult();
+        Check(All(core).Single(tag => tag.Name == source).Count == 0, "Renamed tag disappeared after its last entry was deleted");
+        Console.WriteLine("Tag rename/merge: colors, original formats, sensitive aliases, no-op/stale/invalid/cancellation passed.");
+    }
+
 }

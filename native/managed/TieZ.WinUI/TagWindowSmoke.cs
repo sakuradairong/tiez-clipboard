@@ -142,7 +142,78 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
                     view.Invoke("reload");
                     break;
                 case 15:
-                    view.EditColor("#010203"); view.NewNameDraft = "退出时清除";
+                    Check(!view.HasDraft, "Reload did not discard old color draft.");
+                    view.EditName("tag-renamed"); view.Invoke("rename");
+                    break;
+                case 16:
+                    if (!view.HasDialog) return;
+                    Check(view.DialogText.Contains("敏感") && view.DialogText.Contains("合并") && ReadTag(Existing).Count == 1,
+                        "Rename confirmation omitted merge/privacy consequences or saved before confirmation.");
+                    view.InvokeDialog(confirm: false);
+                    break;
+                case 17:
+                    if (view.HasDialog) return;
+                    Check(view.HasDraft && view.RenameDraft == "tag-renamed" && view.DisplayedRevision == tagRevision,
+                        "Cancel discarded the name draft or renamed a tag.");
+                    main.NavigateHistory(); main.NavigateTags();
+                    Check(view.RenameDraft == "tag-renamed" && view.HasDraft, "Navigation lost the rename draft.");
+                    view.Invoke("rename");
+                    break;
+                case 18:
+                    if (!view.HasDialog) return;
+                    tagRevision = (await core.CreateTagAsync("late-rename-conflict", tagRevision)).Revision;
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 19:
+                    if (view.HasDialog) return;
+                    Check(view.HasConflict && view.HasError && view.HasDraft && view.RenameDraft == "tag-renamed"
+                        && ReadTag(Existing).Count == 1, "Stale rename changed entry or dropped its draft.");
+                    view.Invoke("reload");
+                    break;
+                case 20:
+                    Check(!view.HasDraft && !view.HasConflict && view.SelectedTag == Existing, "Reload did not reset rejected rename state.");
+                    view.EditName(Created); view.Invoke("rename");
+                    break;
+                case 21:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 22:
+                    Check(!view.HasDraft && !view.HasError && view.SelectedTag == Created && view.DisplayedRevision == tagRevision + 1
+                        && ReadTag(Created).Count == 1 && ReadTag(Created).Color is null, "Rename merge failed, retained wrong source color or lost selection.");
+                    tagRevision++;
+                    Check(core.GetEntryAsync(entryId).GetAwaiter().GetResult().Tags.SequenceEqual(new[] { Created }), "Rename merge did not update entry tags.");
+                    view.EditName("PASSWORD"); view.Invoke("rename");
+                    break;
+                case 23:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 24:
+                    Check(!view.HasDraft && !view.HasError && view.SelectedTag == "PASSWORD" && ReadTag("PASSWORD").IsSensitive
+                        && view.DisplayedRevision == tagRevision + 1, "Sensitive native rename failed.");
+                    tagRevision++; view.Invoke("filter");
+                    break;
+                case 25:
+                    if (main.History.IsBusy) return;
+                    Check(main.History.Rows.Count == 1 && main.History.Rows[0].Summary.IsSensitive && main.History.Rows[0].Id == entryId,
+                        "History did not follow renamed sensitive tag.");
+                    main.NavigateTags(); view.EditName(Existing); view.Invoke("rename");
+                    break;
+                case 26:
+                    if (!view.HasDialog) return;
+                    view.InvokeDialog(confirm: true);
+                    break;
+                case 27:
+                    Check(!view.HasDraft && !view.HasError && view.SelectedTag == Existing && !ReadTag(Existing).IsSensitive
+                        && view.DisplayedRevision == tagRevision + 1, "Rename from sensitive did not restore ordinary tag state.");
+                    tagRevision++;
+                    Check(core.GetPreviewEntryAsync(entryId, tagRevision, false).GetAwaiter().GetResult().Content == "  标签窗口\r\n ",
+                        "Native rename changed content or left an ordinary entry sensitive.");
+                    view.EditName("退出时清除"); view.NewNameDraft = "退出时清除"; view.Invoke("rename");
+                    break;
+                case 28:
+                    if (!view.HasDialog) return;
                     Finish(true, null); return;
             }
             phase++;

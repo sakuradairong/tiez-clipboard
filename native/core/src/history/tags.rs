@@ -4,6 +4,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tiez_storage::database::has_sensitive_tag;
+use tiez_storage::infrastructure::repository::tag_repo::{SqliteTagRepository, TagRepository};
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -169,6 +170,52 @@ impl HistoryService {
             transaction.commit().map_err(failure)?;
             revision
         };
+        Ok(self.tag_committed(revision))
+    }
+    /// Reuse the production transaction for entry tags, encryption/OCR and color merging.
+    /// The caller holds the shared HistoryService mutex, including across repository commit.
+    pub fn rename_tag(
+        &mut self,
+        old_name: String,
+        new_name: String,
+        expected_revision: u64,
+    ) -> CoreResult<TagMutation> {
+        self.tag_revision(expected_revision)?;
+        let new_name = new_name.trim();
+        Self::tag_name(new_name)?;
+        let stored_exists: bool = self.connection.lock().map_err(failure)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM saved_tags WHERE name=?1 UNION ALL SELECT 1 FROM entry_tags WHERE tag=?1)",
+            [&old_name], |row| row.get(0),
+        ).map_err(failure)?;
+        let session_exists = self
+            .session
+            .iter()
+            .any(|entry| entry.tags.contains(&old_name));
+        if !stored_exists && !session_exists {
+            return Err(CoreError::new(
+                "not_found",
+                "Tag was not found; refresh the tag directory",
+            ));
+        }
+        if old_name == new_name {
+            return Ok(self.tag_unchanged());
+        }
+        let revision = self.next_revision()?;
+        let repository = SqliteTagRepository::new(self.connection.clone());
+        repository.rename(&old_name, new_name).map_err(failure)?;
+        // No fallible operations after commit: preserve IDs/content and merge duplicate names.
+        for entry in &mut self.session {
+            if !entry.tags.contains(&old_name) {
+                continue;
+            }
+            for tag in &mut entry.tags {
+                if *tag == old_name {
+                    *tag = new_name.to_string();
+                }
+            }
+            entry.tags.sort();
+            entry.tags.dedup();
+        }
         Ok(self.tag_committed(revision))
     }
     pub fn set_tag_color(
@@ -520,5 +567,281 @@ mod tests {
         assert_eq!(service.session[0].content, " text ");
         assert_eq!(service.session[0].id, -1);
         assert_eq!(service.revision, 0);
+    }
+    #[test]
+    fn rename_merges_colors_entries_and_sessions_with_one_revision() {
+        let mut service = service();
+        let first = service
+            .add_manual(
+                "rich_text".into(),
+                "  keep\r\n ".into(),
+                Some("<b>keep</b>".into()),
+                vec!["source".into(), "target".into(), "other".into()],
+            )
+            .unwrap();
+        let second = service
+            .add_manual("text".into(), "second".into(), None, vec!["source".into()])
+            .unwrap();
+        service
+            .set_tag_color("source".into(), Some("red".into()), service.revision)
+            .unwrap();
+        service
+            .set_tag_color("target".into(), Some("navy".into()), service.revision)
+            .unwrap();
+        let mut session = service.entry(first.id).unwrap();
+        session.id = -43;
+        service.session.push_back(session);
+        let before = service.revision;
+        let result = service
+            .rename_tag("source".into(), "  target  ".into(), before)
+            .unwrap();
+        assert!(result.changed && result.persistent_sync_pending);
+        assert_eq!(result.revision, before + 1);
+        assert_eq!(service.entry(first.id).unwrap().tags, ["other", "target"]);
+        assert_eq!(service.entry(second.id).unwrap().tags, ["target"]);
+        assert_eq!(service.entry(first.id).unwrap().content, "  keep\r\n ");
+        assert_eq!(
+            service.entry(first.id).unwrap().html_content.as_deref(),
+            Some("<b>keep</b>")
+        );
+        assert_eq!(service.session[0].id, -43);
+        assert_eq!(service.session[0].tags, ["other", "target"]);
+        let page = service.tag_page(TagQuery::default()).unwrap();
+        assert!(!page.items.iter().any(|tag| tag.name == "source"));
+        let target = page.items.iter().find(|tag| tag.name == "target").unwrap();
+        assert_eq!(
+            (
+                target.stored_count,
+                target.session_count,
+                target.color.as_deref()
+            ),
+            (2, 1, Some("navy"))
+        );
+        assert!(service.changes(before).unwrap().resync_required);
+        let writes = service
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert!(
+            !service
+                .rename_tag("target".into(), " target ".into(), result.revision)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(
+            service
+                .connection
+                .lock()
+                .unwrap()
+                .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            writes
+        );
+        assert_eq!(
+            service
+                .rename_tag("target".into(), "next".into(), before)
+                .unwrap_err()
+                .code,
+            "history_conflict"
+        );
+        assert_eq!(
+            service
+                .rename_tag("target".into(), " ".into(), result.revision)
+                .unwrap_err()
+                .code,
+            "invalid_tag"
+        );
+        assert_eq!(
+            service
+                .rename_tag("missing".into(), "new".into(), result.revision)
+                .unwrap_err()
+                .code,
+            "not_found"
+        );
+    }
+    #[test]
+    fn rename_transfers_legacy_color_and_keeps_session_only_identity() {
+        let mut service = service();
+        service
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO saved_tags(name,color) VALUES (?1,?2)",
+                params!["  legacy  ", "var(--accent)"],
+            )
+            .unwrap();
+        service
+            .rename_tag("  legacy  ".into(), " renamed ".into(), 0)
+            .unwrap();
+        assert_eq!(
+            service
+                .tag_page(TagQuery::default())
+                .unwrap()
+                .items
+                .iter()
+                .find(|tag| tag.name == "renamed")
+                .unwrap()
+                .color
+                .as_deref(),
+            Some("var(--accent)")
+        );
+        let first = service
+            .add_manual("text".into(), "  session\r\n ".into(), None, vec![])
+            .unwrap();
+        let mut session = service.entry(first.id).unwrap();
+        session.id = -99;
+        session.tags = vec!["session-only".into()];
+        service.session.push_back(session);
+        service
+            .rename_tag("session-only".into(), "密码".into(), service.revision)
+            .unwrap();
+        assert_eq!(service.session[0].id, -99);
+        assert_eq!(service.session[0].content, "  session\r\n ");
+        assert_eq!(service.session[0].tags, ["密码"]);
+        assert_eq!(
+            service
+                .preview_entry(-99, service.revision, false)
+                .unwrap_err()
+                .code,
+            "sensitive_confirmation"
+        );
+        service
+            .rename_tag("密码".into(), "session-renamed".into(), service.revision)
+            .unwrap();
+        assert!(service.preview_entry(-99, service.revision, false).is_ok());
+        assert!(service
+            .tag_page(TagQuery::default())
+            .unwrap()
+            .items
+            .iter()
+            .any(|tag| tag.name == "session-renamed"
+                && tag.session_count == 1
+                && tag.stored_count == 0));
+    }
+    #[test]
+    fn rename_sensitive_transition_preserves_original_formats_and_purges_ocr() {
+        let mut service = service();
+        let added = service
+            .add_manual(
+                "rich_text".into(),
+                "  private\r\n ".into(),
+                Some("<b>private</b>".into()),
+                vec!["plain".into()],
+            )
+            .unwrap();
+        service.connection.lock().unwrap().execute("INSERT INTO clipboard_image_analysis(entry_id,content_hash,ocr_text,analyzed_at) SELECT id,content_hash,'private OCR',1 FROM clipboard_history WHERE id=?1", [added.id]).unwrap();
+        service
+            .rename_tag("plain".into(), "PASSWORD".into(), service.revision)
+            .unwrap();
+        let entry = service.entry(added.id).unwrap();
+        assert_eq!(entry.content, "  private\r\n ");
+        assert_eq!(entry.html_content.as_deref(), Some("<b>private</b>"));
+        assert_eq!(
+            service
+                .preview_entry(added.id, service.revision, false)
+                .unwrap_err()
+                .code,
+            "sensitive_confirmation"
+        );
+        {
+            let connection = service.connection.lock().unwrap();
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_image_analysis WHERE entry_id=?1",
+                    [added.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+            #[cfg(all(windows, not(feature = "portable")))]
+            {
+                let protected: bool = connection.query_row("SELECT content LIKE 'dpapi:%' AND preview LIKE 'dpapi:%' AND html_content LIKE 'dpapi:%' FROM clipboard_history WHERE id=?1", [added.id], |row| row.get(0)).unwrap();
+                assert!(protected);
+            }
+        }
+        service
+            .rename_tag("PASSWORD".into(), "ordinary".into(), service.revision)
+            .unwrap();
+        let raw: String = service
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT content FROM clipboard_history WHERE id=?1",
+                [added.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "  private\r\n ");
+        assert!(service
+            .preview_entry(added.id, service.revision, false)
+            .is_ok());
+    }
+    #[test]
+    fn failed_rename_rolls_back_catalog_sessions_content_and_feed() {
+        let mut service = service();
+        let added = service
+            .add_manual("text".into(), "private".into(), None, vec!["source".into()])
+            .unwrap();
+        service
+            .create_tag("source".into(), service.revision)
+            .unwrap();
+        let mut session = service.entry(added.id).unwrap();
+        session.id = -11;
+        service.session.push_back(session);
+        service.connection.lock().unwrap().execute("INSERT INTO clipboard_image_analysis(entry_id,content_hash,ocr_text,analyzed_at) SELECT id,content_hash,'OCR',1 FROM clipboard_history WHERE id=?1", [added.id]).unwrap();
+        let before = service.revision;
+        let catalog = serde_json::to_value(service.tag_page(TagQuery::default()).unwrap()).unwrap();
+        let feed = serde_json::to_value(service.changes(0).unwrap()).unwrap();
+        service.connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_rename BEFORE DELETE ON clipboard_image_analysis BEGIN SELECT RAISE(ABORT,'fixture OCR'); END;").unwrap();
+        assert!(service
+            .rename_tag("source".into(), "sensitive".into(), before)
+            .is_err());
+        assert_eq!(service.entry(added.id).unwrap().tags, ["source"]);
+        assert_eq!(service.session[0].tags, ["source"]);
+        assert_eq!(service.session[0].id, -11);
+        assert_eq!(service.revision, before);
+        assert_eq!(
+            serde_json::to_value(service.tag_page(TagQuery::default()).unwrap()).unwrap(),
+            catalog
+        );
+        assert_eq!(
+            serde_json::to_value(service.changes(0).unwrap()).unwrap(),
+            feed
+        );
+        assert_eq!(
+            service
+                .connection
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM clipboard_image_analysis WHERE entry_id=?1",
+                    [added.id],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        service.connection.lock().unwrap().execute_batch("DROP TRIGGER fail_rename;
+            CREATE TABLE rename_parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE rename_child(id INTEGER REFERENCES rename_parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER fail_rename_commit AFTER DELETE ON saved_tags BEGIN INSERT INTO rename_child VALUES(17); END;").unwrap();
+        assert!(service
+            .rename_tag("source".into(), "new".into(), before)
+            .is_err());
+        assert_eq!(service.revision, before);
+        assert_eq!(service.session[0].tags, ["source"]);
+        assert_eq!(service.entry(added.id).unwrap().content, "private");
+        assert_eq!(
+            serde_json::to_value(service.tag_page(TagQuery::default()).unwrap()).unwrap(),
+            catalog
+        );
+        assert_eq!(
+            serde_json::to_value(service.changes(0).unwrap()).unwrap(),
+            feed
+        );
     }
 }

@@ -60,6 +60,12 @@ enum Request {
         name: String,
         expected_revision: u64,
     },
+    TagRename {
+        handle: u64,
+        old_name: String,
+        new_name: String,
+        expected_revision: u64,
+    },
     TagColor {
         handle: u64,
         name: String,
@@ -304,6 +310,19 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .create_tag(name, expected_revision)?)),
+        Request::TagRename {
+            handle,
+            old_name,
+            new_name,
+            expected_revision,
+        } => Ok(json!(registry
+            .services
+            .get_mut(&handle)
+            .ok_or_else(invalid_handle)?
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?
+            .rename_tag(old_name, new_name, expected_revision)?)),
         Request::TagColor {
             handle,
             name,
