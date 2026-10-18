@@ -77,6 +77,7 @@ public sealed partial class NativeCore : IDisposable, IAsyncDisposable
         if (handle == 0) return;
         if (pendingClose is { IsCompleted: false }) { pendingClose.GetAwaiter().GetResult(); return; }
         shutdown.Cancel();
+        appsGate.Wait();
         openGate.Wait();
         requestGate.Wait();
         try
@@ -86,7 +87,7 @@ public sealed partial class NativeCore : IDisposable, IAsyncDisposable
             Changed = null;
         }
         // On native cleanup failure keep the handle and IsClosing state for Dispose retry.
-        finally { requestGate.Release(); openGate.Release(); }
+        finally { requestGate.Release(); openGate.Release(); appsGate.Release(); }
         // Cancelled waiters may still be unwinding. These managed-only gates own no OS
         // wait handles; retain them until the client and its outstanding tasks are collected.
         GC.SuppressFinalize(this);

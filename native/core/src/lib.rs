@@ -1,4 +1,5 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
+mod app_catalog;
 mod capture;
 mod cleanup_preview;
 pub mod external_open;
@@ -26,6 +27,7 @@ struct Registry {
     closing: HashSet<u64>,
 }
 struct CoreRuntime {
+    apps: Arc<app_catalog::CatalogService>,
     settings: SettingsService,
     history: Arc<Mutex<HistoryService>>,
     capture: capture::CaptureService,
@@ -175,6 +177,9 @@ enum Request {
         allow_sensitive: bool,
     },
     ContentOpenPoll { handle: u64 },
+    AppsStart { handle: u64, #[serde(default)] refresh: bool },
+    AppsPoll { handle: u64, job_id: u64 },
+    AppsCancel { handle: u64, job_id: u64 },
     ClipboardCopy {
         handle: u64,
         id: i64,
@@ -264,6 +269,9 @@ impl Request {
             | Self::HistoryChanges { handle, .. }
             | Self::ContentOpen { handle, .. }
             | Self::ContentOpenPoll { handle, .. }
+            | Self::AppsStart { handle, .. }
+            | Self::AppsPoll { handle, .. }
+            | Self::AppsCancel { handle, .. }
             | Self::ClipboardCopy { handle, .. }
             | Self::ClipboardPaste { handle, .. }
             | Self::ShellStart { handle, .. }
@@ -291,7 +299,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
     if request.handle().is_some_and(|handle| registry.closing.contains(&handle))
         && !matches!(&request, Request::Close { .. } | Request::ContentOpenPoll { .. })
     {
-        return Err(CoreError::new("core_closing", "Core shutdown is pending export cleanup; retry close"));
+        return Err(CoreError::new("core_closing", "Core shutdown is in progress; retry close if cleanup fails"));
     }
     match request {
         Request::Open { database_path } => {
@@ -318,6 +326,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             registry.services.insert(
                 handle,
                 CoreRuntime {
+                    apps: Arc::new(Default::default()),
                     settings: service,
                     history,
                     capture,
@@ -621,6 +630,18 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 allow_sensitive,
                 max_edge
             )?)),
+        Request::AppsStart { handle, refresh } => {
+            let apps = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.apps);
+            drop(registry); apps.start(refresh)
+        }
+        Request::AppsPoll { handle, job_id } => {
+            let apps = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.apps);
+            drop(registry); apps.poll(job_id)
+        }
+        Request::AppsCancel { handle, job_id } => {
+            let apps = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.apps);
+            drop(registry); apps.cancel(job_id)
+        }
         Request::ContentOpen { handle, id, expected_revision, allow_sensitive } => {
             let runtime = registry.services.get(&handle).ok_or_else(invalid_handle)?;
             let values = runtime.settings.snapshot()?.values;
@@ -783,6 +804,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             let capture = service.capture.stop();
             let _ = service.target.stop();
             let target = target_status(service.target.status());
+            service.apps.close();
             let cleanup = service.opens.lock()
                 .map_err(|_| CoreError::new("open_unavailable", "Open service unavailable"))
                 .and_then(|mut opens| opens.close());

@@ -40,7 +40,8 @@ public partial class App : Application
             main.Activate();
             if (report is not null)
             {
-                if (arguments.Contains("--opener-settings-only"))
+                if (arguments.Contains("--apps-only")) new NativeAppsWindowSmoke(main, core, directory, report).Start();
+                else if (arguments.Contains("--opener-settings-only"))
                 {
                     int fixtureIndex = Array.IndexOf(arguments, "--fixture-directory");
                     if (fixtureIndex < 0 || fixtureIndex + 1 >= arguments.Length || !Path.IsPathFullyQualified(arguments[fixtureIndex + 1]))

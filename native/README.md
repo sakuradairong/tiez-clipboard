@@ -582,7 +582,7 @@ The 63-check suite passes real settings controls against the DLL and an isolated
 
 Recommendations use native `SHAssocEnumHandlers` first, then the legacy content-specific keywords. They preserve the text/code/file, rich-text, image and URL/link mappings and add `.mp4` association lookup for video. Current default labels come from `AssocQueryStringW`; URL/link defaults query `http`. Missing/default or unresolved association metadata is distinct from an empty successful app catalog. Association failures and the 256-handler cap are explicit. Unresolvable association rows are counted and cannot become a command string or a guessed executable. No blacklist removes apps from the catalog. Recommended metadata does not prove that every listed program accepts every content type.
 
-COM objects and returned task-memory strings are scoped, with bounded UTF-16 conversion and STA/MTA initialization balanced on the calling thread. Discovery must run off the dispatcher; cancellation is cooperative between non-abortable Windows calls. There is no background service or cache in this platform stage. Core runtime ownership, cancellable ABI/C# integration, native searchable app choices/icons and end-to-end selection remain the next required steps; the current settings window still uses its manual/file picker controls.
+COM objects and returned task-memory strings are scoped, with bounded UTF-16 conversion and STA/MTA initialization balanced on the calling thread. Discovery must run off the dispatcher; cancellation is cooperative between non-abortable Windows calls. There is no background service or cache in this platform stage. Core runtime ownership and cancellable ABI/C# integration are described below. Native searchable app choices/icons and end-to-end selection remain required; the settings window still uses its manual/file picker controls.
 
 ```powershell
 cargo test --locked --manifest-path native/platform/Cargo.toml --lib -- --test-threads=1
@@ -591,3 +591,27 @@ cargo test --locked --manifest-path native/platform/Cargo.toml --test apps -- --
 ```
 
 All 42 platform unit tests pass, including eight catalog/identity/recommendation cases. Real Shell checks pass in caller-owned STA and MTA apartments, including all eight content recommendations, unchanged caller apartment mode, balanced release and eight repeated scans after warmup. This machine returned 394 entries: 259 routable candidates (38 packaged), 92 unavailable and 43 duplicate aliases, with no unreadable catalog rows or caps hit. Some association rows remain unresolved (four or eight by content) and are counted explicitly. Warm STA handle samples increased once from 343 to 344 and then stayed there; MTA samples stayed at 339. These are local repeatability observations, not a performance or whole-app memory claim. The check observes no WebView2Loader/Core modules; it does not establish clean-Windows or successful associated/packaged activation acceptance.
+
+## Shared application catalog runtime and managed API
+
+The core owns one CatalogService and at most one scan worker per open runtime. ABI v1 adds these strict requests (unknown fields are rejected):
+
+```json
+{"op":"apps_start","handle":1,"refresh":false}
+{"op":"apps_poll","handle":1,"job_id":1}
+{"op":"apps_cancel","handle":1,"job_id":1}
+```
+
+Start returns a monotonic `job_id` and `cached`. Poll returns `running` or `ready`, the same identity, a cache flag and nullable `snapshot`. The snapshot contains catalog `applications`, `scanned`, `unreadable`, `duplicates`, `limited` and eight `recommendations` groups, preserving snake_case fields. Application entries retain name/source_id, nullable handler, desktop/packaged/unavailable kind and typed unavailable reason. Recommendation groups retain association failures/unresolved counts/caps/default labels. The registry is released before all service calls. No Windows enumeration runs under the registry/state locks.
+
+Successful snapshots are cached only in memory and bounded to 8 MiB of serialized metadata; oversized results fail without retaining them. Reads use the accepted cache unless refresh is requested, so installed-app changes require an explicit refresh. Refresh failure/cancellation retains a previously accepted cache. Cancel and poll are job-bound; stale IDs cannot cancel a newer request. A second start cannot create another worker while the previous worker is running or stopping (`apps_busy`). Ready is published only after worker termination, avoiding a spurious busy error on an immediate subsequent cache read. Core close clears the cache, cancels the job and joins its actual worker outside the registry/state locks; reopening starts with no catalog job/cache. This does not change settings/history revisions or start clipboard/target/shell services.
+
+C# `GetApplicationCatalogAsync(refresh, cancellationToken)` starts on the owning UI thread and uses asynchronous start/poll/cancel calls. Its separate apps gate serializes consumers, and short requests borrow the ordinary request gate. All internal waits avoid the dispatcher. A cancellation after native start still obtains the actual job ID and sends native cancel in finally; queued cancellation starts no job. Sync and async core disposal cancel queued work, drain the managed apps gate and then release the Rust owner. Closing a future catalog consumer should cancel its request, rather than dispose the shared core. Cancellation remains cooperative between non-abortable Shell calls; a cancelled consumer can finish before its owned Windows worker stops. A new request during that interval reports busy, and core shutdown still waits for the worker while the UI remains responsive.
+
+```powershell
+dotnet run --project native/managed/TieZ.Core.Smoke -- --apps-only
+# After building WinUI, use an absolute report path under an existing directory.
+Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--smoke', $report, '--apps-only') -Wait
+```
+
+Default and portable core suites each pass 121 tests, including 11 catalog/job/ABI cases for cancellation, cache/refresh, failed reads, stale IDs, worker panic, job overflow, size rejection, terminal publication and registry-free close/join. The 26-check real-DLL managed suite passes actual metadata/DTOs, independent settings/history reads, no save/notifications/service restarts, cache, owner checks, queued cancellation and active sync/async disposal; the complete managed regression also passes. C#/WinUI build with zero warnings/errors. A 16-check actual WinUI suite observes 40 dispatcher heartbeats through a scan, hidden-main/settings reopen, cached reads and exit while a scan is active and cancellation is deliberately queued; no WebView2 module/assembly is loaded. Existing capture.rs test-only unused-mut warnings remain unchanged. Final-build regressions also pass 139 full-window phases, 30 exit checks and 63 opener-settings checks, all without WebView2. This is API/lifetime acceptance: the native searchable application selector/icons and actual selection-to-save UI are still pending, as are broad activation, physical-input and clean-Windows acceptance.

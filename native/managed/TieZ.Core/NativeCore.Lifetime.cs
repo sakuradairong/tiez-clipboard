@@ -18,20 +18,25 @@ public sealed partial class NativeCore
 
     private async Task CloseAsync()
     {
-        await openGate.WaitAsync().ConfigureAwait(false);
+        await appsGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            await requestGate.WaitAsync().ConfigureAwait(false);
+            await openGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                // Shutdown cancellation is for queued application work, not the close itself.
-                await Task.Run(() => Request(new { op = "close", handle })).ConfigureAwait(false);
-                handle = 0;
-                Changed = null;
-                GC.SuppressFinalize(this);
+                await requestGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    // Shutdown cancellation is for queued application work, not the close itself.
+                    await Task.Run(() => Request(new { op = "close", handle })).ConfigureAwait(false);
+                    handle = 0;
+                    Changed = null;
+                    GC.SuppressFinalize(this);
+                }
+                finally { requestGate.Release(); }
             }
-            finally { requestGate.Release(); }
+            finally { openGate.Release(); }
         }
-        finally { openGate.Release(); }
+        finally { appsGate.Release(); }
     }
 }

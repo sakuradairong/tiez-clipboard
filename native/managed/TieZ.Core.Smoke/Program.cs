@@ -17,6 +17,8 @@ string directory = Path.Combine(Path.GetTempPath(), $"TieZ-原生-{Guid.NewGuid(
 Directory.CreateDirectory(directory);
 try
 {
+    AppsSmoke.Run(Path.Combine(directory, "应用目录"));
+    if (args.Contains("--apps-only")) return;
     OpenSmoke.Run(Path.Combine(directory, "打开核心"));
     TagSmoke.Run(Path.Combine(directory, "标签目录"));
     LayoutPreferenceSmoke.Run(Path.Combine(directory, "布局.db"));
