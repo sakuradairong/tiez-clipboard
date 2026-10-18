@@ -19,3 +19,5 @@ pub mod keyboard;
 pub mod shell;
 
 pub mod hotkey;
+
+pub mod open;
