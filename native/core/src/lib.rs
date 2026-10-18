@@ -1,6 +1,7 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
 mod capture;
 mod cleanup_preview;
+pub mod external_open;
 mod paste;
 pub use capture::{CaptureService, CaptureStatus};
 mod history;
