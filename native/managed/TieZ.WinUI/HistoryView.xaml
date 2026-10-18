@@ -27,7 +27,17 @@
                     BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
                 <Grid RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <TextBlock Text="{x:Bind Summary.ContentType}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <Grid ColumnSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind Summary.ContentType}" VerticalAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                            <Button Tag="card-copy" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录的原始格式（敏感记录需先显示详情）"
+                                    AutomationProperties.Name="复制此条记录的原始格式"><SymbolIcon Symbol="Copy"/></Button>
+                            <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
+                                    AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                        </StackPanel>
+                    </Grid>
                     <local:HistoryThumbnailView Grid.Row="1"/>
                     <TextBlock Grid.Row="2" Text="{x:Bind Metadata}" FontSize="12" MaxLines="2" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
@@ -40,8 +50,18 @@
                     PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
                 <Grid RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <local:HistoryThumbnailView/>
-                    <TextBlock Grid.Row="1" Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                    <Grid Grid.Row="1" ColumnSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                            <Button Tag="card-copy" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录的原始格式（敏感记录需先显示详情）"
+                                    AutomationProperties.Name="复制此条记录的原始格式"><SymbolIcon Symbol="Copy"/></Button>
+                            <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
+                                    AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                        </StackPanel>
+                    </Grid>
                 </Grid>
             </Border>
         </DataTemplate>

@@ -40,7 +40,8 @@ public partial class App : Application
             main.Activate();
             if (report is not null)
             {
-                if (arguments.Contains("--thumbnails-only")) new HistoryThumbnailWindowSmoke(main, core, directory, report).Start();
+                if (arguments.Contains("--card-copy-only")) new HistoryCardCopyWindowSmoke(main, core, directory, report).Start();
+                else if (arguments.Contains("--thumbnails-only")) new HistoryThumbnailWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--layout-only")) new HistoryLayoutWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--tag-picker-only")) new TagPickerWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--tags-only")) new TagWindowSmoke(main, core, directory, report).Start();

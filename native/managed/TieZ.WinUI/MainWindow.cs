@@ -35,7 +35,7 @@ public sealed partial class MainWindow : Window
         {
             if (residentMode && !quitting) { args.Cancel = true; HideToTray(); }
         };
-        AppWindow.Changed += (_, _) => HistoryWorkspace.SetThumbnailsActive(AppWindow.IsVisible && !tagPageActive
+        AppWindow.Changed += (_, _) => HistoryWorkspace.SetWorkspaceActive(AppWindow.IsVisible && !tagPageActive
             && (AppWindow.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter presenter
                 || presenter.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized));
         HideButton.Click += (_, _) => HideToTray();
@@ -49,7 +49,7 @@ public sealed partial class MainWindow : Window
             }
             tagPageActive = ReferenceEquals(args.SelectedItem, TagsNav);
             HistoryWorkspace.CancelPreview();
-            HistoryWorkspace.SetThumbnailsActive(!tagPageActive && AppWindow.IsVisible);
+            HistoryWorkspace.SetWorkspaceActive(!tagPageActive && AppWindow.IsVisible);
             HistoryWorkspace.Visibility = tagPageActive ? Visibility.Collapsed : Visibility.Visible;
             TagWorkspace.Visibility = tagPageActive ? Visibility.Visible : Visibility.Collapsed;
             TagWorkspace.SetActive(tagPageActive && AppWindow.IsVisible);
@@ -82,7 +82,7 @@ public sealed partial class MainWindow : Window
     internal void HideToTray()
     {
         compactPreview.Cancel();
-        if (residentMode && !quitting) { HistoryWorkspace.SetThumbnailsActive(false); HistoryWorkspace.DismissTagPicker(); TagWorkspace.SetActive(false); AppWindow.Hide(); }
+        if (residentMode && !quitting) { HistoryWorkspace.SetWorkspaceActive(false); HistoryWorkspace.DismissTagPicker(); TagWorkspace.SetActive(false); AppWindow.Hide(); }
     }
     internal void ToggleMain()
     {
@@ -95,7 +95,7 @@ public sealed partial class MainWindow : Window
         if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
             && presenter.State == Microsoft.UI.Windowing.OverlappedPresenterState.Minimized) presenter.Restore();
         AppWindow.Show(); Activate(); TagWorkspace.SetActive(tagPageActive);
-        HistoryWorkspace.SetThumbnailsActive(!tagPageActive);
+        HistoryWorkspace.SetWorkspaceActive(!tagPageActive);
     }
     internal void Quit()
     {

@@ -46,7 +46,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         set
         {
             if (compactMode == value) return;
-            InvalidateThumbnails();
+            CancelCardCopy(); InvalidateThumbnails();
             compactMode = value;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             HistoryList.ItemTemplate = (DataTemplate)Resources[value ? "CompactHistoryTemplate" : "StandardHistoryTemplate"];
@@ -66,6 +66,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         InitializeComponent();
         InitializeHistoryLayouts();
         InitializeThumbnails();
+        InitializeCardCopies();
         foreach (var input in new[] { SearchText, TagFilter })
         {
             input.TextCompositionStarted += (_, _) =>
@@ -233,7 +234,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
     private void InvalidateRead()
     {
-        InvalidateThumbnails();
+        CancelCardCopy(); InvalidateThumbnails();
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!started || disposed) return;
         generation++;
@@ -259,7 +260,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!reset && externalPending) { await ReloadAsync(); return; }
         if (reset)
         {
-            InvalidateThumbnails();
+            CancelCardCopy(); InvalidateThumbnails();
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             debounce?.Stop();
             generation++;
@@ -354,6 +355,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             InvalidateThumbnails();
+            CancelCardCopy();
             observedRevision = changes.Revision;
             if (externalPending || activeDialog is not null || ActiveList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
@@ -464,6 +466,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private void UpdateCommands()
     {
         if (disposed) return;
+        UpdateCardCopyButtons();
         if (!CanReadThumbnails) InvalidateThumbnails(); else QueueThumbnailRefresh();
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
@@ -499,18 +502,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
         UpdateCommands();
         try
         {
-            await core!.CopyEntryAsync(entry.Id, plainText, allowSensitive: row.Summary.IsSensitive, lifetime.Token);
-            if (!disposed)
-            {
-                Feedback.Title = "已复制";
-                Feedback.Message = plainText ? "已复制为纯文本。" : "已按原始格式复制到剪贴板。";
-                Feedback.Severity = InfoBarSeverity.Success;
-                Feedback.IsOpen = true;
-            }
+            await core!.CopyEntryAsync(entry.Id, plainText, allowSensitive: row.Summary.IsSensitive, lifetime.Token, expectedRevision: revision!.Value);
+            if (!disposed) ShowCopySuccess(plainText);
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) when (disposed) { }
-        catch (Exception error) { if (!disposed) ShowError(error.Message); }
+        catch (Exception error) { if (!disposed) ShowCopyError(error); }
         finally { mutating = false; if (!disposed) UpdateCommands(); }
     }
 
@@ -750,7 +747,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private void OnScroll(object? sender, ScrollViewerViewChangedEventArgs args)
     {
-        RefreshThumbnails();
+        RefreshThumbnails(); UpdateCardCopyButtons();
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!disposed && !switchingLayout && !args.IsIntermediate && listScroll is { } scroll && scroll.ScrollableHeight > 0 &&
             scroll.VerticalOffset >= scroll.ScrollableHeight - 160) _ = LoadAsync(false);
@@ -771,6 +768,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
         tagPicker?.Dispose();
         activeDialog?.Hide();
+        ReleaseCardCopies();
         ReleaseThumbnails();
         ReleaseHistoryLayouts();
         selectedEntry = null;

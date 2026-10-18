@@ -27,10 +27,11 @@ public sealed partial class HistoryView
 
     private void InitializeThumbnails() => HistoryCards.LayoutUpdated += OnThumbnailLayoutUpdated;
     private void OnThumbnailLayoutUpdated(object? sender, object args) => QueueThumbnailRefresh();
-    internal void SetThumbnailsActive(bool active)
+    internal void SetWorkspaceActive(bool active)
     {
         thumbnailActive = active;
-        if (!active) InvalidateThumbnails(); else QueueThumbnailRefresh();
+        if (!active) { CancelCardCopy(); InvalidateThumbnails(); } else QueueThumbnailRefresh();
+        UpdateCardCopyButtons();
     }
     private bool CanReadThumbnails => !disposed && thumbnailActive && cards && IsLoaded && Visibility == Visibility.Visible
         && core is not null && !loading && !mutating && !filterPending && !externalPending && revision is not null && revision == observedRevision;
