@@ -164,7 +164,7 @@ internal sealed class HistoryLayoutWindowSmoke(MainWindow main, NativeCore core,
         catch (Exception error) { Finish(false, $"Layout phase {phase}: {error}"); }
         finally { ticking = false; }
     }
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop(); timer.Tick -= Tick;
         ulong revision = core.Snapshot.Revision;
@@ -174,7 +174,7 @@ internal sealed class HistoryLayoutWindowSmoke(MainWindow main, NativeCore core,
         try
         {
             Check(!webView2ModuleLoaded, "WebView2 loaded in history layouts.");
-            main.Quit(); Check(!main.History.HasLayoutResources, "Quit retained layout sources/rows."); Directory.Delete(directory, recursive: true);
+            if (!await main.Quit()) throw new Exception("Native shutdown did not release the core."); Check(!main.History.HasLayoutResources, "Quit retained layout sources/rows."); Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = $"{error}\n{failure}"; }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = "history-layout", phases = phase + 1,

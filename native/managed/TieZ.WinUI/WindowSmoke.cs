@@ -1158,7 +1158,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
     [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(nint window, int id);
 
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop();
         main.History.PreviewInvalidated -= OnPreviewInvalidated;
@@ -1168,7 +1168,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         try
         {
-            main.Quit();
+            if (!await main.Quit()) throw new Exception("Native shutdown did not release the core.");
             if (passed && advancedWindow is not null)
                 Require(!advancedWindow.RulesEditor.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData, "Quit retained policy snapshots, sample data or rule text.");
             if (passed && compactValidated) Require(!main.CompactPreview.Visible && !main.CompactPreview.HasPending

@@ -151,7 +151,7 @@ internal sealed class TagPickerWindowSmoke(MainWindow main, NativeCore core, str
         catch (Exception error) { Finish(false, $"Picker phase {phase}: {error}"); }
         finally { ticking = false; }
     }
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop(); timer.Tick -= Tick;
         bool webView2ModuleLoaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(module => module.ModuleName)
@@ -160,7 +160,7 @@ internal sealed class TagPickerWindowSmoke(MainWindow main, NativeCore core, str
         try
         {
             Check(!webView2ModuleLoaded, "WebView2 loaded in tag picker.");
-            main.Quit(); Check(retained is null || !retained.HasRetainedData, "Quit retained picker drafts/core.");
+            if (!await main.Quit()) throw new Exception("Native shutdown did not release the core."); Check(retained is null || !retained.HasRetainedData, "Quit retained picker drafts/core.");
             Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = $"{error}\n{failure}"; }

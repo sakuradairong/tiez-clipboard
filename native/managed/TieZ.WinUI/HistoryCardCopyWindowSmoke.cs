@@ -216,14 +216,14 @@ internal sealed class HistoryCardCopyWindowSmoke(MainWindow main, NativeCore cor
         catch (Exception error) { Finish(false, $"Card-copy phase {phase}: {error}"); }
         finally { ticking = false; }
     }
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop(); timer.Tick -= Tick; held?.TrySetCanceled(); release?.TrySetCanceled();
         main.History.CardCopyWriter = null;
         bool webView2ModuleLoaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(module => module.ModuleName)
             .Concat(AppDomain.CurrentDomain.GetAssemblies().Select(assembly => assembly.GetName().Name ?? ""))
             .Any(name => name.Contains("WebView2", StringComparison.OrdinalIgnoreCase));
-        try { Check(!webView2ModuleLoaded, "WebView2 loaded in card actions."); main.Quit(); Directory.Delete(directory, recursive: true); }
+        try { Check(!webView2ModuleLoaded, "WebView2 loaded in card actions."); if (!await main.Quit()) throw new Exception("Native shutdown did not release the core."); Directory.Delete(directory, recursive: true); }
         catch (Exception failure) { passed = false; error = $"{error}\n{failure}"; }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = "history-card-copy", phases = phase + 1,
             controlledRequests = requests.Count, actualConflict, successfulOsClipboardWritesTested = false, webView2ModuleLoaded,

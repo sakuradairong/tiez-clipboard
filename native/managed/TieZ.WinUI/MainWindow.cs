@@ -10,6 +10,16 @@ public sealed partial class MainWindow : Window
     private readonly CompactPreviewController compactPreview;
     internal CompactPreviewController CompactPreview => compactPreview;
     private bool residentMode, quitting, active, tagPageActive;
+    private bool shutdownComplete, workspacesStopped;
+    private Task<bool>? quitTask;
+    private readonly OpenLifetimeController openLifetime;
+    internal event Action? ShutdownStarted;
+    internal OpenLifetimeController OpenLifetime => openLifetime;
+    internal bool ShutdownPending => quitting;
+    internal bool ShutdownComplete => shutdownComplete;
+    internal Task<bool>? ShutdownTask => quitTask;
+    internal string ExitMessage => ExitError.Message;
+    internal bool ExitRetryEnabled => QuitButton.IsEnabled && quitting && !shutdownComplete;
     internal SettingsWindow? Settings { get; private set; }
     internal AdvancedSettingsWindow? AdvancedSettings { get; private set; }
     internal bool SearchVisible => HistoryWorkspace.SearchVisible;
@@ -22,6 +32,7 @@ public sealed partial class MainWindow : Window
         this.core = core;
         InitializeComponent();
         compactPreview = new CompactPreviewController(this, core);
+        openLifetime = new OpenLifetimeController(this, core);
         HistoryWorkspace.PreviewRequested += compactPreview.Request;
         HistoryWorkspace.PreviewInvalidated += compactPreview.Cancel;
         Title = "TieZ · 原生迁移版";
@@ -31,15 +42,18 @@ public sealed partial class MainWindow : Window
             active = args.WindowActivationState != WindowActivationState.Deactivated;
             if (!active) compactPreview.Cancel();
         };
-        AppWindow.Closing += (_, args) =>
+        AppWindow.Closing += (sender, args) =>
         {
-            if (residentMode && !quitting) { args.Cancel = true; HideToTray(); }
+            if (shutdownComplete) return;
+            args.Cancel = true;
+            if (residentMode && !quitting) HideToTray(); else _ = Quit();
         };
-        AppWindow.Changed += (_, _) => HistoryWorkspace.SetWorkspaceActive(AppWindow.IsVisible && !tagPageActive
+        AppWindow.Changed += (_, _) => HistoryWorkspace.SetWorkspaceActive(AppWindow.IsVisible && !tagPageActive && !quitting
             && (AppWindow.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter presenter
                 || presenter.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized));
         HideButton.Click += (_, _) => HideToTray();
-        QuitButton.Click += (_, _) => Quit();
+        QuitButton.Click += (_, _) => _ = Quit();
+        RetryExitButton.Click += (_, _) => _ = Quit();
         Navigation.SelectedItem = HistoryNav;
         Navigation.SelectionChanged += (_, args) =>
         {
@@ -57,23 +71,14 @@ public sealed partial class MainWindow : Window
         TagWorkspace.Initialize(core); TagWorkspace.FilterRequested += FilterByTag;
         HistoryWorkspace.Initialize(core, captureOnStartup);
         core.Changed += Apply;
-        Closed += (_, _) =>
-        {
-            CloseAdvancedSettings();
-            core.Changed -= Apply;
-            HistoryWorkspace.PreviewRequested -= compactPreview.Request;
-            HistoryWorkspace.PreviewInvalidated -= compactPreview.Cancel;
-            compactPreview.Dispose();
-            TagWorkspace.FilterRequested -= FilterByTag; TagWorkspace.Dispose();
-            HistoryWorkspace.Dispose();
-        };
+        Closed += (_, _) => { openLifetime.Dispose(); StopWorkspaces(); };
         Apply(core.Snapshot);
     }
 
     internal void SetResidentMode(bool enabled)
     {
-        residentMode = enabled;
-        HideButton.IsEnabled = enabled;
+        residentMode = enabled && !quitting;
+        HideButton.IsEnabled = residentMode;
     }
     internal void SetShellUnavailable(string message)
     {
@@ -91,16 +96,67 @@ public sealed partial class MainWindow : Window
     internal void ClearShellWarning() => ShellError.IsOpen = false;
     internal void ShowMain()
     {
-        if (quitting) return;
+        if (shutdownComplete) return;
         if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter presenter
             && presenter.State == Microsoft.UI.Windowing.OverlappedPresenterState.Minimized) presenter.Restore();
-        AppWindow.Show(); Activate(); TagWorkspace.SetActive(tagPageActive);
-        HistoryWorkspace.SetWorkspaceActive(!tagPageActive);
+        AppWindow.Show(); Activate();
+        if (!quitting) { TagWorkspace.SetActive(tagPageActive); HistoryWorkspace.SetWorkspaceActive(!tagPageActive); }
     }
-    internal void Quit()
+    internal Task<bool> Quit()
+    {
+        if (shutdownComplete) return Task.FromResult(true);
+        if (quitTask is { IsCompleted: false }) return quitTask;
+        quitTask = QuitAsync();
+        return quitTask;
+    }
+    private async Task<bool> QuitAsync()
+    {
+        quitting = true;
+        SetResidentMode(false);
+        QuitButton.IsEnabled = RetryExitButton.IsEnabled = false;
+        QuitButton.Content = "正在退出…";
+        ExitError.Title = "正在退出"; ExitError.Message = "正在停止后台服务并清理临时文件，请稍候。";
+        ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
+        ExitError.IsOpen = true;
+        ShowMain();
+        HistoryNav.IsEnabled = TagsNav.IsEnabled = false; Navigation.IsSettingsVisible = false;
+        CloseAdvancedSettings(); CloseSettings();
+        if (!workspacesStopped) { ShutdownStarted?.Invoke(); openLifetime.Dispose(); StopWorkspaces(); }
+        try
+        {
+            await core.DisposeAsync();
+            shutdownComplete = true;
+            Close();
+            return true;
+        }
+        catch (Exception error)
+        {
+            ExitError.Title = "退出尚未完成";
+            ExitError.Message = error is CoreException { Code: "open_cleanup" }
+                ? "临时导出文件仍被外部应用占用。请先关闭对应编辑器，再选择“重试退出”。剪贴板采集和其他后台服务已停止，临时文件仍由核心跟踪。"
+                : "核心资源释放失败。请重试退出；当前窗口会保留，避免丢失清理重试入口。";
+            ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error;
+            QuitButton.Content = "重试退出"; QuitButton.IsEnabled = RetryExitButton.IsEnabled = true;
+            ShowMain();
+            return false;
+        }
+    }
+    private void StopWorkspaces()
+    {
+        if (workspacesStopped) return;
+        workspacesStopped = true;
+        core.Changed -= Apply;
+        HistoryWorkspace.PreviewRequested -= compactPreview.Request;
+        HistoryWorkspace.PreviewInvalidated -= compactPreview.Cancel;
+        compactPreview.Dispose();
+        TagWorkspace.FilterRequested -= FilterByTag; TagWorkspace.Dispose();
+        HistoryWorkspace.Dispose();
+    }
+    internal void SetOpenCleanupWarning(string? code)
     {
         if (quitting) return;
-        quitting = true; CloseAdvancedSettings(); CloseSettings(); Close();
+        OpenCleanupError.Message = code is null ? "" : "部分临时导出文件尚未清理。关闭使用这些文件的编辑器后，应用将自动重试；原始历史内容保持不变。";
+        OpenCleanupError.IsOpen = code is not null;
     }
     internal bool ResidentMode => residentMode;
     internal void NavigateTags() => Navigation.SelectedItem = TagsNav;
@@ -109,6 +165,7 @@ public sealed partial class MainWindow : Window
 
     internal void OpenSettings()
     {
+        if (quitting) return;
         if (Settings is null)
         {
             var created = new SettingsWindow(core); Settings = created;

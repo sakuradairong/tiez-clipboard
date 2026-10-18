@@ -511,4 +511,21 @@ NativeCore implements IAsyncDisposable in addition to IDisposable. DisposeAsync 
 
 The real default-DLL managed suite passes the async-specific checks: hold the owned open gate, begin close without blocking initiation, confirm duplicate requests share the pending task and reject new work, release the gate with a real temporary export locked, receive open_cleanup while ownership remains, unlock and retry asynchronously, then verify the export/handle are gone and repeated release is harmless. The export is created by a third owned child-editor launch in the fixture; original clipboard history/data and user associations are untouched. All prior managed open/privacy/settings/history/tag/capture/shell/hotkey checks pass. Managed builds have zero warnings/errors. Rust/ABI sources are unchanged for this step, so passing earlier Rust tests are not presented as a new run.
 
-This committed step provides the managed shutdown primitive. WinUI exit retry/progress, continued hidden-window cleanup polling, physical close handling and their dedicated acceptance remain a separate stage. The full native replacement, feature parity, external edit/writeback/use counts and clean-machine WebView2-free acceptance remain required.
+The WinUI owner now uses this primitive for the exit progress/retry flow described below. The full native replacement, feature parity, external edit/writeback/use counts and clean-machine WebView2-free acceptance remain required.
+
+
+## WinUI exit and temporary-export cleanup
+
+One main-window-owned 30-second dispatcher timer polls the shared opener even while hidden. Settings and advanced settings borrow the same core and do not create a second cleanup owner. Concurrent polls share one pending task; shutdown cancels queued polling, stops/unsubscribes the timer and discards late results. Cleanup errors show a generic warning without exporting private paths or content. Expiry remains cooperative: polling or opening triggers the core's existing expiry/cleanup checks.
+
+Explicit Exit or tray Quit starts one shared asynchronous shutdown task, reveals the main window, disables navigation/reopening/hiding and closes settings, advanced settings, preview and workspaces. A system close request is cancelled until native release succeeds. Failed native cleanup retains the core/export owner and a visible native Retry exit button; releasing an editor's lock and retrying closes the application only after successful cleanup. Closing the ordinary settings window still leaves the shared runtime alive. Direct programmatic Window.Close is reserved for the successful shutdown path; it does not exercise the cancellable system-close affordance.
+
+Build the managed fixture and WinUI host, then run the focused check with absolute paths:
+
+```powershell
+$fixture = (Resolve-Path native/managed/TieZ.Core.Smoke/bin/Debug/net10.0/win-x64).Path
+$report = Join-Path (Get-Location) 'native-exit-smoke.json'
+dotnet run --project native/managed/TieZ.WinUI -- --smoke $report --exit-only --fixture-directory $fixture
+```
+
+The 30-check real-window suite passes one actual owned child-editor launch, exact exported bytes, settings reopen without saves, the existing cleanup timer polling while hidden, dispatcher responsiveness while shutdown waits, duplicate task identity, WM_CLOSE on its own HWND, an exclusively locked export, visible failure/retained ownership, teardown/no reopening and invocation of the actual XAML retry button followed by export/database deletion. It observes no loaded WebView2 module or assembly. Earlier attempts failed in test driving (changing a running timer's interval and using programmatic Close); the corrected test restarts that same timer and posts the actual system-close message without weakening assertions. Physical input, long-duration expiry, all editor associations and clean-OS acceptance remain unverified. WinUI Open/settings controls, usage updates and safe external edit writeback remain separate required work.

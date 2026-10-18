@@ -228,7 +228,7 @@ internal sealed class HistoryThumbnailWindowSmoke(MainWindow main, NativeCore co
         catch (Exception error) { Finish(false, $"Thumbnail phase {phase}: {error}"); }
         finally { ticking = false; }
     }
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop(); timer.Tick -= Tick; ReleaseReads();
         bool webView2ModuleLoaded = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(module => module.ModuleName)
@@ -237,7 +237,7 @@ internal sealed class HistoryThumbnailWindowSmoke(MainWindow main, NativeCore co
         try
         {
             Check(!webView2ModuleLoaded, "WebView2 loaded in native thumbnails.");
-            main.Quit(); Check(main.History.ThumbnailResources == 0 && !main.History.HasLayoutResources, "Quit retained thumbnail resources.");
+            if (!await main.Quit()) throw new Exception("Native shutdown did not release the core."); Check(main.History.ThumbnailResources == 0 && !main.History.HasLayoutResources, "Quit retained thumbnail resources.");
             Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = $"{error}\n{failure}"; }

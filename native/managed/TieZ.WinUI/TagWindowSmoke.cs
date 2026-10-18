@@ -459,7 +459,7 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
         catch (Exception error) { Finish(false, $"Tag phase {phase}: {error}"); }
         finally { ticking = false; }
     }
-    private void Finish(bool passed, string? error)
+    private async void Finish(bool passed, string? error)
     {
         timer!.Stop(); timer.Tick -= Tick;
         ulong settingsRevision = core.Snapshot.Revision;
@@ -469,7 +469,7 @@ internal sealed class TagWindowSmoke(MainWindow main, NativeCore core, string di
         try
         {
             Check(!webView2ModuleLoaded, "WebView2 loaded during native tags check.");
-            main.Quit();
+            if (!await main.Quit()) throw new Exception("Native shutdown did not release the core.");
             Check(!main.Tags.HasRetainedData && !main.Tags.IsActive && !main.Tags.HasDraft, "Quit retained tag drafts, rows or core reference.");
             Directory.Delete(directory, recursive: true);
         }

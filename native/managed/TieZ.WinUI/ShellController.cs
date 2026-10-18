@@ -16,6 +16,7 @@ internal sealed class ShellController : IDisposable
     internal ShellController(MainWindow main, NativeCore core)
     {
         this.main = main; this.core = core;
+        main.ShutdownStarted += Dispose;
         timer = main.DispatcherQueue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(200);
         timer.Tick += Poll;
@@ -60,7 +61,7 @@ internal sealed class ShellController : IDisposable
                     case "show_main": main.ShowMain(); break;
                     case "toggle_main": main.ToggleMain(); break;
                     case "open_settings": main.OpenSettings(); break;
-                    case "quit": main.Quit(); return;
+                    case "quit": _ = main.Quit(); return;
                 }
             }
         }
@@ -79,7 +80,7 @@ internal sealed class ShellController : IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; timer.Stop(); timer.Tick -= Poll;
+        disposed = true; main.ShutdownStarted -= Dispose; timer.Stop(); timer.Tick -= Poll;
         lifetime.Cancel(); lifetime.Dispose();
         // Core.Dispose owns native stop/join, including a menu that is open.
     }

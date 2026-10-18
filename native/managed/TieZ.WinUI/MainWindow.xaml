@@ -28,7 +28,15 @@
             </NavigationView.PaneFooter>
             <Grid Margin="16" RowSpacing="8">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="后台服务状态"/>
+                <StackPanel Spacing="8">
+                    <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="后台服务状态"/>
+                    <InfoBar x:Name="OpenCleanupError" IsOpen="False" Severity="Warning" Title="临时文件清理"/>
+                    <InfoBar x:Name="ExitError" IsOpen="False" IsClosable="False" Severity="Informational" Title="正在退出">
+                        <InfoBar.ActionButton>
+                            <Button x:Name="RetryExitButton" Content="重试退出" IsEnabled="False"/>
+                        </InfoBar.ActionButton>
+                    </InfoBar>
+                </StackPanel>
                 <local:HistoryView x:Name="HistoryWorkspace" Grid.Row="1"/>
                 <local:TagManagementView x:Name="TagWorkspace" Grid.Row="1" Visibility="Collapsed"/>
             </Grid>

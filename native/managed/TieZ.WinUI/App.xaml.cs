@@ -34,13 +34,20 @@ public partial class App : Application
             {
                 shell.Dispose();
                 main.CloseSettings();
-                core.Dispose();
+                // The window closes only after its shared asynchronous shutdown succeeds.
                 Exit();
             };
             main.Activate();
             if (report is not null)
             {
-                if (arguments.Contains("--card-copy-only")) new HistoryCardCopyWindowSmoke(main, core, directory, report).Start();
+                if (arguments.Contains("--exit-only"))
+                {
+                    int fixtureIndex = Array.IndexOf(arguments, "--fixture-directory");
+                    if (fixtureIndex < 0 || fixtureIndex + 1 >= arguments.Length || !Path.IsPathFullyQualified(arguments[fixtureIndex + 1]))
+                        throw new ArgumentException("Exit smoke requires an absolute --fixture-directory for the owned managed smoke binary.");
+                    new NativeExitWindowSmoke(main, core, directory, report, arguments[fixtureIndex + 1]).Start();
+                }
+                else if (arguments.Contains("--card-copy-only")) new HistoryCardCopyWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--thumbnails-only")) new HistoryThumbnailWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--layout-only")) new HistoryLayoutWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--tag-picker-only")) new TagPickerWindowSmoke(main, core, directory, report).Start();
@@ -51,7 +58,7 @@ public partial class App : Application
         catch (Exception e)
         {
             shell?.Dispose();
-            core?.Dispose();
+            if (core is not null) await core.DisposeAsync();
             if (report is not null)
             {
                 File.WriteAllText(report, System.Text.Json.JsonSerializer.Serialize(new { passed = false, error = e.ToString() }));
