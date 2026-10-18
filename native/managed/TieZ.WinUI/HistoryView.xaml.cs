@@ -46,6 +46,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         set
         {
             if (compactMode == value) return;
+            InvalidateThumbnails();
             compactMode = value;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             HistoryList.ItemTemplate = (DataTemplate)Resources[value ? "CompactHistoryTemplate" : "StandardHistoryTemplate"];
@@ -64,6 +65,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         InitializeComponent();
         InitializeHistoryLayouts();
+        InitializeThumbnails();
         foreach (var input in new[] { SearchText, TagFilter })
         {
             input.TextCompositionStarted += (_, _) =>
@@ -231,6 +233,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
     private void InvalidateRead()
     {
+        InvalidateThumbnails();
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!started || disposed) return;
         generation++;
@@ -256,6 +259,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!reset && externalPending) { await ReloadAsync(); return; }
         if (reset)
         {
+            InvalidateThumbnails();
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             debounce?.Stop();
             generation++;
@@ -349,6 +353,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (!disposed) tagPicker?.ObserveRevision(changes.Revision);
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
+            InvalidateThumbnails();
             observedRevision = changes.Revision;
             if (externalPending || activeDialog is not null || ActiveList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
@@ -459,6 +464,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private void UpdateCommands()
     {
         if (disposed) return;
+        if (!CanReadThumbnails) InvalidateThumbnails(); else QueueThumbnailRefresh();
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
         bool available = !busy && activeDialog is null;
@@ -744,6 +750,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private void OnScroll(object? sender, ScrollViewerViewChangedEventArgs args)
     {
+        RefreshThumbnails();
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!disposed && !switchingLayout && !args.IsIntermediate && listScroll is { } scroll && scroll.ScrollableHeight > 0 &&
             scroll.VerticalOffset >= scroll.ScrollableHeight - 160) _ = LoadAsync(false);
@@ -764,6 +771,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
         tagPicker?.Dispose();
         activeDialog?.Hide();
+        ReleaseThumbnails();
         ReleaseHistoryLayouts();
         selectedEntry = null;
         ImagePreview.Clear();

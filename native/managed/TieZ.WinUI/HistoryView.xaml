@@ -28,7 +28,7 @@
                     PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
                 <Grid RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <TextBlock Text="{x:Bind Summary.ContentType}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Grid.Row="1" Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="4" TextTrimming="CharacterEllipsis"/>
+                    <local:HistoryThumbnailView Grid.Row="1"/>
                     <TextBlock Grid.Row="2" Text="{x:Bind Metadata}" FontSize="12" MaxLines="2" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
                 </Grid>
@@ -38,11 +38,11 @@
             <Border Height="100" Padding="10" Margin="2" CornerRadius="8" BorderThickness="1"
                     BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                     PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
-                <StackPanel Spacing="6">
-                    <TextBlock Text="{x:Bind Preview}" MaxLines="1" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
+                <Grid RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <local:HistoryThumbnailView/>
+                    <TextBlock Grid.Row="1" Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
-                </StackPanel>
+                </Grid>
             </Border>
         </DataTemplate>
     </UserControl.Resources>
