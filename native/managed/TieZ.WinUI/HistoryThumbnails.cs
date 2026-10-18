@@ -30,8 +30,9 @@ public sealed partial class HistoryView
     internal void SetWorkspaceActive(bool active)
     {
         thumbnailActive = active;
-        if (!active) { CancelCardCopy(); InvalidateThumbnails(); } else QueueThumbnailRefresh();
+        if (!active) { CancelCardCopy(); CancelContentOpen(); InvalidateThumbnails(); } else QueueThumbnailRefresh();
         UpdateCardCopyButtons();
+        UpdateContentOpenControls();
     }
     private bool CanReadThumbnails => !disposed && thumbnailActive && cards && IsLoaded && Visibility == Visibility.Visible
         && core is not null && !loading && !mutating && !filterPending && !externalPending && revision is not null && revision == observedRevision;

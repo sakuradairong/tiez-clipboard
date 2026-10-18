@@ -36,6 +36,9 @@
                             <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
                                     MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
                                     AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                            <Button Tag="card-open" Click="OnCardOpenClick" Loaded="OnCardOpenLoaded" Unloaded="OnCardOpenUnloaded" DataContextChanged="OnCardOpenContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="使用应用打开此记录（敏感记录需先显示详情；临时副本修改不会回写历史）"
+                                    AutomationProperties.Name="使用应用打开此条记录"><SymbolIcon Symbol="OpenFile"/></Button>
                         </StackPanel>
                     </Grid>
                     <local:HistoryThumbnailView Grid.Row="1"/>
@@ -60,6 +63,9 @@
                             <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
                                     MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
                                     AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                            <Button Tag="card-open" Click="OnCardOpenClick" Loaded="OnCardOpenLoaded" Unloaded="OnCardOpenUnloaded" DataContextChanged="OnCardOpenContextChanged"
+                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="使用应用打开此记录（敏感记录需先显示详情；临时副本修改不会回写历史）"
+                                    AutomationProperties.Name="使用应用打开此条记录"><SymbolIcon Symbol="OpenFile"/></Button>
                         </StackPanel>
                     </Grid>
                 </Grid>
@@ -119,6 +125,8 @@
             <AppBarButton x:Name="PreviewButton" Label="紧凑预览" Icon="ZoomIn"/>
             <AppBarButton x:Name="CopyButton" Label="复制原始格式" Icon="Copy"/>
             <AppBarButton x:Name="CopyPlainButton" Label="复制为纯文本" Icon="Document"/>
+            <AppBarButton x:Name="OpenButton" Label="打开" Icon="OpenFile"
+                          ToolTipService.ToolTip="使用应用打开；临时副本的修改不会回写历史"/>
             <AppBarButton x:Name="EditButton" Label="编辑" Icon="Edit"/>
             <AppBarButton x:Name="PinButton" Label="置顶" Icon="Pin"/>
             <AppBarButton x:Name="TagsButton" Label="标签">

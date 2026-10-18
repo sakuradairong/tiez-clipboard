@@ -46,7 +46,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         set
         {
             if (compactMode == value) return;
-            CancelCardCopy(); InvalidateThumbnails();
+            CancelCardCopy(); CancelContentOpen(); InvalidateThumbnails();
             compactMode = value;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             HistoryList.ItemTemplate = (DataTemplate)Resources[value ? "CompactHistoryTemplate" : "StandardHistoryTemplate"];
@@ -67,6 +67,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         InitializeHistoryLayouts();
         InitializeThumbnails();
         InitializeCardCopies();
+        InitializeContentOpens();
         foreach (var input in new[] { SearchText, TagFilter })
         {
             input.TextCompositionStarted += (_, _) =>
@@ -234,7 +235,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     }
     private void InvalidateRead()
     {
-        CancelCardCopy(); InvalidateThumbnails();
+        CancelCardCopy(); CancelContentOpen(); InvalidateThumbnails();
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         if (!started || disposed) return;
         generation++;
@@ -260,7 +261,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!reset && externalPending) { await ReloadAsync(); return; }
         if (reset)
         {
-            CancelCardCopy(); InvalidateThumbnails();
+            CancelCardCopy(); CancelContentOpen(); InvalidateThumbnails();
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             debounce?.Stop();
             generation++;
@@ -355,7 +356,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             InvalidateThumbnails();
-            CancelCardCopy();
+            CancelCardCopy(); CancelContentOpen();
             observedRevision = changes.Revision;
             if (externalPending || activeDialog is not null || ActiveList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
@@ -381,6 +382,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private async Task LoadDetailAsync(bool reveal)
     {
         if (disposed) return;
+        CancelContentOpen();
         PreviewInvalidated?.Invoke();
         detailGeneration++;
         var current = detailGeneration;
@@ -467,6 +469,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed) return;
         UpdateCardCopyButtons();
+        UpdateContentOpenControls();
         if (!CanReadThumbnails) InvalidateThumbnails(); else QueueThumbnailRefresh();
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
@@ -769,6 +772,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         tagPicker?.Dispose();
         activeDialog?.Hide();
         ReleaseCardCopies();
+        ReleaseContentOpens();
         ReleaseThumbnails();
         ReleaseHistoryLayouts();
         selectedEntry = null;
@@ -881,7 +885,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             "capture" => (ButtonBase)CaptureButton, "add" => AddButton,
             "paste" => PasteButton, "paste-plain" => PastePlainButton, "target-start" => StartTargetButton,
-            "preview" => PreviewButton, "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
+            "preview" => PreviewButton, "open" => OpenButton, "copy" => CopyButton, "copy-plain" => CopyPlainButton, "edit" => EditButton, "pin" => PinButton,
             "tags" => TagsButton, "delete" => DeleteButton, "clear" => ClearButton, "more" => MoreButton,
             "reveal" => RevealButton, _ => throw new ArgumentOutOfRangeException(nameof(name))
         };

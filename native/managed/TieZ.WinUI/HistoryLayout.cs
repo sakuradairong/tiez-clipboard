@@ -70,7 +70,7 @@ public sealed partial class HistoryView
         try { LayoutChoice.SelectedIndex = useCards ? 1 : 0; }
         finally { bindingLayout = false; }
         if (cards == useCards) return;
-        CancelCardCopy(); InvalidateThumbnails();
+        CancelCardCopy(); CancelContentOpen(); InvalidateThumbnails();
         var old = ActiveList;
         var selection = SelectedHistoryIds;
         var anchor = ViewportAnchor();

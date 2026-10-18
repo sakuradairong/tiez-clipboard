@@ -40,7 +40,14 @@ public partial class App : Application
             main.Activate();
             if (report is not null)
             {
-                if (arguments.Contains("--exit-only"))
+                if (arguments.Contains("--open-only"))
+                {
+                    int fixtureIndex = Array.IndexOf(arguments, "--fixture-directory");
+                    if (fixtureIndex < 0 || fixtureIndex + 1 >= arguments.Length || !Path.IsPathFullyQualified(arguments[fixtureIndex + 1]))
+                        throw new ArgumentException("Open smoke requires an absolute --fixture-directory for the owned managed smoke binary.");
+                    new NativeOpenWindowSmoke(main, core, directory, report, arguments[fixtureIndex + 1]).Start();
+                }
+                else if (arguments.Contains("--exit-only"))
                 {
                     int fixtureIndex = Array.IndexOf(arguments, "--fixture-directory");
                     if (fixtureIndex < 0 || fixtureIndex + 1 >= arguments.Length || !Path.IsPathFullyQualified(arguments[fixtureIndex + 1]))
