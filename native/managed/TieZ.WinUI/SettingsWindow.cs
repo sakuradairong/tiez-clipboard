@@ -27,6 +27,10 @@ public sealed class SettingsWindow : Window
     private readonly TextBox limit = new() { Header = "最多保留普通历史条数（0–1000000）" };
     private readonly Button advanced = new() { Content = "高级设置 · 隐私与清理规则" };
     internal event Action? AdvancedRequested;
+    private readonly OpenerSettingsEditor openers;
+    private readonly Expander openerSection = new() { Header = "打开记录使用的应用", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    private readonly Button reload = new() { Content = "重新载入" };
+    internal OpenerSettingsEditor Openers => openers;
     private readonly Button save = new() { Content = "保存设置", IsEnabled = false };
     private readonly InfoBar message = new() { IsOpen = false, IsClosable = true };
     private readonly TextBlock revision = new() { Opacity = 0.6 };
@@ -39,6 +43,7 @@ public sealed class SettingsWindow : Window
     public SettingsWindow(NativeCore core)
     {
         this.core = core;
+        openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this));
         Title = "TieZ · 设置";
         AppWindow.Resize(new SizeInt32(520, 740));
         panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
@@ -48,10 +53,11 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(deduplicate); panel.Children.Add(showSearch); panel.Children.Add(compact);
         panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
         panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
+        openerSection.Content = openers; panel.Children.Add(openerSection);
+        openers.Changed += MarkDirty; openers.Error += ShowError;
         panel.Children.Add(advanced);
         advanced.Click += (_, _) => AdvancedRequested?.Invoke();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        var reload = new Button { Content = "重新载入" };
         actions.Children.Add(save); actions.Children.Add(reload);
         panel.Children.Add(actions); panel.Children.Add(revision); panel.Children.Add(message);
         panel.ActualThemeChanged += (_, _) => panel.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
@@ -74,7 +80,11 @@ public sealed class SettingsWindow : Window
             catch (Exception e) { ShowError(e.Message); }
         };
         core.Changed += OnChanged;
-        Closed += (_, _) => core.Changed -= OnChanged;
+        Closed += (_, _) =>
+        {
+            core.Changed -= OnChanged; loadedSnapshot = null; dirty = false; save.IsEnabled = false;
+            openers.Changed -= MarkDirty; openers.Error -= ShowError; openers.Dispose();
+        };
         Load(core.Snapshot);
     }
 
@@ -82,7 +92,7 @@ public sealed class SettingsWindow : Window
     {
         if (loading || loadedSnapshot is null) return;
         dirty = CurrentValues().Any(pair => loadedSnapshot.Values[pair.Key] != pair.Value);
-        save.IsEnabled = dirty; message.IsOpen = false;
+        save.IsEnabled = dirty && !openers.IsPicking; message.IsOpen = false;
     }
 
     private void Load(SettingsSnapshot snapshot)
@@ -92,6 +102,7 @@ public sealed class SettingsWindow : Window
         {
             expectedRevision = snapshot.Revision;
             loadedSnapshot = snapshot;
+            openers.Bind(snapshot);
             hotkey.Text = snapshot.Values["app.hotkey"];
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
@@ -116,14 +127,16 @@ public sealed class SettingsWindow : Window
         panel.RequestedTheme = ViewTheme.From(snapshot);
         if (dirty && snapshot.Revision != expectedRevision)
         {
+            openers.InvalidatePickerChoice();
             ShowError("配置已变化。请重新载入后再修改；当前草稿尚未保存。");
             return;
         }
         Load(snapshot);
     }
 
-    private Dictionary<string, string> CurrentValues() =>
-        new Dictionary<string, string>
+    private Dictionary<string, string> CurrentValues()
+    {
+        var values = new Dictionary<string, string>
         {
             ["app.hotkey"] = hotkey.Text,
             ["app.language"] = Languages[language.SelectedIndex],
@@ -138,9 +151,13 @@ public sealed class SettingsWindow : Window
             ["app.persistent_limit_enabled"] = limitEnabled.IsOn ? "true" : "false",
             ["app.persistent_limit"] = limit.Text,
         };
+        foreach (var (key, value) in openers.Values()) values[key] = value;
+        return values;
+    }
 
     private void Save()
     {
+        if (openers.IsPicking) return;
         save.IsEnabled = false;
         try
         {
@@ -179,6 +196,8 @@ public sealed class SettingsWindow : Window
         ((IInvokeProvider)new ButtonAutomationPeer(advanced).GetPattern(PatternInterface.Invoke)).Invoke();
     }
     internal void InvokeSettingsSave() => InvokeSaveButton();
+    internal void ShowOpenerSettings() => openerSection.IsExpanded = true;
+    internal void InvokeSettingsReload() => ((IInvokeProvider)new ButtonAutomationPeer(reload).GetPattern(PatternInterface.Invoke)).Invoke();
 
     internal bool CaptureOptionsLoaded => captureFiles.IsOn && captureRichText.IsOn && !persistent.IsOn
         && privacy.IsOn && limitEnabled.IsOn && limit.Text == "500";
