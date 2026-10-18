@@ -1,5 +1,5 @@
 //! Authoritative native-open preparation/acceptance and owned temporary exports.
-//! This Rust service is not yet exposed through the C ABI or WinUI. No edit watcher yet.
+//! Shared runtime/C ABI owner; no edit watcher yet.
 use crate::{CoreError, CoreResult, HistoryService};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -25,7 +25,7 @@ pub struct OpenStatus {
     pub export_bytes: usize,
     pub closed: bool,
 }
-/// This stage does not increment usage or start edit writeback; both remain required integration.
+/// Launch success is independent of post-launch usage accounting; edit writeback remains pending.
 #[derive(Debug)]
 pub struct OpenResult {
     pub id: i64,
@@ -33,6 +33,9 @@ pub struct OpenResult {
     pub route: Route,
     pub exported: bool,
     pub edit_watch_required: bool,
+    pub usage_updated: bool,
+    pub usage_revision: Option<u64>,
+    pub usage_error: Option<CoreError>,
 }
 // No Debug/Serialize on records containing bodies or paths.
 struct ExportFile {
@@ -344,9 +347,25 @@ impl OpenService {
             route: receipt.route,
             exported: request.export.is_some(),
             edit_watch_required: request.watch,
+            usage_updated: false,
+            usage_revision: None,
+            usage_error: None,
         })
     }
-    /// Core callers supply saved opener values, never a UI content body. C ABI wiring remains pending.
+    fn complete_usage(&self, mut result: OpenResult) -> OpenResult {
+        let usage = self
+            .history
+            .lock()
+            .map_err(|_| error("history", "History unavailable"))
+            .and_then(|mut history| history.record_open_usage(result.id, result.history_revision));
+        match usage {
+            Ok(mutation) => { result.usage_updated = mutation.changed; result.usage_revision = Some(mutation.revision); }
+            Err(failure) => result.usage_error = Some(error(failure.code,
+                "External application opened, but usage was not recorded; do not reopen just to retry accounting")),
+        }
+        result
+    }
+    /// Core callers supply saved opener values, never a UI content body.
     pub fn open_at_revision(
         &mut self,
         id: i64,
@@ -355,7 +374,8 @@ impl OpenService {
         values: &BTreeMap<String, String>,
     ) -> CoreResult<OpenResult> {
         let request = self.prepare(id, revision, allow_sensitive, values)?;
-        self.dispatch(request, platform::launch)
+        let result = self.dispatch(request, platform::launch)?;
+        Ok(self.complete_usage(result))
     }
 }
 impl Drop for OpenService {
@@ -822,5 +842,98 @@ mod tests {
         let history = f.history.lock().unwrap();
         assert_eq!(history.revision(), revision);
         assert_eq!(history.entry(id).unwrap().content, body);
+    }
+
+    #[test]
+    fn successful_dispatch_accounts_once_for_stored_and_session_without_resaving_content() {
+        for persistent in [false, true] {
+            let mut f = Fixture::new();
+            let body = "  used 原始\r\n\t  ";
+            let (id, revision) = f.add("text", body, None, false, persistent);
+            let request = f
+                .service
+                .prepare(id, revision, false, &BTreeMap::new())
+                .unwrap();
+            assert_eq!(f.history.lock().unwrap().entry(id).unwrap().use_count, 0);
+            let launched = f.service.dispatch(request, |_, _| Ok(accepted())).unwrap();
+            let result = f.service.complete_usage(launched);
+            assert!(result.usage_updated && result.usage_error.is_none());
+            assert_eq!(result.history_revision, revision);
+            assert_eq!(result.usage_revision, Some(revision + 1));
+            let history = f.history.lock().unwrap();
+            assert_eq!(history.entry(id).unwrap().content, body);
+            assert_eq!(history.entry(id).unwrap().use_count, 1);
+            assert_eq!(history.changes(revision).unwrap().changes[0].id, id);
+        }
+    }
+    #[test]
+    fn failed_post_launch_accounting_keeps_success_export_and_retryable_cleanup() {
+        let mut f = Fixture::new();
+        let (id, revision) = f.add("text", "private usage fixture", None, false, true);
+        let connection = rusqlite::Connection::open(f.scratch.0.join("fixture.db")).unwrap();
+        connection.execute_batch("CREATE TRIGGER usage_failure BEFORE UPDATE OF use_count ON clipboard_history BEGIN SELECT RAISE(ABORT,'private fixture'); END;").unwrap();
+        let request = f
+            .service
+            .prepare(id, revision, false, &BTreeMap::new())
+            .unwrap();
+        let exported = path(&request).to_path_buf();
+        let launched = f.service.dispatch(request, |_, _| Ok(accepted())).unwrap();
+        let result = f.service.complete_usage(launched);
+        assert!(!result.usage_updated && result.usage_revision.is_none());
+        let failure = result.usage_error.unwrap();
+        assert_eq!(failure.code, "history");
+        assert!(
+            !failure.message.contains("private")
+                && !failure.message.contains(exported.to_str().unwrap())
+        );
+        assert!(exported.exists() && result.exported);
+        assert_eq!(f.service.status().active_exports, 1);
+        assert_eq!(f.history.lock().unwrap().revision(), revision);
+        assert_eq!(f.history.lock().unwrap().entry(id).unwrap().use_count, 0);
+        assert_eq!(f.service.close().unwrap(), 1);
+        assert!(!exported.exists());
+    }
+    #[test]
+    fn post_launch_target_change_is_partial_success_but_unrelated_change_can_still_count() {
+        for target_changed in [false, true] {
+            let mut f = Fixture::new();
+            let (id, revision) = f.add("text", "accepted", None, false, false);
+            let request = f
+                .service
+                .prepare(id, revision, false, &BTreeMap::new())
+                .unwrap();
+            let history = f.history.clone();
+            let launched = f
+                .service
+                .dispatch(request, |_, _| {
+                    let mut history = history
+                        .try_lock()
+                        .expect("External dispatch held history mutex");
+                    if target_changed {
+                        history.edit(id, "new content".into()).unwrap();
+                    } else {
+                        history
+                            .add_manual("text".into(), "unrelated".into(), None, vec![])
+                            .unwrap();
+                    }
+                    Ok(accepted())
+                })
+                .unwrap();
+            let result = f.service.complete_usage(launched);
+            assert_eq!(result.history_revision, revision);
+            assert_eq!(result.usage_updated, !target_changed);
+            assert_eq!(
+                result.usage_error.as_ref().map(|e| e.code),
+                if target_changed {
+                    Some("history_conflict")
+                } else {
+                    None
+                }
+            );
+            assert_eq!(
+                f.history.lock().unwrap().entry(id).unwrap().use_count,
+                if target_changed { 0 } else { 1 }
+            );
+        }
     }
 }

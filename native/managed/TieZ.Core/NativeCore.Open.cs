@@ -3,7 +3,8 @@ using System.Text.Json;
 namespace TieZ.Core;
 
 public sealed record OpenContentResult(long Id, ulong HistoryRevision, string Route, bool Exported,
-    bool EditWatchRequired, bool EditWritebackAvailable, bool UsageUpdated);
+    bool EditWatchRequired, bool EditWritebackAvailable, bool UsageUpdated, ulong? UsageRevision, OpenUsageFailure? UsageError);
+public sealed record OpenUsageFailure(string Code, string Message);
 public sealed record OpenCleanupFailure(string Code, string Message);
 public sealed record OpenContentStatus(int ActiveExports, long ExportBytes, bool Closed, OpenCleanupFailure? CleanupError);
 

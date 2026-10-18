@@ -29,6 +29,86 @@ fn receive(path: &Path) -> PathBuf {
     std::fs::remove_file(path).unwrap();
     result
 }
+fn call(value: serde_json::Value) -> serde_json::Value {
+    let bytes = serde_json::to_vec(&value).unwrap();
+    unsafe {
+        let pointer = tiez_native_core::tiez_core_request(bytes.as_ptr(), bytes.len());
+        let response =
+            serde_json::from_slice(std::ffi::CStr::from_ptr(pointer).to_bytes()).unwrap();
+        tiez_native_core::tiez_core_free(pointer);
+        response
+    }
+}
+fn abi_usage(root: &Path, fixture: &Path) {
+    use serde_json::json;
+    let path = root.join("usage-abi.db");
+    let opened = call(json!({"op":"open","database_path":path}));
+    let handle = opened["result"]["handle"].as_u64().unwrap();
+    assert_eq!(
+        call(
+            json!({"op":"update","handle":handle,"expected_revision":0,"patch":{"app.text":fixture}})
+        )["ok"],
+        true
+    );
+    let mut exports = Vec::new();
+    for failed_accounting in [false, true] {
+        let body = format!("  ABI 原样 {failed_accounting}\r\n\t ");
+        let added =
+            call(json!({"op":"history_add","handle":handle,"content_type":"text","content":body}));
+        let id = added["result"]["id"].as_i64().unwrap();
+        let revision = added["result"]["revision"].as_u64().unwrap();
+        if failed_accounting {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TRIGGER usage_failure BEFORE UPDATE OF use_count ON clipboard_history BEGIN SELECT RAISE(ABORT,'private ABI fixture'); END;").unwrap();
+        }
+        let response =
+            call(json!({"op":"content_open","handle":handle,"id":id,"expected_revision":revision}));
+        assert_eq!(response["ok"], true);
+        let result = &response["result"];
+        assert_eq!(result["history_revision"], revision);
+        assert_eq!(result["usage_updated"], !failed_accounting);
+        if failed_accounting {
+            assert!(result["usage_revision"].is_null());
+            assert_eq!(result["usage_error"]["code"], "history");
+            assert!(!result["usage_error"].to_string().contains("private"));
+        } else {
+            assert_eq!(result["usage_revision"], revision + 1);
+            assert!(result["usage_error"].is_null());
+        }
+        let exported = receive(&root.join("observed.bin"));
+        assert_eq!(std::fs::read(&exported).unwrap(), body.as_bytes());
+        let entry = call(json!({"op":"history_entry","handle":handle,"id":id}));
+        assert_eq!(entry["result"]["content"], body);
+        assert_eq!(
+            entry["result"]["use_count"],
+            if failed_accounting { 0 } else { 1 }
+        );
+        let changes =
+            call(json!({"op":"history_changes","handle":handle,"after_revision":revision}));
+        assert_eq!(
+            changes["result"]["revision"],
+            revision + u64::from(!failed_accounting)
+        );
+        assert_eq!(
+            changes["result"]["changes"].as_array().unwrap().len(),
+            usize::from(!failed_accounting)
+        );
+        if !failed_accounting {
+            assert_eq!(changes["result"]["changes"][0]["id"], id);
+        }
+        assert_eq!(
+            call(json!({"op":"snapshot","handle":handle}))["result"]["snapshot"]["revision"],
+            1
+        );
+        exports.push(exported);
+    }
+    assert_eq!(
+        call(json!({"op":"content_open_poll","handle":handle}))["result"]["active_exports"],
+        2
+    );
+    assert_eq!(call(json!({"op":"close","handle":handle}))["ok"], true);
+    assert!(exports.iter().all(|path| !path.exists()));
+}
 fn main() {
     let exe = std::env::current_exe().unwrap();
     if exe.file_name() == Some(OsStr::new(FIXTURE)) {
@@ -108,10 +188,16 @@ fn main() {
             .starts_with("TieZ-open-"));
         assert_eq!(std::fs::read(&exported).unwrap(), body.as_bytes());
         let h = history.lock().unwrap();
-        assert_eq!(h.page(HistoryQuery::default()).unwrap().revision, revision);
+        assert_eq!(
+            h.page(HistoryQuery::default()).unwrap().revision,
+            revision + 1
+        );
         let entry = h.entry(id).unwrap();
         assert_eq!(entry.content, body);
-        assert_eq!(entry.use_count, 0);
+        assert_eq!(entry.use_count, 1);
+        assert!(result.usage_updated && result.usage_error.is_none());
+        assert_eq!(result.usage_revision, Some(revision + 1));
+        assert_eq!(h.changes(revision).unwrap().changes[0].id, id);
         drop(h);
         exports.push(exported);
     }
@@ -120,6 +206,7 @@ fn main() {
     assert!(exports.iter().all(|p| !p.exists()));
     drop(service);
     drop(history);
+    abi_usage(&root, &fixture);
     // The child reports immediately before exit. Wait only for its executable mapping to release.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -130,5 +217,5 @@ fn main() {
         }
     }
     std::fs::remove_dir_all(&root).unwrap();
-    println!("core open process smoke: 3 actual native desktop launches, stored/sensitive/session IDs, code handler fallback, exact exported bytes, unchanged history/use counts, owned-file cleanup; no system-association, packaged activation or edit-writeback acceptance");
+    println!("core open process smoke: 5 actual native desktop launches, stored/sensitive/session IDs, code handler fallback, exact exported bytes, usage/feed updates, real C ABI accounting success/partial failure, unchanged settings and source, owned-file cleanup; no system-association, packaged activation or edit-writeback acceptance");
 }

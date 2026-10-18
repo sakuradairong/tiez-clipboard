@@ -633,7 +633,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 tiez_native_platform::open::Route::Desktop => "desktop", tiez_native_platform::open::Route::Packaged => "packaged" };
             Ok(json!({ "id": result.id, "history_revision": result.history_revision, "route": route,
                 "exported": result.exported, "edit_watch_required": result.edit_watch_required,
-                "edit_writeback_available": false, "usage_updated": false }))
+                "edit_writeback_available": false, "usage_updated": result.usage_updated,
+                "usage_revision": result.usage_revision, "usage_error": result.usage_error }))
         }
         Request::ContentOpenPoll { handle } => {
             let opens = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.opens);

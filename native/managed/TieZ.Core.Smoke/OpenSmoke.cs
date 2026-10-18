@@ -76,10 +76,12 @@ internal static class OpenSmoke
                 var result = Read(core.OpenContentAsync(id, revision, sensitive));
                 var observed = Receive(fixture);
                 Check(result.Id == id && result.HistoryRevision == revision && result.Route == "desktop" && result.Exported && result.EditWatchRequired
-                    && !result.EditWritebackAvailable && !result.UsageUpdated, "Open result contract");
+                    && !result.EditWritebackAvailable && result.UsageUpdated && result.UsageRevision == revision + 1 && result.UsageError is null, "Open result contract");
                 Check(observed.Body.SequenceEqual(Encoding.UTF8.GetBytes(body)), "Exported bytes changed");
                 var entry = Read(core.GetEntryAsync(id));
-                Check(entry.Content == body && entry.UseCount == 0 && Read(core.GetHistoryAsync(new())).Revision == revision, "Open changed source/history");
+                Check(entry.Content == body && entry.UseCount == 1 && Read(core.GetHistoryAsync(new())).Revision == revision + 1, "Open usage/source contract");
+                var changes = Read(core.GetHistoryChangesAsync(revision));
+                Check(changes.Changes.Count == 1 && changes.Changes[0].Id == id && changes.PersistentSyncPending, "Open usage did not publish history/sync state");
                 exported.Add(observed.Path);
             }
             Check(Read(core.PollOpenContentAsync()).ActiveExports == 2 && core.Refresh().Revision == settingsRevision, "Poll saved settings or lost exports");
