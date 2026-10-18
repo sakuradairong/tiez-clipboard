@@ -112,6 +112,27 @@ internal static class OpenSmoke
             Check(reopened.Snapshot.Values["app.text"] == Path.Combine(fixture, "TieZ.Core.Smoke.exe") && Read(reopened.PollOpenContentAsync()).ActiveExports == 0, "Reopen created exports or changed opener");
         }
         finally { core.Dispose(); }
+        // A held open queue proves close initiation returns immediately and duplicate
+        // async requests borrow one task, while ordinary work is rejected as shutdown starts.
+        var asyncCore = new NativeCore(Path.Combine(directory, "async-close.db"));
+        asyncCore.Update(new Dictionary<string, string> { ["app.text"] = Path.Combine(fixture, "TieZ.Core.Smoke.exe") }, asyncCore.Snapshot.Revision);
+        long asyncId = Read(asyncCore.AddManualAsync("  async 原始\r\n ")).Id;
+        ulong asyncRevision = Read(asyncCore.GetHistoryAsync(new())).Revision;
+        Read(asyncCore.OpenContentAsync(asyncId, asyncRevision));
+        string asyncExport = Receive(fixture).Path;
+        using var asyncLocked = new FileStream(asyncExport, FileMode.Open, FileAccess.Read, FileShare.None);
+        var asyncGate = (SemaphoreSlim)typeof(NativeCore).GetField("openGate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(asyncCore)!;
+        asyncGate.Wait();
+        Task close = asyncCore.DisposeAsync().AsTask();
+        Check(!close.IsCompleted && asyncCore.IsClosing, "Async close blocked initiation or lost closing state");
+        Check(ReferenceEquals(close, asyncCore.DisposeAsync().AsTask()), "Duplicate async close did not borrow its task");
+        try { asyncCore.Refresh(); throw new Exception("Async closing client accepted work"); } catch (ObjectDisposedException) { }
+        asyncGate.Release(); Expect("open_cleanup", () => close.GetAwaiter().GetResult());
+        Check(asyncCore.IsClosing && File.Exists(asyncExport), "Async cleanup failure lost handle/export ownership");
+        asyncLocked.Dispose();
+        asyncCore.DisposeAsync().GetAwaiter().GetResult();
+        Check(!asyncCore.IsClosing && !File.Exists(asyncExport), "Async close retry did not release handle/export");
+        asyncCore.DisposeAsync().GetAwaiter().GetResult(); asyncCore.Dispose();
         Console.WriteLine("PASS: real DLL native open DTOs, saved handlers, sensitive/obsolete guards, actual desktop fixture bytes, independent queue/cancellation, locked close ownership and retry");
     }
 }

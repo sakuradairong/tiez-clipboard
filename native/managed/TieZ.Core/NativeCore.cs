@@ -12,7 +12,7 @@ public sealed class CoreException(string code, string message) : Exception(messa
 }
 
 // Owned by the application's UI thread. Views borrow this client; only the app disposes it.
-public sealed partial class NativeCore : IDisposable
+public sealed partial class NativeCore : IDisposable, IAsyncDisposable
 {
     private readonly int ownerThread = Environment.CurrentManagedThreadId;
     private ulong handle;
@@ -75,6 +75,7 @@ public sealed partial class NativeCore : IDisposable
     {
         VerifyThread();
         if (handle == 0) return;
+        if (pendingClose is { IsCompleted: false }) { pendingClose.GetAwaiter().GetResult(); return; }
         shutdown.Cancel();
         openGate.Wait();
         requestGate.Wait();
