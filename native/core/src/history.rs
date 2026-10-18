@@ -168,6 +168,9 @@ pub struct HistoryService {
     persistent_sync_pending: bool,
 }
 impl HistoryService {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
     pub fn open(path: &Path) -> CoreResult<Self> {
         if !path.is_absolute() || !path.parent().is_some_and(Path::is_dir) {
             return Err(CoreError::new(

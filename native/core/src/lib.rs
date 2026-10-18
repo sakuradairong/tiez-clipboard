@@ -168,6 +168,8 @@ enum Request {
         handle: u64,
         id: i64,
         #[serde(default)]
+        expected_revision: Option<u64>,
+        #[serde(default)]
         plain_text: bool,
         #[serde(default)]
         allow_sensitive: bool,
@@ -556,6 +558,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         Request::ClipboardCopy {
             handle,
             id,
+            expected_revision,
             plain_text,
             allow_sensitive,
         } => Ok(json!(registry
@@ -563,7 +566,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .get(&handle)
             .ok_or_else(invalid_handle)?
             .capture
-            .copy_entry(id, plain_text, allow_sensitive)?)),
+            .copy_entry_at_revision(id, plain_text, allow_sensitive, expected_revision)?)),
         Request::ClipboardPaste {
             handle,
             id,

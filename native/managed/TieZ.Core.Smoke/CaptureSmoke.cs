@@ -11,6 +11,14 @@ internal static class CaptureSmoke
     {
         try { Read(core.CopyEntryAsync(long.MaxValue)); throw new InvalidOperationException("Missing copy target accepted"); }
         catch (CoreException error) when (error.Code == "not_found") { }
+        var copyFixture = Read(core.AddManualAsync("revision copy fixture"));
+        Read(core.EditEntryAsync(copyFixture.Id, "revision copy changed"));
+        ulong historyRevision = Read(core.GetHistoryAsync(new())).Revision;
+        try { Read(core.CopyEntryAsync(copyFixture.Id, expectedRevision: copyFixture.Revision)); throw new InvalidOperationException("Stale copy accepted"); }
+        catch (CoreException error) when (error.Code == "history_conflict") { }
+        Check(Read(core.GetHistoryAsync(new())).Revision == historyRevision && Read(core.GetEntryAsync(copyFixture.Id)).Content == "revision copy changed",
+            "Rejected copy mutated history");
+        Read(core.DeleteEntryAsync(copyFixture.Id));
         var before = Read(core.GetCaptureStatusAsync());
         Check(!before.Running && before.Starts == 0, "Open must not capture implicitly");
         var started = Read(core.StartCaptureAsync());

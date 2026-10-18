@@ -326,6 +326,7 @@ pub struct ClipboardWriteResult {
 }
 pub(crate) struct PreparedCopy {
     id: i64,
+    revision: u64,
     payload: tiez_content::write::PreparedWrite,
     marker: Echo,
 }
@@ -337,7 +338,17 @@ impl CaptureService {
         plain_text: bool,
         allow_sensitive: bool,
     ) -> CoreResult<ClipboardWriteResult> {
-        let prepared = self.prepare_copy(id, plain_text, allow_sensitive)?;
+        self.copy_entry_at_revision(id, plain_text, allow_sensitive, None)
+    }
+    pub fn copy_entry_at_revision(
+        &self,
+        id: i64,
+        plain_text: bool,
+        allow_sensitive: bool,
+        expected_revision: Option<u64>,
+    ) -> CoreResult<ClipboardWriteResult> {
+        let prepared =
+            self.prepare_copy_at_revision(id, plain_text, allow_sensitive, expected_revision)?;
         self.commit_copy(prepared, || Ok(()))
     }
     pub(crate) fn prepare_copy(
@@ -346,11 +357,28 @@ impl CaptureService {
         plain_text: bool,
         allow_sensitive: bool,
     ) -> CoreResult<PreparedCopy> {
-        let entry = self
-            .history
-            .lock()
-            .map_err(|_| CoreError::new("history", "History unavailable"))?
-            .entry(id)?;
+        self.prepare_copy_at_revision(id, plain_text, allow_sensitive, None)
+    }
+    fn prepare_copy_at_revision(
+        &self,
+        id: i64,
+        plain_text: bool,
+        allow_sensitive: bool,
+        expected_revision: Option<u64>,
+    ) -> CoreResult<PreparedCopy> {
+        let (entry, revision) = {
+            let history = self
+                .history
+                .lock()
+                .map_err(|_| CoreError::new("history", "History unavailable"))?;
+            if expected_revision.is_some_and(|expected| expected != history.revision()) {
+                return Err(CoreError::new(
+                    "history_conflict",
+                    "History changed; refresh before copying",
+                ));
+            }
+            (history.entry(id)?, history.revision())
+        };
         if tiez_storage::database::has_sensitive_tag(&entry.tags) && !allow_sensitive {
             return Err(CoreError::new(
                 "sensitive_confirmation",
@@ -392,6 +420,7 @@ impl CaptureService {
         };
         Ok(PreparedCopy {
             id,
+            revision,
             payload: prepared,
             marker,
         })
@@ -403,12 +432,25 @@ impl CaptureService {
     ) -> CoreResult<ClipboardWriteResult> {
         let PreparedCopy {
             id,
+            revision,
             payload,
             mut marker,
         } = prepared;
         // The worker holds this same gate before accepting a read. Publish the marker
         // before releasing it, even if a multi-format OS write only partially succeeds.
         let _policy = self.policy.lock().unwrap_or_else(|e| e.into_inner());
+        // Match the capture worker's policy -> history lock order. Keep history stable
+        // through the OS write so edits/privacy changes cannot invalidate a prepared body.
+        let history = self
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?;
+        if history.revision() != revision {
+            return Err(CoreError::new(
+                "history_conflict",
+                "History changed; refresh before copying or pasting",
+            ));
+        }
         before_write()?;
         marker.expires = Instant::now() + Duration::from_secs(10);
         match payload.commit() {
@@ -440,6 +482,7 @@ impl CaptureService {
         }
     }
 }
+
 fn ignored(state: &WorkerState) {
     state
         .stats
@@ -810,6 +853,118 @@ mod tests {
             let history = service.history.lock().unwrap();
             assert_eq!(history.page(Default::default()).unwrap().revision, revision);
             assert_eq!(history.entry(id).unwrap().content, "  prepared ");
+        });
+    }
+    #[test]
+    fn copy_revision_rejects_stale_requests_before_preparation() {
+        fixture(|service, _, _| {
+            let added = service
+                .history
+                .lock()
+                .unwrap()
+                .add_manual("text".into(), "  original\r\n ".into(), None, vec![])
+                .unwrap();
+            assert!(service
+                .prepare_copy_at_revision(added.id, false, false, Some(added.revision))
+                .is_ok());
+            service
+                .history
+                .lock()
+                .unwrap()
+                .edit(added.id, "changed".into())
+                .unwrap();
+            assert_eq!(
+                service
+                    .copy_entry_at_revision(added.id, false, true, Some(added.revision))
+                    .unwrap_err()
+                    .code,
+                "history_conflict"
+            );
+            assert!(service.echo.lock().unwrap().is_none());
+            assert_eq!(
+                service
+                    .history
+                    .lock()
+                    .unwrap()
+                    .entry(added.id)
+                    .unwrap()
+                    .content,
+                "changed"
+            );
+            assert!(service.prepare_copy(added.id, false, false).is_ok());
+        });
+    }
+    #[test]
+    fn prepared_copy_rejects_edits_sensitive_changes_and_deletion_before_os_write() {
+        for change in 0..3 {
+            fixture(|service, _, _| {
+                let added = service
+                    .history
+                    .lock()
+                    .unwrap()
+                    .add_manual("text".into(), "prepared public".into(), None, vec![])
+                    .unwrap();
+                let prepared = service
+                    .prepare_copy_at_revision(added.id, false, false, Some(added.revision))
+                    .unwrap();
+                let revision = {
+                    let mut history = service.history.lock().unwrap();
+                    match change {
+                        0 => {
+                            history.edit(added.id, "changed body".into()).unwrap();
+                        }
+                        1 => {
+                            history.set_tags(added.id, vec!["password".into()]).unwrap();
+                        }
+                        _ => {
+                            history.delete(added.id).unwrap();
+                        }
+                    }
+                    history.revision()
+                };
+                let mut called = false;
+                let error = service
+                    .commit_copy(prepared, || {
+                        called = true;
+                        Ok(())
+                    })
+                    .unwrap_err();
+                assert_eq!(error.code, "history_conflict");
+                assert!(!called);
+                assert!(service.echo.lock().unwrap().is_none());
+                assert_eq!(service.history.lock().unwrap().revision(), revision);
+            });
+        }
+    }
+    #[test]
+    fn prepared_session_copy_holds_revision_until_precommit_guard() {
+        fixture(|service, _, _| {
+            let (sender, _) = input(service);
+            sender
+                .send(ClipboardData::Text("  session snapshot\r\n ".into()))
+                .unwrap();
+            wait(service, |status| status.accepted == 1);
+            service.stop();
+            let page = service
+                .history
+                .lock()
+                .unwrap()
+                .page(Default::default())
+                .unwrap();
+            let id = page.items[0].id;
+            assert!(id < 0);
+            let prepared = service
+                .prepare_copy_at_revision(id, false, false, Some(page.revision))
+                .unwrap();
+            let error = service
+                .commit_copy(prepared, || {
+                    assert!(service.history.try_lock().is_err());
+                    Err(CoreError::new("fixture_guard", "No OS write in unit test"))
+                })
+                .unwrap_err();
+            assert_eq!(error.code, "fixture_guard");
+            assert!(service.echo.lock().unwrap().is_none());
+            assert_eq!(service.history.lock().unwrap().revision(), page.revision);
         });
     }
     #[test]

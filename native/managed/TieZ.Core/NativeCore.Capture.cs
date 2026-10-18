@@ -7,8 +7,9 @@ public sealed record ClipboardWriteResult(long Id, uint ClipboardSequence);
 
 public sealed partial class NativeCore
 {
-    public Task<ClipboardWriteResult> CopyEntryAsync(long id, bool plainText = false, bool allowSensitive = false, CancellationToken cancellationToken = default) =>
-        HistoryRequestAsync<ClipboardWriteResult>(new { op = "clipboard_copy", handle, id, plain_text = plainText, allow_sensitive = allowSensitive }, cancellationToken);
+    public Task<ClipboardWriteResult> CopyEntryAsync(long id, bool plainText = false, bool allowSensitive = false, CancellationToken cancellationToken = default,
+        ulong? expectedRevision = null) =>
+        HistoryRequestAsync<ClipboardWriteResult>(new { op = "clipboard_copy", handle, id, expected_revision = expectedRevision, plain_text = plainText, allow_sensitive = allowSensitive }, cancellationToken);
 
     // Capture belongs to the shared application core, never to a settings window.
     // These use the same serialized, cancellable native request queue as history.

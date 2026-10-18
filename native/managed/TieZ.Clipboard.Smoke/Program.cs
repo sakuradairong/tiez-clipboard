@@ -38,7 +38,10 @@ try
     Wait(core, status => status.Accepted == 1);
     var first = Read(core.GetHistoryAsync(new())).Items.Single();
     Check(first.Id < 0 && Read(core.GetEntryAsync(first.Id)).Content == body.Replace("\r\n", "\n"), "Real text capture/session/whitespace");
-    Read(core.CopyEntryAsync(first.Id));
+    ulong copyRevision = Read(core.GetHistoryAsync(new())).Revision;
+    Read(core.CopyEntryAsync(first.Id, expectedRevision: copyRevision));
+    Expect("history_conflict", () => Read(core.CopyEntryAsync(first.Id, expectedRevision: copyRevision - 1)));
+    Check(fixture.ReadText() == body.Replace("\r\n", "\n"), "Rejected stale copy changed the OS clipboard");
     Check(fixture.ReadText() == body.Replace("\r\n", "\n"), "Real Unicode copy");
     Thread.Sleep(250);
     Check(Read(core.GetCaptureStatusAsync()).Accepted == 1, "Own copy was captured");
@@ -53,7 +56,7 @@ try
     fixture.Write((13, Encoding.Unicode.GetBytes("rich 中文\0")), (htmlFormat, Encoding.UTF8.GetBytes("<html><body><!--StartFragment--><b>rich 中文</b><!--EndFragment--></body></html>\0")), (rtfFormat, rtf), (biffFormat, biff));
     Wait(core, status => status.Accepted == 3);
     var rich = Read(core.GetHistoryAsync(new(ContentType: "rich_text"))).Items.Single();
-    Read(core.CopyEntryAsync(rich.Id));
+    Read(core.CopyEntryAsync(rich.Id, expectedRevision: Read(core.GetHistoryAsync(new())).Revision));
     Check(fixture.ReadText() == "rich 中文", "Rich Unicode fallback");
     Check(Encoding.UTF8.GetString(fixture.Read(htmlFormat) ?? []).Contains("<b>rich 中文</b>"), "CF_HTML copy");
     Check((fixture.Read(rtfFormat) ?? []).SequenceEqual(rtf), "RTF payload preservation");
@@ -84,7 +87,8 @@ try
     var sensitive = Read(core.GetHistoryAsync(new(Search: "fixture@example.com"))).Items.Single();
     Check(sensitive.IsSensitive, "Native privacy stage");
     Expect("sensitive_confirmation", () => Read(core.CopyEntryAsync(sensitive.Id)));
-    Read(core.CopyEntryAsync(sensitive.Id, allowSensitive: true));
+    Expect("history_conflict", () => Read(core.CopyEntryAsync(sensitive.Id, allowSensitive: true, expectedRevision: copyRevision)));
+    Read(core.CopyEntryAsync(sensitive.Id, allowSensitive: true, expectedRevision: Read(core.GetHistoryAsync(new())).Revision));
     Check(fixture.ReadText() == "fixture@example.com", "Explicit sensitive copy");
 
     core.Update(new Dictionary<string, string> { ["app.persistent"] = "true" }, core.Snapshot.Revision);
