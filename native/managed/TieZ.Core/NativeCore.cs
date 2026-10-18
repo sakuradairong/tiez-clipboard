@@ -76,6 +76,7 @@ public sealed partial class NativeCore : IDisposable
         VerifyThread();
         if (handle == 0) return;
         shutdown.Cancel();
+        openGate.Wait();
         requestGate.Wait();
         try
         {
@@ -83,7 +84,8 @@ public sealed partial class NativeCore : IDisposable
             handle = 0;
             Changed = null;
         }
-        finally { requestGate.Release(); }
+        // On native cleanup failure keep the handle and IsClosing state for Dispose retry.
+        finally { requestGate.Release(); openGate.Release(); }
         // Cancelled waiters may still be unwinding. These managed-only gates own no OS
         // wait handles; retain them until the client and its outstanding tasks are collected.
         GC.SuppressFinalize(this);
@@ -98,7 +100,7 @@ public sealed partial class NativeCore : IDisposable
     private void VerifyAccess()
     {
         VerifyThread();
-        ObjectDisposedException.ThrowIf(handle == 0, this);
+        ObjectDisposedException.ThrowIf(handle == 0 || shutdown.IsCancellationRequested, this);
     }
 
     private static SettingsSnapshot ReadSnapshot(JsonElement result)

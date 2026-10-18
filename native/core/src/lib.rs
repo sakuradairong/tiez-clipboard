@@ -10,7 +10,7 @@ mod settings;
 use serde::Deserialize;
 use serde_json::{json, Value};
 pub use settings::{CoreError, CoreResult, SettingsChange, SettingsService, SettingsSnapshot};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{c_char, CString};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -23,11 +23,13 @@ fn default_true() -> bool {
 struct Registry {
     next_handle: u64,
     services: HashMap<u64, CoreRuntime>,
+    closing: HashSet<u64>,
 }
 struct CoreRuntime {
     settings: SettingsService,
     history: Arc<Mutex<HistoryService>>,
     capture: capture::CaptureService,
+    opens: Arc<Mutex<external_open::OpenService>>,
     target: tiez_native_platform::target::TargetTracker,
     shell: tiez_native_platform::shell::ShellService,
 }
@@ -165,6 +167,14 @@ enum Request {
         handle: u64,
         after_revision: u64,
     },
+    ContentOpen {
+        handle: u64,
+        id: i64,
+        expected_revision: u64,
+        #[serde(default)]
+        allow_sensitive: bool,
+    },
+    ContentOpenPoll { handle: u64 },
     ClipboardCopy {
         handle: u64,
         id: i64,
@@ -223,6 +233,54 @@ enum Request {
     },
 }
 
+impl Request {
+    fn handle(&self) -> Option<u64> {
+        match self {
+            Self::Open { .. } => None,
+            Self::Snapshot { handle, .. }
+            | Self::Update { handle, .. }
+            | Self::CleanupPreview { handle, .. }
+            | Self::TagPage { handle, .. }
+            | Self::TagCreate { handle, .. }
+            | Self::TagDeletePreview { handle, .. }
+            | Self::TagDelete { handle, .. }
+            | Self::TagRename { handle, .. }
+            | Self::TagColor { handle, .. }
+            | Self::HistoryPage { handle, .. }
+            | Self::HistoryEntry { handle, .. }
+            | Self::HistoryPreviewEntry { handle, .. }
+            | Self::HistoryAdd { handle, .. }
+            | Self::HistoryPin { handle, .. }
+            | Self::HistoryEdit { handle, .. }
+            | Self::HistoryTagSelection { handle, .. }
+            | Self::HistoryTagsExact { handle, .. }
+            | Self::HistoryTags { handle, .. }
+            | Self::HistoryDelete { handle, .. }
+            | Self::HistoryDeleteMany { handle, .. }
+            | Self::HistoryClearPreview { handle, .. }
+            | Self::HistoryClear { handle, .. }
+            | Self::HistoryDocumentPreview { handle, .. }
+            | Self::HistoryImagePreview { handle, .. }
+            | Self::HistoryChanges { handle, .. }
+            | Self::ContentOpen { handle, .. }
+            | Self::ContentOpenPoll { handle, .. }
+            | Self::ClipboardCopy { handle, .. }
+            | Self::ClipboardPaste { handle, .. }
+            | Self::ShellStart { handle, .. }
+            | Self::ShellPoll { handle, .. }
+            | Self::ShellStop { handle, .. }
+            | Self::TargetStart { handle, .. }
+            | Self::TargetStatus { handle, .. }
+            | Self::TargetStop { handle, .. }
+            | Self::TargetRestore { handle, .. }
+            | Self::CaptureStart { handle, .. }
+            | Self::CaptureStop { handle, .. }
+            | Self::CaptureStatus { handle, .. }
+            | Self::Close { handle, .. } => Some(*handle),
+        }
+    }
+}
+
 fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
     let request: Request = serde_json::from_slice(bytes)
         .map_err(|_| CoreError::new("invalid_request", "Expected a valid UTF-8 JSON command"))?;
@@ -230,9 +288,14 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         .get_or_init(Default::default)
         .lock()
         .map_err(|_| CoreError::new("internal", "Core registry unavailable"))?;
+    if request.handle().is_some_and(|handle| registry.closing.contains(&handle))
+        && !matches!(&request, Request::Close { .. } | Request::ContentOpenPoll { .. })
+    {
+        return Err(CoreError::new("core_closing", "Core shutdown is pending export cleanup; retry close"));
+    }
     match request {
         Request::Open { database_path } => {
-            if !registry.services.is_empty() {
+            if !registry.services.is_empty() || !registry.closing.is_empty() {
                 return Err(CoreError::new(
                     "already_open",
                     "Share the existing core between windows",
@@ -241,6 +304,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             let history = Arc::new(Mutex::new(HistoryService::open(Path::new(&database_path))?));
             let service = SettingsService::open(Path::new(&database_path))?;
             let snapshot = service.snapshot()?;
+            let opens = Arc::new(Mutex::new(external_open::OpenService::new(Arc::clone(&history), Path::new(&database_path).parent().unwrap().to_path_buf())?));
             let capture = capture::CaptureService::new(
                 Arc::clone(&history),
                 Path::new(&database_path).parent().unwrap().to_path_buf(),
@@ -257,6 +321,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     settings: service,
                     history,
                     capture,
+                    opens,
                     target: Default::default(),
                     shell: Default::default(),
                 },
@@ -556,6 +621,29 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 allow_sensitive,
                 max_edge
             )?)),
+        Request::ContentOpen { handle, id, expected_revision, allow_sensitive } => {
+            let runtime = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            let values = runtime.settings.snapshot()?.values;
+            let opens = Arc::clone(&runtime.opens);
+            // Windows handlers can be slow. Keep unrelated settings/history/core calls available.
+            drop(registry);
+            let mut opens = opens.lock().map_err(|_| CoreError::new("open_unavailable", "Open service unavailable"))?;
+            let result = opens.open_at_revision(id, expected_revision, allow_sensitive, &values)?;
+            let route = match result.route { tiez_native_platform::open::Route::System => "system",
+                tiez_native_platform::open::Route::Desktop => "desktop", tiez_native_platform::open::Route::Packaged => "packaged" };
+            Ok(json!({ "id": result.id, "history_revision": result.history_revision, "route": route,
+                "exported": result.exported, "edit_watch_required": result.edit_watch_required,
+                "edit_writeback_available": false, "usage_updated": false }))
+        }
+        Request::ContentOpenPoll { handle } => {
+            let opens = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.opens);
+            drop(registry);
+            let mut opens = opens.lock().map_err(|_| CoreError::new("open_unavailable", "Open service unavailable"))?;
+            let cleanup_error = if opens.status().closed { opens.close().err() } else { opens.reap_expired().err() };
+            let status = opens.status();
+            Ok(json!({ "active_exports": status.active_exports, "export_bytes": status.export_bytes,
+                "closed": status.closed, "cleanup_error": cleanup_error }))
+        }
         Request::ClipboardCopy {
             handle,
             id,
@@ -685,13 +773,32 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .services
                 .remove(&handle)
                 .ok_or_else(invalid_handle)?;
-            // Removed from registry, no history/policy guards held while joining.
+            // Reserve this runtime's slot until close succeeds or the stopped owner is restored.
+            registry.closing.insert(handle);
+            drop(registry);
+            // No registry/history/policy guards held while joining or waiting for a native open.
             let _ = service.shell.stop();
             let shell = shell_status(service.shell.status());
             let capture = service.capture.stop();
             let _ = service.target.stop();
             let target = target_status(service.target.status());
-            Ok(json!({ "closed": true, "capture": capture, "target": target, "shell": shell }))
+            let cleanup = service.opens.lock()
+                .map_err(|_| CoreError::new("open_unavailable", "Open service unavailable"))
+                .and_then(|mut opens| opens.close());
+            let mut registry = REGISTRY.get().unwrap().lock()
+                .map_err(|_| CoreError::new("internal", "Core registry unavailable"))?;
+            match cleanup {
+                Ok(removed) => {
+                    registry.closing.remove(&handle);
+                    Ok(json!({ "closed": true, "capture": capture, "target": target, "shell": shell,
+                        "removed_exports": removed }))
+                },
+                Err(failure) => {
+                    // Keep the closed opener and stopped services owned: caller can retry close.
+                    registry.services.insert(handle, service);
+                    Err(failure)
+                }
+            }
         }
     }
 }
@@ -890,5 +997,39 @@ mod tests {
         assert_eq!(call(json!({"op":"close", "handle":next}))["ok"], true);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn open_abi_rejects_ui_bodies_and_releases_registry_before_waiting() {
+        let root=std::env::temp_dir().join(format!("TieZ-open-abi-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let opened=call(json!({"op":"open","database_path":root.join("fixture.db")}));
+        let handle=opened["result"]["handle"].as_u64().unwrap();
+        assert!(call(json!({"op":"update","handle":handle,"expected_revision":0,"patch":{"app.text":root.join("missing.exe").to_str().unwrap()}}))["ok"].as_bool().unwrap());
+        let (id,revision,opens)={
+            let registry=REGISTRY.get().unwrap().lock().unwrap();let runtime=&registry.services[&handle];
+            let mut h=runtime.history.lock().unwrap();let saved=h.add_manual("text".into(),"  authoritative\r\n ".into(),None,vec![]).unwrap().id;
+            let mut session=h.entry(saved).unwrap();session.id=0;let id=h.record_processed(session,false).unwrap().id;
+            (id,h.revision(),runtime.opens.clone())
+        };
+        assert!(id<0);
+        let rejected=call(json!({"op":"content_open","handle":handle,"id":id,"expected_revision":revision,"content":"injected UI body"}));
+        assert_eq!(rejected["error"]["code"],"invalid_request");
+        assert_eq!(call(json!({"op":"content_open","handle":handle,"id":id,"expected_revision":revision-1}))["error"]["code"],"history_conflict");
+        assert_eq!(call(json!({"op":"content_open","handle":handle,"id":id,"expected_revision":revision}))["error"]["code"],"open_handler_missing");
+        assert_eq!(call(json!({"op":"content_open_poll","handle":handle}))["result"]["active_exports"],0);
+        // Hold only the opener: the poll must wait without retaining the global registry lock.
+        let held=opens.lock().unwrap();let before=Arc::strong_count(&opens);
+        let poll=std::thread::spawn(move||call(json!({"op":"content_open_poll","handle":handle})));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(2);
+        while Arc::strong_count(&opens)==before && std::time::Instant::now()<deadline {std::thread::sleep(std::time::Duration::from_millis(1));}
+        let progressed=Arc::strong_count(&opens)>before;
+        let (tx,rx)=std::sync::mpsc::channel();
+        let snapshot=std::thread::spawn(move||{let result=call(json!({"op":"snapshot","handle":handle}));let _=tx.send(result);});
+        let independent=rx.recv_timeout(std::time::Duration::from_secs(2));
+        drop(held);assert_eq!(poll.join().unwrap()["ok"],true);snapshot.join().unwrap();
+        let closed=call(json!({"op":"close","handle":handle}));drop(opens);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(closed["result"]["closed"],true);assert!(progressed);assert_eq!(independent.unwrap()["result"]["snapshot"]["revision"],1);
     }
 }

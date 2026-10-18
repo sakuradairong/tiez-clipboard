@@ -47,30 +47,39 @@ fn configured_handler(
     let Some(value) = selected else {
         return Ok(Handler::System);
     };
-    if value.chars().any(char::is_control) {
-        return Err("open_handler");
+    Handler::parse(value)
+}
+impl Handler {
+    /// Parse saved application selection without filesystem access or launching it.
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        if value.trim().is_empty() {
+            return Ok(Self::System);
+        }
+        if value.chars().any(char::is_control) {
+            return Err("open_handler");
+        }
+        // Preserve the legacy default-handler fallback for non-Windows app selections.
+        if value.starts_with("/Applications/") || value.ends_with(".app") {
+            return Ok(Handler::System);
+        }
+        if Path::new(value).is_absolute() {
+            return Ok(Handler::Desktop(value.into()));
+        }
+        // A packaged-app identity is data, never an interpolated shell command.
+        if value.len() <= 255
+            && value.split_once('!').is_some_and(|(family, app)| {
+                !family.is_empty()
+                    && !app.is_empty()
+                    && !app.contains('!')
+                    && value
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_.!-".contains(&byte))
+            })
+        {
+            return Ok(Handler::Packaged(value.to_owned()));
+        }
+        Err("open_handler")
     }
-    // Preserve the legacy default-handler fallback for non-Windows app selections.
-    if value.starts_with("/Applications/") || value.ends_with(".app") {
-        return Ok(Handler::System);
-    }
-    if Path::new(value).is_absolute() {
-        return Ok(Handler::Desktop(value.into()));
-    }
-    // A packaged-app identity is data, never an interpolated shell command.
-    if value.len() <= 255
-        && value.split_once('!').is_some_and(|(family, app)| {
-            !family.is_empty()
-                && !app.is_empty()
-                && !app.contains('!')
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_.!-".contains(&byte))
-        })
-    {
-        return Ok(Handler::Packaged(value.clone()));
-    }
-    Err("open_handler")
 }
 pub fn normalize_external_url(content: &str) -> Result<String, &'static str> {
     let value = content.trim();

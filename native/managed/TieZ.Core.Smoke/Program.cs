@@ -1,5 +1,7 @@
 using TieZ.Core;
 
+if (OpenSmoke.TryFixture(args)) return;
+
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
@@ -15,6 +17,7 @@ string directory = Path.Combine(Path.GetTempPath(), $"TieZ-原生-{Guid.NewGuid(
 Directory.CreateDirectory(directory);
 try
 {
+    OpenSmoke.Run(Path.Combine(directory, "打开核心"));
     TagSmoke.Run(Path.Combine(directory, "标签目录"));
     LayoutPreferenceSmoke.Run(Path.Combine(directory, "布局.db"));
     string database = Path.Combine(directory, "设置.db");

@@ -42,9 +42,31 @@ pub struct SettingsService {
     connection: Connection,
 }
 
+fn is_opener_key(key: &str) -> bool {
+    matches!(
+        key,
+        "app.text"
+            | "app.code"
+            | "app.rich_text"
+            | "app.image"
+            | "app.file"
+            | "app.video"
+            | "app.url"
+            | "app.link"
+    )
+}
+
 fn defaults() -> BTreeMap<String, String> {
     [
         ("app.language", "zh"),
+        ("app.text", ""),
+        ("app.code", ""),
+        ("app.rich_text", ""),
+        ("app.image", ""),
+        ("app.file", ""),
+        ("app.video", ""),
+        ("app.url", ""),
+        ("app.link", ""),
         ("app.hotkey", "Win+V"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
@@ -81,6 +103,18 @@ fn valid_cleanup(value: &str) -> bool {
 }
 
 fn validate(key: &str, value: &str) -> CoreResult<()> {
+    if is_opener_key(key) {
+        return if value.encode_utf16().count() < 32767
+            && tiez_content::open::Handler::parse(value).is_ok()
+        {
+            Ok(())
+        } else {
+            Err(CoreError::new(
+                "invalid_value",
+                format!("Invalid value for {key}"),
+            ))
+        };
+    }
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
         "app.hotkey" => tiez_native_platform::hotkey::Shortcut::parse(value).is_ok(),
@@ -144,7 +178,11 @@ fn read_snapshot(connection: &Connection) -> CoreResult<SettingsSnapshot> {
             })
             .optional()?
         {
-            validate(key, &stored)?;
+            // Legacy selections must remain visible/fixable even if no longer launchable.
+            // Validate only new opener edits; opening itself parses and validates the selection.
+            if !is_opener_key(key) {
+                validate(key, &stored)?;
+            }
             *value = stored;
         }
     }
@@ -198,7 +236,9 @@ impl SettingsService {
         prepare: impl FnOnce(&SettingsSnapshot, &SettingsSnapshot) -> CoreResult<P>,
     ) -> CoreResult<(SettingsChange, Option<P>)> {
         for (key, value) in &patch {
-            validate(key, value)?;
+            if !is_opener_key(key) {
+                validate(key, value)?;
+            }
         }
         let transaction = self
             .connection
@@ -209,6 +249,12 @@ impl SettingsService {
                 "revision_conflict",
                 "Settings changed; reload before saving",
             ));
+        }
+        // An unchanged legacy selection is a no-op, not an attempt to replace it.
+        for (key, value) in &patch {
+            if is_opener_key(key) && current.values.get(key) != Some(value) {
+                validate(key, value)?;
+            }
         }
         let changed = patch
             .iter()
@@ -575,5 +621,73 @@ mod effect_tests {
             .update(2, [("app.history_view_mode".into(), "list".into())].into())
             .is_err());
         assert_eq!(s.snapshot().unwrap(), change.snapshot);
+    }
+
+    #[test]
+    fn opener_settings_preserve_legacy_reads_and_validate_only_changed_selections() {
+        fn patch(key: &str, value: &str) -> BTreeMap<String, String> {
+            [(key.into(), value.into())].into()
+        }
+        let mut service =
+            SettingsService::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        service
+            .connection
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('app.text',?1)",
+                ["old unsupported selection"],
+            )
+            .unwrap();
+        let writes: i64 = service
+            .connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.values.len(), 26);
+        assert_eq!(snapshot.values["app.text"], "old unsupported selection");
+        assert!(
+            !service
+                .update(0, patch("app.text", "old unsupported selection"))
+                .unwrap()
+                .changed
+        );
+        assert_eq!(
+            service
+                .connection
+                .query_row::<i64, _, _>("SELECT total_changes()", [], |r| r.get(0))
+                .unwrap(),
+            writes
+        );
+        assert!(
+            service
+                .update(0, patch("app.language", "en"))
+                .unwrap()
+                .changed
+        );
+        assert_eq!(
+            service.snapshot().unwrap().values["app.text"],
+            "old unsupported selection"
+        );
+        assert_eq!(
+            service
+                .update(1, patch("app.text", "cmd.exe /c calc"))
+                .unwrap_err()
+                .code,
+            "invalid_value"
+        );
+        assert_eq!(service.snapshot().unwrap().revision, 1);
+        let next = service
+            .update(1, patch("app.text", r"C:\Program Files\编辑器\editor.exe"))
+            .unwrap();
+        assert_eq!(
+            next.snapshot.values["app.text"],
+            r"C:\Program Files\编辑器\editor.exe"
+        );
+        assert_eq!(
+            service
+                .update(1, patch("app.text", "Family_123!App"))
+                .unwrap_err()
+                .code,
+            "revision_conflict"
+        );
     }
 }
