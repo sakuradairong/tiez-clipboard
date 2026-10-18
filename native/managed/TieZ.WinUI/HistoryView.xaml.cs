@@ -49,6 +49,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             compactMode = value;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             HistoryList.ItemTemplate = (DataTemplate)Resources[value ? "CompactHistoryTemplate" : "StandardHistoryTemplate"];
+            HistoryCards.ItemTemplate = (DataTemplate)Resources[value ? "CompactCardHistoryTemplate" : "CardHistoryTemplate"];
             UpdateCommands();
         }
     }
@@ -62,7 +63,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     public HistoryView()
     {
         InitializeComponent();
-        HistoryList.ItemsSource = rows;
+        InitializeHistoryLayouts();
         foreach (var input in new[] { SearchText, TagFilter })
         {
             input.TextCompositionStarted += (_, _) =>
@@ -86,8 +87,6 @@ public sealed partial class HistoryView : UserControl, IDisposable
         PinnedOnly.Unchecked += (_, _) => ScheduleSearch();
         TagOnly.Checked += (_, _) => ScheduleSearch();
         TagOnly.Unchecked += (_, _) => ScheduleSearch();
-        HistoryList.SelectionChanged += (_, _) => _ = LoadDetailAsync(false);
-        HistoryList.Loaded += (_, _) => AttachScroll();
         Loaded += (_, _) =>
         {
             if (started || disposed) return;
@@ -104,7 +103,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         PastePlainButton.Click += async (_, _) => await PasteSelectedAsync(true);
         PreviewButton.Click += (_, _) =>
         {
-            if (HistoryList.SelectedItem is HistoryRow row) PreviewRow(row.Id);
+            if (ActiveList.SelectedItem is HistoryRow row) PreviewRow(row.Id);
         };
         CopyButton.Click += async (_, _) => await CopySelectedAsync(false);
         CopyPlainButton.Click += async (_, _) => await CopySelectedAsync(true);
@@ -115,12 +114,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
         };
         TagsButton.Click += async (_, _) =>
         {
-            if (HistoryList.SelectedItem is HistoryRow row)
+            if (ActiveList.SelectedItem is HistoryRow row)
                 await ShowTagPickerAsync(row.Id);
         };
         PinButton.Click += async (_, _) =>
         {
-            if (HistoryList.SelectedItem is HistoryRow row)
+            if (ActiveList.SelectedItem is HistoryRow row)
                 await MutateAsync(() => core!.SetPinnedAsync(row.Id, !row.Summary.IsPinned));
         };
         DeleteButton.Click += async (_, _) => await DeleteSelectedAsync();
@@ -236,7 +235,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!started || disposed) return;
         generation++;
         loadCancellation?.Cancel();
-        HistoryList.SelectedItems.Clear();
+        ActiveList.SelectedItems.Clear();
         loading = false;
         filterPending = true;
         UpdateCommands();
@@ -287,7 +286,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             } while (page.Items.Count == 0 && page.HasMore);
             if (reset)
             {
-                selectId ??= (HistoryList.SelectedItem as HistoryRow)?.Id;
+                selectId ??= (ActiveList.SelectedItem as HistoryRow)?.Id;
                 rows.Clear();
                 externalPending = false;
                 RefreshButton.Label = "刷新";
@@ -303,7 +302,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
             hasMore = page.HasMore;
             ListStatus.Text = $"已载入 {rows.Count} 条 · 本地 {page.StoredCount} 条 · 会话 {page.SessionCount} 条";
             if (selectId is { } selected)
-                HistoryList.SelectedItem = rows.FirstOrDefault(row => row.Id == selected);
+                ActiveList.SelectedItem = rows.FirstOrDefault(row => row.Id == selected);
+            if (reset) { tagLayoutScope = query.Tag is not null; ApplyAcceptedLayout(); }
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) when (disposed) { }
@@ -350,7 +350,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (disposed || current != generation || loading || mutating || changes.Revision == observedRevision) return;
             PreviewInvalidated?.Invoke(); hoveredAnchor = null;
             observedRevision = changes.Revision;
-            if (externalPending || activeDialog is not null || HistoryList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
+            if (externalPending || activeDialog is not null || ActiveList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
                 externalPending = true;
                 RefreshButton.Label = "刷新（有更新）";
@@ -359,7 +359,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 for (int index = 0; index < rows.Count; index++)
                     if (changes.ResyncRequired || changedIds.Contains(rows[index].Id))
                         rows[index] = new HistoryRow(rows[index].Summary, isStale: true);
-                if ((HistoryList.SelectedItem as HistoryRow)?.IsStale == true) HistoryList.SelectedItem = null;
+                if ((ActiveList.SelectedItem as HistoryRow)?.IsStale == true) ActiveList.SelectedItem = null;
                 UpdateCommands();
                 return;
             }
@@ -388,9 +388,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
         DetailText.Text = "";
         RevealButton.Visibility = Visibility.Collapsed;
         if (disposed) return;
-        if (HistoryList.SelectedItems.Count != 1 || HistoryList.SelectedItem is not HistoryRow row)
+        if (ActiveList.SelectedItems.Count != 1 || ActiveList.SelectedItem is not HistoryRow row)
         {
-            DetailTitle.Text = HistoryList.SelectedItems.Count > 1 ? $"已选择 {HistoryList.SelectedItems.Count} 条" : "选择一条记录";
+            DetailTitle.Text = ActiveList.SelectedItems.Count > 1 ? $"已选择 {ActiveList.SelectedItems.Count} 条" : "选择一条记录";
             DetailMetadata.Text = "";
             UpdateCommands();
             return;
@@ -408,7 +408,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             var entry = await core!.GetEntryAsync(row.Id, token);
             if (disposed || token.IsCancellationRequested || current != detailGeneration ||
-                (HistoryList.SelectedItem as HistoryRow)?.Id != row.Id) return;
+                (ActiveList.SelectedItem as HistoryRow)?.Id != row.Id) return;
             if (entry.ContentType == "image")
             {
                 try
@@ -460,9 +460,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed) return;
         bool busy = loading || mutating || filterPending || targetBusy;
-        var selected = HistoryList.SelectedItems.Count == 1 ? HistoryList.SelectedItem as HistoryRow : null;
+        var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
         bool available = !busy && activeDialog is null;
-        OrderChoice.IsEnabled = available;
+        OrderChoice.IsEnabled = LayoutChoice.IsEnabled = ReloadLayoutButton.IsEnabled = available;
         if (busy || activeDialog is not null || externalPending) PreviewInvalidated?.Invoke();
         PreviewButton.IsEnabled = available && !externalPending && compactMode && selected is { IsStale: false }
             && selected.Summary.ContentType != "file" && (!selected.Summary.IsSensitive || selectedEntry is not null);
@@ -473,9 +473,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
         CopyButton.IsEnabled = CopyPlainButton.IsEnabled = available && !externalPending && selectedEntry is not null && selected is { IsStale: false };
         PasteButton.IsEnabled = PastePlainButton.IsEnabled = CopyButton.IsEnabled && targetStatus is { Running: true, HasTarget: true };
         PinButton.IsEnabled = TagsButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
-        DeleteButton.IsEnabled = available && !externalPending && HistoryList.SelectedItems.Count > 0
-            && HistoryList.SelectedItems.Cast<HistoryRow>().All(row => !row.IsStale);
-        DeleteButton.Label = HistoryList.SelectedItems.Count > 1 ? $"删除所选（{HistoryList.SelectedItems.Count}）" : "删除";
+        DeleteButton.IsEnabled = available && !externalPending && ActiveList.SelectedItems.Count > 0
+            && ActiveList.SelectedItems.Cast<HistoryRow>().All(row => !row.IsStale);
+        DeleteButton.Label = ActiveList.SelectedItems.Count > 1 ? $"删除所选（{ActiveList.SelectedItems.Count}）" : "删除";
         PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
         ClearButton.IsEnabled = available && !externalPending;
         RefreshButton.IsEnabled = available;
@@ -488,7 +488,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private async Task CopySelectedAsync(bool plainText)
     {
         if (disposed || mutating || loading || filterPending || externalPending || activeDialog is not null
-            || selectedEntry is not { } entry || HistoryList.SelectedItem is not HistoryRow { IsStale: false } row) return;
+            || selectedEntry is not { } entry || ActiveList.SelectedItem is not HistoryRow { IsStale: false } row) return;
         mutating = true;
         UpdateCommands();
         try
@@ -512,7 +512,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed || mutating || loading || filterPending || externalPending || targetBusy || activeDialog is not null
             || targetStatus is not { Running: true, HasTarget: true } target || selectedEntry is not { } entry
-            || HistoryList.SelectedItem is not HistoryRow { IsStale: false } row) return;
+            || ActiveList.SelectedItem is not HistoryRow { IsStale: false } row) return;
         mutating = true;
         UpdateCommands();
         try
@@ -661,7 +661,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed || activeDialog is not null || mutating || loading || filterPending || externalPending
             || revision is not { } selectedRevision) return;
-        long[] ids = HistoryList.SelectedItems.Cast<HistoryRow>().Select(row => row.Id).ToArray();
+        long[] ids = ActiveList.SelectedItems.Cast<HistoryRow>().Select(row => row.Id).ToArray();
         if (ids.Length == 0) return;
         if (ids.Length > 1000) { ShowError("一次最多删除 1000 条，请缩小选择范围。"); return; }
         var dialog = new ContentDialog { Title = ids.Length == 1 ? "删除这条记录？" : $"删除所选 {ids.Length} 条记录？",
@@ -738,14 +738,14 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private void AttachScroll()
     {
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
-        listScroll = Descendants<ScrollViewer>(HistoryList).FirstOrDefault();
+        listScroll = Descendants<ScrollViewer>(ActiveList).FirstOrDefault();
         if (listScroll is not null) listScroll.ViewChanged += OnScroll;
     }
 
     private void OnScroll(object? sender, ScrollViewerViewChangedEventArgs args)
     {
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
-        if (!disposed && !args.IsIntermediate && listScroll is { } scroll && scroll.ScrollableHeight > 0 &&
+        if (!disposed && !switchingLayout && !args.IsIntermediate && listScroll is { } scroll && scroll.ScrollableHeight > 0 &&
             scroll.VerticalOffset >= scroll.ScrollableHeight - 160) _ = LoadAsync(false);
     }
 
@@ -764,6 +764,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
         tagPicker?.Dispose();
         activeDialog?.Hide();
+        ReleaseHistoryLayouts();
         selectedEntry = null;
         ImagePreview.Clear();
         DocumentPreview.Clear();
@@ -790,12 +791,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (Visibility != Visibility.Visible || revision is not { } expected || !compactMode || disposed || row.IsStale || externalPending
             || loading || mutating || filterPending || activeDialog is not null || row.Summary.ContentType == "file") return;
-        bool allowSensitive = selectedEntry?.Id == row.Id && HistoryList.SelectedItems.Count == 1;
+        bool allowSensitive = selectedEntry?.Id == row.Id && ActiveList.SelectedItems.Count == 1;
         if (row.Summary.IsSensitive && !allowSensitive) return;
         PreviewRequested?.Invoke(new(row.Summary, expected, allowSensitive, anchor, () =>
             !disposed && Visibility == Visibility.Visible && compactMode && !externalPending && !loading && !mutating && !filterPending
             && activeDialog is null && revision == expected && rows.Contains(row) && anchor.IsLoaded
-            && (ReferenceEquals(anchor, HistoryList) || (anchor.DataContext is HistoryRow current && current.Id == row.Id))
+            && (ReferenceEquals(anchor, ActiveList) || (anchor.DataContext is HistoryRow current && current.Id == row.Id))
             && (!requireHover || ReferenceEquals(hoveredAnchor, anchor))));
     }
     internal void PreviewRow(long id)
@@ -803,10 +804,10 @@ public sealed partial class HistoryView : UserControl, IDisposable
         var row = rows.FirstOrDefault(row => row.Id == id);
         if (row is null) return;
         // Explicit keyboard/button requests also work before virtualization realizes the row.
-        FrameworkElement? anchor = HistoryList.ContainerFromItem(row) is ListViewItem container
-            ? Descendants<StackPanel>(container).FirstOrDefault(element => element.IsLoaded
+        FrameworkElement? anchor = ActiveList.ContainerFromItem(row) is SelectorItem container
+            ? Descendants<FrameworkElement>(container).FirstOrDefault(element => element.IsLoaded
                 && element.DataContext is HistoryRow bound && bound.Id == row.Id) : null;
-        RequestPreview(row, anchor ?? HistoryList, requireHover: false);
+        RequestPreview(row, anchor ?? ActiveList, requireHover: false);
     }
     internal void CancelPreview() { hoveredAnchor = null; PreviewInvalidated?.Invoke(); }
 
@@ -838,7 +839,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         && Descendants<Button>(activeDialog).Any(button => button.Name == "CloseButton" && button.IsLoaded);
     internal string DialogText => dialogInput?.Text ?? "";
     internal bool HasError => Feedback.IsOpen && Feedback.Severity == InfoBarSeverity.Error;
-    internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => HistoryList.ContainerFromIndex(index) is not null);
+    internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => ActiveList.ContainerFromIndex(index) is not null);
     internal string ActiveTagFilter => exactTagFilter ?? TagFilter.Text.Trim();
     internal string SortOrder => OrderChoice.SelectedIndex switch { 1 => "time", 2 => "usage", _ => "default" };
     internal void ChooseSort(string sort)
@@ -863,8 +864,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
     internal void Select(long id) => SelectMany(id);
     internal void SelectMany(params long[] ids)
     {
-        HistoryList.SelectedItems.Clear();
-        foreach (long id in ids) HistoryList.SelectedItems.Add(rows.First(row => row.Id == id));
+        ActiveList.SelectedItems.Clear();
+        foreach (long id in ids) ActiveList.SelectedItems.Add(rows.First(row => row.Id == id));
     }
     internal bool CanDelete => DeleteButton.IsEnabled;
     internal void ScrollToEnd() => listScroll?.ChangeView(null, listScroll.ScrollableHeight, null, true);

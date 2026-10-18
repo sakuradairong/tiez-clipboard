@@ -134,6 +134,7 @@ public sealed partial class MainWindow : Window
     {
         MainRoot.RequestedTheme = ViewTheme.From(snapshot);
         HistoryWorkspace.CompactMode = snapshot.Values["app.compact_mode"] == "true";
+        HistoryWorkspace.ApplyViewPreferences(snapshot);
         compactPreview.Apply(HistoryWorkspace.CompactMode, MainRoot.RequestedTheme);
         HistoryWorkspace.SearchVisible = snapshot.Values["app.show_search_box"] == "true";
     }

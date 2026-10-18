@@ -22,6 +22,29 @@
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </DataTemplate>
+        <DataTemplate x:Key="CardHistoryTemplate" x:DataType="local:HistoryRow">
+            <Border Height="168" Padding="12" Margin="2" CornerRadius="8" BorderThickness="1"
+                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
+                <Grid RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <TextBlock Text="{x:Bind Summary.ContentType}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Grid.Row="1" Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="4" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Row="2" Text="{x:Bind Metadata}" FontSize="12" MaxLines="2" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                </Grid>
+            </Border>
+        </DataTemplate>
+        <DataTemplate x:Key="CompactCardHistoryTemplate" x:DataType="local:HistoryRow">
+            <Border Height="100" Padding="10" Margin="2" CornerRadius="8" BorderThickness="1"
+                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="{x:Bind Preview}" MaxLines="1" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
     </UserControl.Resources>
     <Grid RowSpacing="12">
         <Grid.RowDefinitions>
@@ -53,11 +76,17 @@
                 <CheckBox x:Name="PinnedOnly" Content="仅置顶"/>
                 <CheckBox x:Name="TagOnly" Content="仅搜索标签"/>
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="12">
             <ComboBox x:Name="OrderChoice" Header="记录排序" SelectedIndex="0" MinWidth="180" HorizontalAlignment="Left">
                 <ComboBoxItem Content="默认（置顶优先）"/>
                 <ComboBoxItem Content="时间（新到旧）"/>
                 <ComboBoxItem Content="使用频率（高到低）"/>
             </ComboBox>
+                <ComboBox x:Name="LayoutChoice" Header="记录布局" SelectedIndex="0" MinWidth="120" AutomationProperties.Name="记录布局">
+                    <ComboBoxItem Content="列表"/><ComboBoxItem Content="卡片"/>
+                </ComboBox>
+                <Button x:Name="ReloadLayoutButton" Content="重读布局" VerticalAlignment="Bottom"/>
+            </StackPanel>
         </StackPanel>
         <CommandBar Grid.Row="3" HorizontalContentAlignment="Left" DefaultLabelPosition="Right">
             <AppBarButton x:Name="CaptureButton" Label="开始采集" Icon="Play"/>
@@ -87,6 +116,18 @@
                 <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
 
             </ListView>
+            <GridView x:Name="HistoryCards" SelectionMode="Extended" ItemTemplate="{StaticResource CardHistoryTemplate}"
+                      Visibility="Collapsed" HorizontalContentAlignment="Stretch" IsItemClickEnabled="False"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                      AutomationProperties.Name="剪贴板历史卡片">
+                <GridView.ItemsPanel><ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" ItemWidth="240"/></ItemsPanelTemplate></GridView.ItemsPanel>
+                <GridView.ItemContainerStyle><Style TargetType="GridViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Margin" Value="0"/><Setter Property="Padding" Value="2"/>
+                    <Setter Property="MinWidth" Value="0"/>
+                </Style></GridView.ItemContainerStyle>
+            </GridView>
             <Border Grid.Column="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
                     BorderThickness="1" CornerRadius="8" Padding="16">
                 <Grid RowSpacing="10">
