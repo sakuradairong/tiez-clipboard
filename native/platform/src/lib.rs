@@ -21,3 +21,5 @@ pub mod shell;
 pub mod hotkey;
 
 pub mod open;
+
+pub mod apps;
