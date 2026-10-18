@@ -50,6 +50,8 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
         ("app.compact_mode", "false"),
+        ("app.history_view_mode", "list"),
+        ("app.tag_history_view_mode", "grid"),
         ("app.persistent", "false"),
         ("app.capture_files", "false"),
         ("app.capture_rich_text", "false"),
@@ -83,6 +85,7 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
         "app.hotkey" => tiez_native_platform::hotkey::Shortcut::parse(value).is_ok(),
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
+        "app.history_view_mode" | "app.tag_history_view_mode" => matches!(value, "list" | "grid"),
         "app.deduplicate"
         | "app.show_search_box"
         | "app.compact_mode"
@@ -502,5 +505,75 @@ mod effect_tests {
         assert_eq!(s.snapshot().unwrap().revision, 0);
         assert!(s.update(0, compact_patch("true")).unwrap().changed);
         assert!(!s.update(1, compact_patch("true")).unwrap().changed);
+    }
+    #[test]
+    fn history_layout_defaults_are_readonly_and_scopes_validate_independently() {
+        let mut s =
+            SettingsService::from_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let before: i64 = s
+            .connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        let snapshot = s.snapshot().unwrap();
+        assert_eq!(snapshot.values["app.history_view_mode"], "list");
+        assert_eq!(snapshot.values["app.tag_history_view_mode"], "grid");
+        assert_eq!(
+            s.connection
+                .query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert!(
+            !s.update(
+                0,
+                [("app.tag_history_view_mode".into(), "grid".into())].into()
+            )
+            .unwrap()
+            .changed
+        );
+        assert_eq!(
+            s.connection
+                .query_row("SELECT COUNT(*) FROM settings", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        for key in ["app.history_view_mode", "app.tag_history_view_mode"] {
+            for value in ["", "card", "GRID", " list ", "true"] {
+                assert_eq!(
+                    s.update(0, [(key.into(), value.into())].into())
+                        .unwrap_err()
+                        .code,
+                    "invalid_value"
+                );
+            }
+        }
+        let change = s
+            .update(0, [("app.history_view_mode".into(), "grid".into())].into())
+            .unwrap();
+        assert!(change.changed);
+        assert_eq!(change.snapshot.revision, 1);
+        assert_eq!(change.snapshot.values["app.tag_history_view_mode"], "grid");
+        assert_eq!(
+            s.update(
+                0,
+                [("app.tag_history_view_mode".into(), "list".into())].into()
+            )
+            .unwrap_err()
+            .code,
+            "revision_conflict"
+        );
+        let change = s
+            .update(
+                1,
+                [("app.tag_history_view_mode".into(), "list".into())].into(),
+            )
+            .unwrap();
+        assert_eq!(change.snapshot.values["app.history_view_mode"], "grid");
+        assert_eq!(change.snapshot.values["app.tag_history_view_mode"], "list");
+        s.connection.execute_batch("CREATE TRIGGER reject_layout BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT, 'fixture'); END;").unwrap();
+        assert!(s
+            .update(2, [("app.history_view_mode".into(), "list".into())].into())
+            .is_err());
+        assert_eq!(s.snapshot().unwrap(), change.snapshot);
     }
 }

@@ -16,6 +16,7 @@ Directory.CreateDirectory(directory);
 try
 {
     TagSmoke.Run(Path.Combine(directory, "标签目录"));
+    LayoutPreferenceSmoke.Run(Path.Combine(directory, "布局.db"));
     string database = Path.Combine(directory, "设置.db");
     ulong revision;
     long historyId;
