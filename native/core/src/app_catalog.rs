@@ -1,6 +1,15 @@
 //! One runtime-owned, cancellable application scan. Windows calls never hold registry/state locks.
+//!
+//! The accepted READY snapshot is also the authority for icon requests: [`Snapshot::resolve`] is the
+//! only way another service may turn a caller-supplied identity back into a platform application.
+//!
+//! Generation contract: every accepted [`CatalogService::start`] installs a new job ID — including the
+//! cached read that runs no worker — so a consumer holding an older ID is told the catalog changed
+//! rather than silently using a snapshot the user can no longer see. [`CatalogService::accepted`] is
+//! the read side of that contract: it returns the published snapshot of the current, terminal,
+//! uncancelled READY job, and observing it never installs or supersedes a generation on its own.
 use crate::{CoreError, CoreResult};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::{
@@ -10,6 +19,8 @@ use std::sync::{
 use std::thread::JoinHandle;
 use tiez_native_platform::apps::{self, Content, Kind, RecommendationReason, Unavailable};
 const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
+/// Largest accepted identity string; the icon response bound is derived from this same value.
+pub(crate) const MAX_IDENTITY: usize = 4096;
 #[derive(Serialize)]
 pub struct Application {
     name: String,
@@ -37,6 +48,93 @@ impl From<apps::Application> for Application {
         }
     }
 }
+impl Application {
+    /// Exact authoritative membership: every catalog-owned field must match, including availability.
+    fn matches(&self, identity: &CatalogIdentity) -> bool {
+        self.source_id == identity.source_id
+            && self.handler == identity.handler
+            && self.kind == identity.kind.as_str()
+            && self.unavailable == identity.unavailable.map(IdentityReason::as_str)
+    }
+    /// Rebuild the internal row for the platform reader from catalog-owned fields only.
+    fn platform(&self) -> apps::Application {
+        apps::Application {
+            name: self.name.clone(),
+            source_id: self.source_id.clone(),
+            handler: self.handler.clone(),
+            kind: match self.kind {
+                "desktop" => Kind::Desktop,
+                "packaged" => Kind::Packaged,
+                _ => Kind::Unavailable,
+            },
+            unavailable: self.unavailable.map(|reason| match reason {
+                "invalid_identity" => Unavailable::InvalidIdentity,
+                "not_native_executable" => Unavailable::NotNativeExecutable,
+                _ => Unavailable::MissingTarget,
+            }),
+        }
+    }
+}
+/// A catalog row identity supplied by a caller, for example when requesting an icon.
+///
+/// Nothing here is trusted: only exact membership in the accepted READY snapshot makes it usable, so
+/// a caller cannot name an arbitrary path, display name, launch target or kind.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct CatalogIdentity {
+    pub source_id: String,
+    #[serde(default)]
+    pub handler: Option<String>,
+    pub kind: IdentityKind,
+    #[serde(default)]
+    pub unavailable: Option<IdentityReason>,
+}
+impl CatalogIdentity {
+    /// Bound every identity string and require the published kind/availability pairing.
+    pub fn bounded(&self) -> bool {
+        let text = |value: &str| value.len() <= MAX_IDENTITY && !value.chars().any(char::is_control);
+        text(&self.source_id)
+            && self.handler.as_deref().is_none_or(text)
+            && match (self.kind, self.unavailable) {
+                (IdentityKind::Unavailable, Some(_)) => self.handler.is_none(),
+                (IdentityKind::Unavailable, None) => false,
+                (_, Some(_)) => false,
+                (_, None) => self.handler.is_some(),
+            }
+    }
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityKind {
+    Desktop,
+    Packaged,
+    Unavailable,
+}
+impl IdentityKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Packaged => "packaged",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityReason {
+    MissingTarget,
+    InvalidIdentity,
+    NotNativeExecutable,
+}
+impl IdentityReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingTarget => "missing_target",
+            Self::InvalidIdentity => "invalid_identity",
+            Self::NotNativeExecutable => "not_native_executable",
+        }
+    }
+}
 #[derive(Serialize)]
 struct Recommendation {
     application: Application,
@@ -59,6 +157,24 @@ pub struct Snapshot {
     limited: bool,
     recommendations: BTreeMap<&'static str, Recommendations>,
 }
+impl Snapshot {
+    /// Resolve one caller-supplied identity against the authoritative catalog membership.
+    ///
+    /// A recommendation may carry an application that is absent from the main list, so both accepted
+    /// sets are searched. The returned row is rebuilt from catalog-owned fields; the caller's values
+    /// are only ever compared, never used as a path, name or launch target.
+    pub fn resolve(&self, identity: &CatalogIdentity) -> Option<apps::Application> {
+        self.applications
+            .iter()
+            .chain(
+                self.recommendations
+                    .values()
+                    .flat_map(|group| group.applications.iter().map(|item| &item.application)),
+            )
+            .find(|entry| entry.matches(identity))
+            .map(Application::platform)
+    }
+}
 type Outcome = Result<Arc<Snapshot>, &'static str>;
 struct Job {
     id: u64,
@@ -77,6 +193,8 @@ struct State {
 #[derive(Default)]
 pub struct CatalogService {
     state: Mutex<State>,
+    /// A job already cancelled by [`CatalogService::cancel_shutdown`] that still has to be joined.
+    joining: Mutex<Option<Job>>,
 }
 fn error(code: &'static str) -> CoreError {
     CoreError::new(
@@ -142,10 +260,39 @@ fn discover(cancel: &AtomicBool) -> Result<Snapshot, &'static str> {
     })
 }
 impl CatalogService {
+    /// The snapshot of the currently accepted READY job, or `None`.
+    ///
+    /// `job_id` must be the live, uncancelled, terminal job whose publication was already observed, so
+    /// any accepted start — even a cached read that runs no worker — supersedes every request bound to
+    /// the previous generation. A worker that is still running, a cancelled job, a failed scan and a
+    /// replaced job all report `None`; nothing is cached, published, consumed or re-pointed here. The
+    /// state lock is held only for these field reads; no Windows work happens here.
+    pub fn accepted(&self, job_id: u64) -> Option<Arc<Snapshot>> {
+        let state = self.state.lock().ok()?;
+        if state.closed {
+            return None;
+        }
+        let job = state.job.as_ref().filter(|job| job.id == job_id)?;
+        if job.cancel.load(Ordering::Acquire) {
+            return None;
+        }
+        if job
+            .worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return None;
+        }
+        let published = job.output.lock().ok()?.clone();
+        match published {
+            Some(Ok(snapshot)) => Some(snapshot),
+            _ => None,
+        }
+    }
     pub fn start(&self, refresh: bool) -> CoreResult<Value> {
         self.start_with(refresh, discover)
     }
-    fn start_with(
+    pub(crate) fn start_with(
         &self,
         refresh: bool,
         operation: impl FnOnce(&AtomicBool) -> Result<Snapshot, &'static str> + Send + 'static,
@@ -274,12 +421,19 @@ impl CatalogService {
         job.cancel.store(true, Ordering::Release);
         Ok(json!({"job_id":id,"cancelled":true}))
     }
-    pub fn close(&self) {
+    /// Stop accepting scans and signal cancellation without waiting for the worker.
+    ///
+    /// Splitting the signal from the join lets a runtime cancel every owned service before it blocks
+    /// on any single worker. The cancelled job is parked in `joining` until [`Self::join_shutdown`].
+    pub fn cancel_shutdown(&self) {
         let job = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.closed {
+                return;
+            }
             state.closed = true;
             state.cache = None;
             let job = state.job.take();
@@ -288,16 +442,115 @@ impl CatalogService {
             }
             job
         };
+        if let Some(job) = job {
+            *self
+                .joining
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+        }
+    }
+
+    /// Join the worker cancelled by [`Self::cancel_shutdown`], outside every state/registry lock.
+    ///
+    /// Safe to call repeatedly or concurrently: the parked job is taken by exactly one caller.
+    pub fn join_shutdown(&self) {
+        let job = self
+            .joining
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         if let Some(mut job) = job {
             if let Some(worker) = job.worker.take() {
                 let _ = worker.join();
             }
         }
     }
+
+    pub fn close(&self) {
+        self.cancel_shutdown();
+        self.join_shutdown();
+    }
 }
 impl Drop for CatalogService {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// Deterministic catalog fixtures for the cross-module runtime tests.
+///
+/// Nothing here touches the Shell, the registry or a database: a snapshot is built from explicit rows
+/// and installed as the exact state `poll` reports as ready. Only use [`ready`] while no catalog
+/// worker is running, because it replaces the retained job.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    /// One catalog row exactly as a scan would publish it.
+    pub(crate) fn app(
+        name: &str,
+        source_id: &str,
+        handler: Option<&str>,
+        kind: &'static str,
+        unavailable: Option<&'static str>,
+    ) -> Application {
+        Application {
+            name: name.into(),
+            source_id: source_id.into(),
+            handler: handler.map(Into::into),
+            kind,
+            unavailable,
+        }
+    }
+    /// A snapshot whose `recommended` rows exist only in the "text" recommendation group.
+    pub(crate) fn snapshot(applications: Vec<Application>, recommended: Vec<Application>) -> Snapshot {
+        let scanned = applications.len();
+        let mut recommendations = BTreeMap::new();
+        recommendations.insert(
+            "text",
+            Recommendations {
+                applications: recommended
+                    .into_iter()
+                    .map(|application| Recommendation {
+                        application,
+                        reason: "association",
+                    })
+                    .collect(),
+                association_error: None,
+                unreadable: 0,
+                limited: false,
+                default_name: None,
+            },
+        );
+        Snapshot {
+            applications,
+            scanned,
+            unreadable: 0,
+            duplicates: 0,
+            limited: false,
+            recommendations,
+        }
+    }
+    /// Install an already-published catalog job and return its generation ID.
+    pub(crate) fn ready(
+        catalog: &CatalogService,
+        applications: Vec<Application>,
+        recommended: Vec<Application>,
+    ) -> u64 {
+        let snapshot = Arc::new(snapshot(applications, recommended));
+        let mut state = catalog.state.lock().unwrap();
+        let id = state
+            .next_id
+            .checked_add(1)
+            .expect("fixture catalog job identity space");
+        state.next_id = id;
+        state.job = Some(Job {
+            id,
+            cached: true,
+            cancel: Arc::new(AtomicBool::new(false)),
+            output: Arc::new(Mutex::new(Some(Ok(snapshot)))),
+            worker: None,
+        });
+        id
     }
 }
 
@@ -473,6 +726,41 @@ mod tests {
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         assert!(service.state.lock().unwrap().job.is_none());
+        service.close();
+    }
+    #[test]
+    fn cancellation_is_signalled_before_any_worker_is_joined() {
+        let service = Arc::new(CatalogService::default());
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        id(service
+            .start_with(true, move |cancel| {
+                ready_tx.send(()).unwrap();
+                while !cancel.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                cancel_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(Snapshot::default())
+            })
+            .unwrap());
+        ready_rx.recv().unwrap();
+        // Cancellation is its own step: it is observable before anything blocks on the worker.
+        service.cancel_shutdown();
+        cancel_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(service.state.lock().unwrap().closed);
+        assert!(service.state.lock().unwrap().job.is_none());
+        assert_eq!(service.start(false).unwrap_err().code, "apps_closed");
+        // Joining stays a separate step and still waits for the blocked worker.
+        let joining = Arc::clone(&service);
+        let join = std::thread::spawn(move || joining.join_shutdown());
+        assert!(!join.is_finished());
+        release_tx.send(()).unwrap();
+        join.join().unwrap();
+        // Repeated and post-join shutdown calls are idempotent.
+        service.join_shutdown();
+        service.close();
         service.close();
     }
     #[test]

@@ -1,5 +1,6 @@
 //! Tauri-free Windows core. See native/README.md for the C ABI contract.
 mod app_catalog;
+mod app_icons;
 mod capture;
 mod cleanup_preview;
 pub mod external_open;
@@ -28,6 +29,7 @@ struct Registry {
 }
 struct CoreRuntime {
     apps: Arc<app_catalog::CatalogService>,
+    icons: Arc<app_icons::IconService>,
     settings: SettingsService,
     history: Arc<Mutex<HistoryService>>,
     capture: capture::CaptureService,
@@ -180,6 +182,20 @@ enum Request {
     AppsStart { handle: u64, #[serde(default)] refresh: bool },
     AppsPoll { handle: u64, job_id: u64 },
     AppsCancel { handle: u64, job_id: u64 },
+    AppsIconStart {
+        handle: u64,
+        catalog_job_id: u64,
+        identity: app_catalog::CatalogIdentity,
+        edge: u32,
+    },
+    AppsIconPoll {
+        handle: u64,
+        job_id: u64,
+    },
+    AppsIconCancel {
+        handle: u64,
+        job_id: u64,
+    },
     ClipboardCopy {
         handle: u64,
         id: i64,
@@ -272,6 +288,9 @@ impl Request {
             | Self::AppsStart { handle, .. }
             | Self::AppsPoll { handle, .. }
             | Self::AppsCancel { handle, .. }
+            | Self::AppsIconStart { handle, .. }
+            | Self::AppsIconPoll { handle, .. }
+            | Self::AppsIconCancel { handle, .. }
             | Self::ClipboardCopy { handle, .. }
             | Self::ClipboardPaste { handle, .. }
             | Self::ShellStart { handle, .. }
@@ -323,10 +342,14 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .checked_add(1)
                 .ok_or_else(|| CoreError::new("internal", "Core handle space exhausted"))?;
             registry.next_handle = handle;
+            // Icons resolve caller identities through this runtime's accepted catalog job.
+            let apps = Arc::new(app_catalog::CatalogService::default());
+            let icons = Arc::new(app_icons::IconService::new(Arc::clone(&apps)));
             registry.services.insert(
                 handle,
                 CoreRuntime {
-                    apps: Arc::new(Default::default()),
+                    apps,
+                    icons,
                     settings: service,
                     history,
                     capture,
@@ -642,6 +665,29 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             let apps = Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.apps);
             drop(registry); apps.cancel(job_id)
         }
+        Request::AppsIconStart {
+            handle,
+            catalog_job_id,
+            identity,
+            edge,
+        } => {
+            let icons =
+                Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.icons);
+            drop(registry);
+            icons.start(catalog_job_id, &identity, edge)
+        }
+        Request::AppsIconPoll { handle, job_id } => {
+            let icons =
+                Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.icons);
+            drop(registry);
+            icons.poll(job_id)
+        }
+        Request::AppsIconCancel { handle, job_id } => {
+            let icons =
+                Arc::clone(&registry.services.get(&handle).ok_or_else(invalid_handle)?.icons);
+            drop(registry);
+            icons.cancel(job_id)
+        }
         Request::ContentOpen { handle, id, expected_revision, allow_sensitive } => {
             let runtime = registry.services.get(&handle).ok_or_else(invalid_handle)?;
             let values = runtime.settings.snapshot()?.values;
@@ -804,7 +850,14 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             let capture = service.capture.stop();
             let _ = service.target.stop();
             let target = target_status(service.target.status());
-            service.apps.close();
+            // Signal both cancellations first, then join: a blocked scan must never delay the icon
+            // workers' cancellation, and neither join runs under the registry lock.
+            service.apps.cancel_shutdown();
+            service.icons.cancel_shutdown();
+            service.apps.join_shutdown();
+            // Icon workers can be inside a blocking Shell extraction: cancel and join them here,
+            // still outside the registry lock.
+            service.icons.join_shutdown();
             let cleanup = service.opens.lock()
                 .map_err(|_| CoreError::new("open_unavailable", "Open service unavailable"))
                 .and_then(|mut opens| opens.close());
