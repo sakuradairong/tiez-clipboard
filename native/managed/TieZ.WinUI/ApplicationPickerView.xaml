@@ -1,0 +1,41 @@
+<UserControl x:Class="TieZ.Native.ApplicationPickerView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:TieZ.Native">
+    <Grid RowSpacing="8">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="SearchText" PlaceholderText="搜索名称、程序路径或应用标识" AutomationProperties.Name="搜索打开应用"/>
+            <Button x:Name="RefreshButton" Grid.Column="1" Content="刷新列表"/>
+        </Grid>
+        <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <ComboBox x:Name="Category" SelectedIndex="0" AutomationProperties.Name="应用列表分类">
+                <ComboBoxItem Content="全部"/><ComboBoxItem Content="推荐"/><ComboBoxItem Content="其他应用"/><ComboBoxItem Content="无法使用"/>
+            </ComboBox>
+            <TextBlock x:Name="DefaultText" Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" FontSize="12"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        </Grid>
+        <ListView x:Name="Choices" Grid.Row="2" Height="220" SelectionMode="Single" HorizontalContentAlignment="Stretch"
+            AutomationProperties.Name="打开应用选项">
+            <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
+            <ListView.ItemTemplate><DataTemplate x:DataType="local:ApplicationChoice">
+                <StackPanel Spacing="3" Margin="4" AutomationProperties.Name="{x:Bind AccessibilityLabel}">
+                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{x:Bind GroupLabel}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="{x:Bind Details}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
+                        FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+            </DataTemplate></ListView.ItemTemplate>
+        </ListView>
+        <StackPanel Grid.Row="3" Spacing="4">
+            <ProgressBar x:Name="Progress" IsIndeterminate="True" Visibility="Collapsed"/>
+            <TextBlock x:Name="Summary" TextWrapping="Wrap" FontSize="12"/>
+            <TextBlock x:Name="CurrentText" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" FontSize="12"/>
+            <TextBlock x:Name="SelectionText" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" FontSize="12"/>
+        </StackPanel>
+        <InfoBar x:Name="Feedback" Grid.Row="4" IsOpen="False" IsClosable="False"/>
+        <TextBlock Grid.Row="5" Text="推荐不保证应用支持所有格式。此处只选择草稿，返回后仍需保存设置。.bat/.cmd 和 DOS 程序暂不支持，可选择原生程序或默认规则。"
+            TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+    </Grid>
+</UserControl>

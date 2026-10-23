@@ -43,7 +43,7 @@ public sealed class SettingsWindow : Window
     public SettingsWindow(NativeCore core)
     {
         this.core = core;
-        openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this));
+        openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this), core.GetApplicationCatalogAsync);
         Title = "TieZ · 设置";
         AppWindow.Resize(new SizeInt32(520, 740));
         panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
@@ -92,7 +92,9 @@ public sealed class SettingsWindow : Window
     {
         if (loading || loadedSnapshot is null) return;
         dirty = CurrentValues().Any(pair => loadedSnapshot.Values[pair.Key] != pair.Value);
-        save.IsEnabled = dirty && !openers.IsPicking; message.IsOpen = false;
+        save.IsEnabled = dirty && !openers.IsPicking;
+        if (dirty && core.Snapshot.Revision != expectedRevision) ShowError("配置已变化。请重新载入后再修改；当前草稿尚未保存。");
+        else message.IsOpen = false;
     }
 
     private void Load(SettingsSnapshot snapshot)
