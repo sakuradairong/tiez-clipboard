@@ -23,3 +23,5 @@ pub mod hotkey;
 pub mod open;
 
 pub mod apps;
+
+pub mod app_icons;
