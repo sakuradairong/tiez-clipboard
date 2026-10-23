@@ -77,6 +77,9 @@ public sealed partial class NativeCore : IDisposable, IAsyncDisposable
         if (handle == 0) return;
         if (pendingClose is { IsCompleted: false }) { pendingClose.GetAwaiter().GetResult(); return; }
         shutdown.Cancel();
+        // Managed drain: admitted icon requests (queued, running or cancelling) settle before the
+        // handle is released. Joining the real Shell workers stays part of the native close.
+        WaitIconDrain();
         appsGate.Wait();
         openGate.Wait();
         requestGate.Wait();
