@@ -1,11 +1,12 @@
 //! Bounded, cancellable application icon jobs for the shared runtime.
 //!
-//! A request never names a path, display name, kind, launch target or pixels: it carries only the
-//! catalog identity it was shown plus the catalog job that published it. [`crate::app_catalog`]
-//! resolves that identity against its authoritative READY snapshot, so an unknown, mismatched,
-//! unavailable, cancelled, non-ready or superseded identity is rejected before the Windows reader
-//! runs. Publication re-checks the same catalog generation, so a stale worker that ignored
-//! cancellation can never have its raster adopted.
+//! A request carries exactly the catalog identity it was shown — `source_id`, `handler`, `kind` and
+//! `unavailable`, handler and kind included — plus the catalog job that published it. It never
+//! carries an independent target: no separate path, display name, launch target or pixels.
+//! [`crate::app_catalog`] resolves that identity against its authoritative READY snapshot, so an
+//! unknown, mismatched, unavailable, cancelled, non-ready or superseded identity is rejected before
+//! the Windows reader runs. Publication re-checks the same catalog generation, so a stale worker that
+//! ignored cancellation can never have its raster adopted.
 //!
 //! Acceptance and publication:
 //!
@@ -13,10 +14,17 @@
 //!   `CatalogService::accepted`, resolves the identity there, and records the request under one state
 //!   lock. A request is therefore either accepted against exactly that generation or rejected
 //!   (`icons_catalog`, `icons_identity`, `icons_unavailable`, `icons_edge`) without retaining a slot.
+//!   Authorization for one request linearizes at that accepted-generation read.
 //! - [`IconService::poll`] is the publication point. A raster is returned only after the worker
-//!   terminated, the raster was validated against the request edge, the job was not cancelled, and
-//!   the same generation still resolves the same identity. Cancellation before or after completion —
-//!   including a worker that ignored the flag — reports `icons_cancelled` and never publishes pixels.
+//!   terminated, the raster was validated against the request edge, cancellation was still clear
+//!   under the icon state lock, and the same generation still resolves the same identity. A
+//!   cancellation `poll` observes — raised before completion, after a late completion, or by a
+//!   worker that ignored the flag — reports `icons_cancelled` and never publishes pixels.
+//!
+//! Concurrent requests: a `cancel` or a catalog refresh that races a successful `poll` may linearize
+//! after it, so a `ready` result that was already returned is not retroactively revoked. A client
+//! must therefore check its own cancellation and lifetime before adopting pixels; the managed stage
+//! does this before it hands a result to the UI.
 //!
 //! Runtime contract:
 //!
@@ -25,9 +33,10 @@
 //!   reaped deterministically, and job IDs are checked and never reused.
 //! - The blocking Shell/COM/GDI read runs on its own worker and holds no service, catalog, history,
 //!   settings or registry lock. `poll` never waits for the worker.
-//! - Cancellation and close are separate signals: [`IconService::cancel_shutdown`] only signals and
-//!   [`IconService::join_shutdown`] only joins, so a runtime can cancel every owned service before it
-//!   blocks on any single worker.
+//! - Cancellation and close are separate phases: [`IconService::cancel_shutdown`] only signals and
+//!   [`IconService::join_shutdown`] only joins, so the single runtime close owner can cancel every
+//!   owned service before it blocks on any worker. A concurrent join caller joins the workers it
+//!   takes from that signalled set; it does not wait for workers another join caller already owns.
 //! - The caller must `poll` or `cancel` every job it started: a finished job keeps its slot until its
 //!   result is claimed or it is cancelled. A finished but unclaimed result bound to a superseded
 //!   catalog generation is reclaimed automatically, so a refresh cannot permanently fill both slots.
@@ -821,6 +830,25 @@ mod tests {
         }
     }
 
+    /// Bound the main-thread wait for a test-owned close/start thread that can only return once a
+    /// controlled reader was released.
+    ///
+    /// Joining such a thread without a bound would let a missing or misaddressed reply hang the test
+    /// before its fixtures are torn down. On timeout this observation fails the test instead; the
+    /// unwind still releases the fixture gate and closes the service through `Harness`,
+    /// `Controlled` or `Unblock`, so no reader stays blocked and no worker is left parked. A missing
+    /// reply is never reported as a successful close.
+    fn await_finished<T>(worker: &JoinHandle<T>, what: &str) {
+        let start = Instant::now();
+        while !worker.is_finished() {
+            assert!(
+                start.elapsed() < WAIT,
+                "{what} is still waiting on a controlled reader"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     #[test]
     fn membership_is_exact_and_covers_recommendation_only_rows() {
         let (catalog, generation) = catalog();
@@ -1248,6 +1276,7 @@ mod tests {
         harness
             .controlled
             .reply("Opaque.Editor", Reply::Raster(1, 1, vec![1, 2, 3, 255]));
+        await_finished(&closing, "icon close");
         closing.join().unwrap();
         assert!(icons.state.lock().unwrap().jobs.is_empty());
         icons.close();
@@ -1280,6 +1309,7 @@ mod tests {
             }
             // A close blocked on a fixture reader is unblocked like any other blocked worker.
             harness.release();
+            await_finished(&closer, "icon close");
             closer.join().unwrap();
             icons.close();
             icons.close();
@@ -1662,6 +1692,7 @@ mod tests {
         // The close cancels both jobs; releasing each blocked worker lets both joins finish.
         controlled.reply("Opaque.Owned", Reply::Raster(1, 1, vec![1, 2, 3, 255]));
         controlled.reply("Opaque.Owned", Reply::Raster(1, 1, vec![1, 2, 3, 255]));
+        await_finished(&close, "core close");
         assert_eq!(close.join().unwrap().unwrap()["closed"], true);
         assert!(icons.state.lock().unwrap().jobs.is_empty());
         assert_eq!(
@@ -1774,6 +1805,7 @@ mod tests {
         );
         icon_release.fire();
         scan_release.fire();
+        await_finished(&close, "core close");
         assert_eq!(close.join().unwrap().unwrap()["closed"], true);
         assert!(icons.state.lock().unwrap().jobs.is_empty());
         assert!(catalog.accepted(generation).is_none());
