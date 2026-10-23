@@ -178,7 +178,9 @@ fn desktop_run(mode: COINIT, opposite: COINIT) {
         handle_samples.last().copied().unwrap() <= handles_before + 2,
         "Repeated icon reads retained process handles: {handle_samples:?} (before {handles_before})"
     );
-    // A cancellation observed after a completed read is reported without retaining resources.
+    // The flag is raised only after completed reads, so the next request is pre-cancelled: it is
+    // refused before any Shell/COM/GDI work and retains no resources. Cancellation during a
+    // blocking Shell phase is not deterministically testable here and is not claimed.
     cancel.store(true, Ordering::Release);
     assert_eq!(
         app_icons::read(&app, 32, &cancel).unwrap_err(),

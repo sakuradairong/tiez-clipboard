@@ -20,8 +20,9 @@
 //! - Cancellation is cooperative between non-abortable Shell/COM/GDI phases. It is checked before
 //!   and after every blocking phase, and an in-flight call cannot be interrupted; it completes or
 //!   fails and its scoped resources are released either way.
-//! - Caller-owned COM apartments are preserved: an existing STA/MTA (`RPC_E_CHANGED_MODE`) is
-//!   reused without a matching `CoUninitialize`, while our own initialization is balanced.
+//! - Caller-owned COM apartments are preserved: each successful `CoInitializeEx` (`S_OK` or
+//!   `S_FALSE`) is balanced by exactly one `CoUninitialize`, while `RPC_E_CHANGED_MODE` means the
+//!   caller's existing STA/MTA is reused without a `CoUninitialize` from this module.
 //! - Every HBITMAP/DC and COM reference is scoped and released on success, error and cancellation.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -612,15 +613,56 @@ mod tests {
 
     #[test]
     fn a_non_pe_file_that_merely_ends_in_exe_is_refused() {
-        let fixture = std::env::temp_dir().join(format!(
-            "tiez-icon-identity-fixture-{}.exe",
-            std::process::id()
-        ));
-        std::fs::write(&fixture, b"not a portable executable").unwrap();
-        let result = local_executable(&fixture.to_string_lossy());
-        let _ = std::fs::remove_file(&fixture);
+        use std::io::Write;
+        use std::path::PathBuf;
+
+        // Deletes only the exact file this test created, including on assertion panics.
+        struct Owned(PathBuf);
+
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        const CONTENT: &[u8] = b"not a portable executable";
+        let mut owned = None;
+        // `create_new` never truncates: an existing collision is skipped, not overwritten or removed.
+        for attempt in 0..8u32 {
+            let path = std::env::temp_dir().join(format!(
+                "tiez-icon-identity-fixture-{}-{attempt}.exe",
+                std::process::id()
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    // Register ownership before writing so a failed write is still cleaned up.
+                    owned = Some(Owned(path));
+                    file.write_all(CONTENT).unwrap();
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not create an owned icon fixture: {error}"),
+            }
+        }
+        let fixture = owned.expect("no unique owned icon fixture path was available");
+        // A second `create_new` on the owned path must fail and leave the contents intact.
+        let collision = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fixture.0)
+            .unwrap_err();
+        assert_eq!(collision.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read(&fixture.0).unwrap(),
+            CONTENT,
+            "a refused create_new changed the existing fixture"
+        );
         assert!(
-            !result,
+            !local_executable(&fixture.0.to_string_lossy()),
             "A script disguised with an .exe suffix was accepted"
         );
     }
