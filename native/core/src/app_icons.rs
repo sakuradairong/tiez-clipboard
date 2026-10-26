@@ -1428,10 +1428,12 @@ mod tests {
     struct RuntimeFixture {
         handle: u64,
         directory: PathBuf,
+        _registry_guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl RuntimeFixture {
         fn new() -> Self {
+            let registry_guard = crate::ABI_TEST_LOCK.lock().unwrap();
             let directory =
                 std::env::temp_dir().join(format!("TieZ-icons-abi-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&directory).unwrap();
@@ -1441,6 +1443,7 @@ mod tests {
             Self {
                 handle: opened["handle"].as_u64().unwrap(),
                 directory,
+                _registry_guard: registry_guard,
             }
         }
 

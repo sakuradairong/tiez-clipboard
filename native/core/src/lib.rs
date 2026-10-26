@@ -38,6 +38,9 @@ struct CoreRuntime {
     shell: tiez_native_platform::shell::ShellService,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+// ABI fixtures share the production singleton, but keep their own concurrent worker checks.
+#[cfg(test)]
+static ABI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -967,6 +970,7 @@ mod tests {
     }
     #[test]
     fn ffi_unicode_lifetime_validation_and_reopen() {
+        let _registry_guard = ABI_TEST_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("TieZ-native-接口-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("probe.db");
@@ -1077,6 +1081,7 @@ mod tests {
 
     #[test]
     fn open_abi_rejects_ui_bodies_and_releases_registry_before_waiting() {
+        let _registry_guard = ABI_TEST_LOCK.lock().unwrap();
         let root=std::env::temp_dir().join(format!("TieZ-open-abi-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let opened=call(json!({"op":"open","database_path":root.join("fixture.db")}));
