@@ -43,7 +43,7 @@ public sealed class SettingsWindow : Window
     public SettingsWindow(NativeCore core)
     {
         this.core = core;
-        openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this), core.GetApplicationCatalogAsync);
+        openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this), core.GetApplicationCatalogAsync) { IconReader = core.GetApplicationIconAsync };
         Title = "TieZ · 设置";
         AppWindow.Resize(new SizeInt32(520, 740));
         panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });

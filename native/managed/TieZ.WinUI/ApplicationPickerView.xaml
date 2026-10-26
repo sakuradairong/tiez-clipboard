@@ -20,12 +20,16 @@
             AutomationProperties.Name="打开应用选项">
             <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
             <ListView.ItemTemplate><DataTemplate x:DataType="local:ApplicationChoice">
-                <StackPanel Spacing="3" Margin="4" AutomationProperties.Name="{x:Bind AccessibilityLabel}">
+                <Grid ColumnSpacing="10" Margin="4" AutomationProperties.Name="{x:Bind AccessibilityLabel}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <local:ApplicationIconView VerticalAlignment="Top"/>
+                    <StackPanel Grid.Column="1" Spacing="3">
                     <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                     <TextBlock Text="{x:Bind GroupLabel}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     <TextBlock Text="{x:Bind Details}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
                         FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                </StackPanel>
+                    </StackPanel>
+                </Grid>
             </DataTemplate></ListView.ItemTemplate>
         </ListView>
         <StackPanel Grid.Row="3" Spacing="4">

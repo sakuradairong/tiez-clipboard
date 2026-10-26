@@ -7,6 +7,7 @@ namespace TieZ.Native;
 
 public sealed class ApplicationChoice
 {
+    internal InstalledApplication? Application { get; }
     internal string? Value { get; }
     internal string Group { get; }
     public string Name { get; }
@@ -20,7 +21,7 @@ public sealed class ApplicationChoice
     {Name=name;Details=details;GroupLabel=defaultLabel;Value="";Group="default";CanSelect=true;SearchText=$"{name}\n{details}\n{defaultLabel}";}
     internal ApplicationChoice(InstalledApplication app,string reason)
     {
-        Name=app.Name;Value=app.Handler;CanSelect=app.Handler is {Length:>0}&&app.Unavailable is null&&app.Kind is "desktop" or "packaged";
+        Application=app;Name=app.Name;Value=app.Handler;CanSelect=app.Handler is {Length:>0}&&app.Unavailable is null&&app.Kind is "desktop" or "packaged";
         Group=CanSelect?reason:"unavailable";
         string type=app.Kind=="desktop"?"桌面程序":app.Kind=="packaged"?"打包应用":"无法使用";
         GroupLabel=Group switch {"association"=>$"系统关联推荐 · {type}","keyword"=>$"名称推荐 · {type}","other"=>$"其他应用 · {type}",_=>"无法用作打开程序"};
@@ -47,7 +48,7 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
     internal bool IsLoading=>loading;
     internal bool IsStale=>stale;
     internal bool HasError=>Feedback.IsOpen;
-    internal bool HasRetainedData=>reader is not null||accepted is not null||all.Count>0||visible.Count>0||current.Length>0||SearchText.Text.Length>0||CurrentText.Text.Length>0||SelectionText.Text.Length>0;
+    internal bool HasRetainedData=>HasIconState||reader is not null||accepted is not null||all.Count>0||visible.Count>0||current.Length>0||SearchText.Text.Length>0||CurrentText.Text.Length>0||SelectionText.Text.Length>0;
     // Narrow read-only state for the owned acceptance smoke; no behavior is added here.
     internal bool IsDisposed=>disposed;
     internal bool IsFailed=>failed;
@@ -60,7 +61,7 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
     internal int Filter {get=>Category.SelectedIndex;set=>Category.SelectedIndex=value;}
     public ApplicationPickerView()
     {
-        InitializeComponent();Choices.ItemsSource=visible;
+        InitializeComponent();Choices.ItemsSource=visible;InitializeIcons();
         SearchText.TextChanging+=(_,_)=>ApplyFilter();Category.SelectionChanged+=(_,_)=>ApplyFilter();
         Choices.SelectionChanged+=(_,_)=>{if(!binding&&!disposed){ShowSelection();StateChanged?.Invoke();}};
         RefreshButton.Click+=async(_,_)=>await LoadAsync(true);
@@ -87,7 +88,7 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
     {
         if(disposed||stale||loading||reader is null||lifetime is null||lifetime.IsCancellationRequested)return;
         var cancellation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);loadingCancellation=cancellation;
-        int version=++generation;loading=true;failed=false;Feedback.IsOpen=false;UpdateControls();
+        ClearIcons();int version=++generation;loading=true;failed=false;Feedback.IsOpen=false;UpdateControls();
         try
         {
             var result=await reader(refresh,cancellation.Token).WaitAsync(cancellation.Token);
@@ -121,7 +122,7 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
         binding=true;
         try
         {
-            visible.Clear();
+            ClearIcons();visible.Clear();
             foreach(var choice in all)
                 if((filter<=0||filter==1&&choice.Group is "association" or "keyword"||filter==2&&choice.Group=="other"||filter==3&&choice.Group=="unavailable")
                     &&(query.Length==0||choice.SearchText.Contains(query,StringComparison.OrdinalIgnoreCase)))visible.Add(choice);
@@ -143,16 +144,16 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
             Summary.Text=$"显示 {visible.Count} 项；目录中 {unavailable} 项无法用作打开程序。{(result.Cached?" 使用上次成功读取的列表；可刷新。":"")}{incomplete}";
         }
         else Summary.Text=failed?"应用目录尚未读取成功。":"";
-        StateChanged?.Invoke();
+        QueueIconRefresh();StateChanged?.Invoke();
     }
     internal void Invalidate()
     {
-        if(disposed)return;stale=true;generation++;loadingCancellation?.Cancel();loading=false;Choices.SelectedItem=null;
+        if(disposed)return;stale=true;ClearIcons();generation++;loadingCancellation?.Cancel();loading=false;Choices.SelectedItem=null;
         Feedback.Severity=InfoBarSeverity.Warning;Feedback.Message="配置或应用草稿已变化，请取消后重新选择。";Feedback.IsOpen=true;UpdateControls();
     }
     public void Dispose()
     {
-        if(disposed)return;disposed=true;generation++;loadingCancellation?.Cancel();lifetime?.Cancel();lifetime?.Dispose();lifetime=null;
+        if(disposed)return;disposed=true;ReleaseIcons();generation++;loadingCancellation?.Cancel();lifetime?.Cancel();lifetime?.Dispose();lifetime=null;
         reader=null;accepted=null;Choices.SelectedItem=null;Choices.ItemsSource=null;all.Clear();visible.Clear();
         SearchText.Text="";CurrentText.Text=SelectionText.Text=Summary.Text=DefaultText.Text="";Feedback.IsOpen=false;Feedback.Message="";
         contentType=current=defaultLabel="";StateChanged=null;

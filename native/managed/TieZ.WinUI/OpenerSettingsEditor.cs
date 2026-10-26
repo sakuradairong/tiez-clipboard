@@ -31,12 +31,13 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
     internal ApplicationPickerView? ActiveApplications => applicationPicker;
     internal ContentDialog? ApplicationDialog => applicationDialog;
     internal Func<bool, CancellationToken, Task<ApplicationCatalogResult>>? CatalogReader { get; set; }
+    internal Func<ulong, InstalledApplication, uint, CancellationToken, Task<ApplicationIconRaster>>? IconReader { get; set; }
     private int generation;
     private bool binding, disposed;
     internal event Action? Changed;
     internal event Action<string>? Error;
     internal bool IsPicking => pickerCancellation is not null;
-    internal bool HasRetainedData => rows.Count > 0 || original.Count > 0 || owner is not null || PickerReader is not null || CatalogReader is not null || applicationDialog is not null || applicationPicker is not null;
+    internal bool HasRetainedData => rows.Count > 0 || original.Count > 0 || owner is not null || PickerReader is not null || CatalogReader is not null || IconReader is not null || applicationDialog is not null || applicationPicker is not null;
     // A delayed file result can model user selection/cancellation without choosing a real user file.
     internal Func<CancellationToken, Task<string?>>? PickerReader { get; set; }
     internal OpenerSettingsEditor(Func<nint> owner, Func<bool, CancellationToken, Task<ApplicationCatalogResult>> catalogReader)
@@ -130,7 +131,7 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
         if (disposed || IsPicking || CatalogReader is null) return;
         var cancellation = new CancellationTokenSource(); pickerCancellation = cancellation;
         int current = ++generation; string before = Values()[key]; string? error = null;
-        var picker = new ApplicationPickerView(key[4..], before, defaultLabel, CatalogReader, cancellation.Token);
+        var picker = new ApplicationPickerView(key[4..], before, defaultLabel, CatalogReader, cancellation.Token) { IconReader = IconReader };
         var dialog = new ContentDialog { Title = $"选择{label}打开应用", Content = picker, XamlRoot = XamlRoot,
             RequestedTheme = ActualTheme, PrimaryButtonText = "使用所选", CloseButtonText = "取消", IsPrimaryButtonEnabled = false };
         applicationPicker = picker; applicationDialog = dialog;
@@ -175,7 +176,7 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
     {
         if (disposed) return;
         disposed = true; generation++; CancelPicker(); pickerCancellation = null;
-        ActualThemeChanged -= FollowDialogTheme; applicationPicker?.Dispose(); applicationPicker = null; applicationDialog = null; CatalogReader = null;
+        ActualThemeChanged -= FollowDialogTheme; applicationPicker?.Dispose(); applicationPicker = null; applicationDialog = null; CatalogReader = null; IconReader = null;
         binding = true;
         foreach (var row in rows.Values) row.Input.Text = "";
         rows.Clear(); original.Clear(); Children.Clear(); owner = null; PickerReader = null; Changed = null; Error = null;

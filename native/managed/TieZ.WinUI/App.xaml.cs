@@ -40,7 +40,8 @@ public partial class App : Application
             main.Activate();
             if (report is not null)
             {
-                if (arguments.Contains("--app-picker-only")) new ApplicationPickerWindowSmoke(main, core, directory, report).Start();
+                if (arguments.Contains("--app-icons-only")) new ApplicationIconsWindowSmoke(main, core, directory, report).Start();
+                else if (arguments.Contains("--app-picker-only")) new ApplicationPickerWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--apps-only")) new NativeAppsWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--opener-settings-only"))
                 {
