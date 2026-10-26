@@ -22,6 +22,10 @@ internal static class HistoryOrderingSmoke
         Read(core.SetPinnedAsync(ids[0], true));
         ulong revision = Read(core.GetHistoryAsync(new())).Revision;
         Check(Read(core.GetHistoryAsync(new(Limit: 1, Tag: tag))).Items[0].Id == ids[0], "Default sort lost pinned priority");
+        // Read the full fixture independently of sorted pages. Fast optimized inserts can
+        // share timestamps; the established contract preserves pin priority inside those ties.
+        var metadata = ids.Select(id => Read(core.GetEntryAsync(id))).ToArray();
+        int pinnedTimeTies = metadata.Count(entry => entry.Timestamp == metadata[0].Timestamp);
         foreach (string sort in new[] { "time", "usage" })
         {
             uint offset = 0; var actual = new List<long>();
@@ -32,8 +36,11 @@ internal static class HistoryOrderingSmoke
                 actual.AddRange(page.Items.Select(entry => entry.Id)); offset = page.NextOffset;
                 if (!page.HasMore) break;
             }
-            var expected = sort == "usage" ? new[] { ids[0] }.Concat(ids.Skip(1).Reverse()) : ids.AsEnumerable().Reverse();
-            Check(actual.SequenceEqual(expected), "Sorted history only reordered the loaded page or repeated entries");
+            var expected = metadata.OrderByDescending(entry => sort == "usage" ? entry.UseCount : entry.Timestamp)
+                .ThenByDescending(entry => entry.IsPinned).ThenByDescending(entry => entry.PinnedOrder)
+                .ThenByDescending(entry => entry.Timestamp).ThenByDescending(entry => entry.Id).Select(entry => entry.Id);
+            Check(actual.Count == ids.Count && actual.Distinct().Count() == ids.Count && actual.SequenceEqual(expected),
+                $"Sorted history broke full-catalog/pin-tie order or repeated entries: sort={sort}, pinnedTimestampGroup={pinnedTimeTies}");
             var filtered = Read(core.GetHistoryAsync(new(Tag: tag, Search: "ordered-209", Sort: sort)));
             Check(filtered.Items.Count == 1 && filtered.Items[0].Id == ids[^1], "Sorted query lost literal content/tag filtering");
         }
@@ -45,6 +52,6 @@ internal static class HistoryOrderingSmoke
             "Sort reads wrote settings or history");
         Read(core.DeleteEntriesAsync(ids, revision));
         Expect("history_conflict", () => Read(core.GetHistoryAsync(new(Offset: 1, ExpectedRevision: revision, Sort: "time"))));
-        Console.WriteLine("PASS: real DLL history time/usage/default order, 210-record paging, literal tag/content filters, readonly and stale/invalid guards");
+        Console.WriteLine($"PASS: real DLL history time/usage/default order, 210-record paging, literal tag/content filters, readonly and stale/invalid guards; pinned timestamp group={pinnedTimeTies}");
     }
 }
