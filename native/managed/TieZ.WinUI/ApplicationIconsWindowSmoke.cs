@@ -27,7 +27,8 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
     private int checks, realReads, realImages, outstanding, peak, heartbeats;
     private ulong generation = 100;
     private bool delayed = true;
-    private string? screenshot;
+    private string? screenshot, diagnostics, scrollingTarget;
+    private ApplicationPickerView? diagnosticView;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? heartbeat;
     private void Check(bool value, string message) { checks++; if (!value) throw new InvalidOperationException(message); }
     private async Task Wait(Func<bool> condition, string message)
@@ -155,7 +156,7 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
             await Capture(real.View);
             await Cancel(editor, real.Dialog, real.View);
             editor.CatalogReader = (_, _) => Task.FromResult(Catalog()); editor.IconReader = Read;
-            var controlled = await Open(editor); var picker = controlled.View;
+            var controlled = await Open(editor); var picker = controlled.View; diagnosticView = picker;
             await Wait(() => pending.Count == 2, "Controlled reads did not fill exactly two slots");
             Check(pending.Any(item => item.App.SourceId == "Opaque.Recommendation"), "Recommendation-only exact row was lost");
             picker.SearchDraft = "App079";
@@ -194,10 +195,27 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
             var list = (ListView)picker.FindName("Choices");
             foreach (int index in new[] { 0, 20, 40, 60, 79 })
             {
-                string name = $"App{index:000}";
-                list.ScrollIntoView(picker.VisibleChoices.Single(choice => choice.Name == name), ScrollIntoViewAlignment.Leading);
-                await Wait(() => picker.IconViews.Any(view => view.Choice?.Name == name && view.HasImage)
-                    && picker.IconRequests == 0, "Scrolled row did not display its own icon");
+                string name = $"App{index:000}"; scrollingTarget = name;
+                var choice = picker.VisibleChoices.Single(choice => choice.Name == name);
+                list.ScrollIntoView(choice, ScrollIntoViewAlignment.Leading);
+                await Wait(() => list.ContainerFromItem(choice) is ListViewItem { IsLoaded: true },
+                    $"Scrolled row {name} was not realized");
+                // Virtualized extent estimates can change after ScrollIntoView. Refine the real
+                // viewport offset, rather than requiring the loader to fetch an offscreen icon.
+                var scroll = Descendants(list).OfType<ScrollViewer>().First();
+                ApplicationIconView? targetIcon = null;
+                await Wait(() =>
+                {
+                    if (list.ContainerFromItem(choice) is not ListViewItem container) return false;
+                    targetIcon = Descendants(container).OfType<ApplicationIconView>().SingleOrDefault();
+                    if (targetIcon is not { IsLoaded: true, ActualHeight: > 0 }) return false;
+                    double y = targetIcon.TransformToVisual(list).TransformPoint(default).Y;
+                    if (y >= 0 && y + targetIcon.ActualHeight <= list.ActualHeight) return true;
+                    scroll.ChangeView(null, Math.Clamp(scroll.VerticalOffset + y - 4, 0, scroll.ScrollableHeight), null, true);
+                    return false;
+                }, $"Scrolled row {name} icon never entered the actual viewport");
+                await Wait(() => targetIcon!.Choice == choice && targetIcon.HasImage && picker.IconRequests == 0,
+                    $"Scrolled visible row {name} did not display its own icon");
                 Check(picker.IconResources == picker.IconViews.Count(view => view.HasImage) && picker.IconResources <= 10,
                     "Offscreen images were retained outside the realized viewport");
             }
@@ -260,6 +278,17 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
         catch (Exception failure)
         {
             error = failure.ToString(); ReleaseGate();
+            if (diagnosticView is { IsDisposed: false } inspected)
+            {
+                var list = (ListView)inspected.FindName("Choices");
+                diagnostics = JsonSerializer.Serialize(new { scrollingTarget, inspected.IconRequests, inspected.IconResources,
+                    inspected.IsLoaded, inspected.IsLoading, inspected.IsStale, hostVisible = inspected.XamlRoot?.IsHostVisible,
+                    viewportWidth = list.ActualWidth, viewportHeight = list.ActualHeight,
+                    scrolls = Descendants(list).OfType<ScrollViewer>().Select(scroll => new { scroll.VerticalOffset, scroll.ScrollableHeight, scroll.ViewportHeight }),
+                    views = inspected.IconViews.Select(view => new { name = view.Choice?.Name, view.HasImage, view.Unavailable,
+                        view.IsLoaded, view.ActualWidth, view.ActualHeight, view.DisplayedCatalog,
+                        y = view.TransformToVisual(list).TransformPoint(default).Y }) });
+            }
             foreach (var item in pending) item.Completion.TrySetCanceled();
             await main.Quit();
         }
@@ -267,7 +296,7 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
         {
             ReleaseGate(); heartbeat?.Stop();
             File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = "application-icons", checks, realReads, realImages,
-                controlledPeak = peak, outstanding, heartbeats, screenshot, webView2ModuleLoaded, elapsedSeconds = elapsed.Elapsed.TotalSeconds }));
+                controlledPeak = peak, outstanding, heartbeats, screenshot, diagnostics, webView2ModuleLoaded, elapsedSeconds = elapsed.Elapsed.TotalSeconds }));
             Environment.ExitCode = passed ? 0 : 1;
         }
     }
