@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "reference": "Legacy sources in this branch; no runtime equivalence implied",
   "registered_commands": [
     {
@@ -956,6 +956,7 @@
     "get_active_file_transfer_path",
     "get_all_tags_info",
     "get_app_logo",
+    "get_associated_apps",
     "get_available_ips",
     "get_chat_history",
     "get_clipboard_history",
@@ -1004,6 +1005,7 @@
     "save_file_copy",
     "save_setting",
     "save_temp_image",
+    "scan_installed_apps",
     "schedule_backup_restore",
     "search_clipboard_history",
     "send_chat_message",
@@ -1051,6 +1053,263 @@
     "update_item_content",
     "update_pinned_order",
     "update_tags"
+  ],
+  "frontend_dynamic_invocations": [
+    {
+      "file": "src/shared/hooks/useHotkeyConfig.ts",
+      "line": 332,
+      "argument": "command",
+      "argument_complete": true,
+      "declared_string_candidates": [
+        "set_relay_fetch_hotkey",
+        "set_relay_send_hotkey"
+      ]
+    }
+  ],
+  "dynamic_setting_families": [
+    {
+      "template": "app.${type}",
+      "file": "src/App.tsx",
+      "reviewed_opener_keys": [
+        "app.text",
+        "app.code",
+        "app.rich_text",
+        "app.image",
+        "app.file",
+        "app.video",
+        "app.url",
+        "app.link"
+      ]
+    }
+  ],
+  "browser_storage_references": [
+    {
+      "file": "src/App.tsx",
+      "line": 826,
+      "key": "tiez_theme_customization",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 827,
+      "key": "tiez_custom_background",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 828,
+      "key": "tiez_custom_background_opacity",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 829,
+      "key": "tiez_surface_opacity",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 910,
+      "key": "tiez_theme",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 911,
+      "key": "tiez_color_mode",
+      "kind": "literal"
+    },
+    {
+      "file": "src/App.tsx",
+      "line": 912,
+      "key": "tiez_compact_mode",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/clipboard/components/ClipboardItem.tsx",
+      "line": 71,
+      "key": "tiez_theme_customization",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/clipboard/components/ClipboardItem.tsx",
+      "line": 72,
+      "key": "tiez_custom_background",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/clipboard/components/ClipboardItem.tsx",
+      "line": 73,
+      "key": "tiez_custom_background_opacity",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/clipboard/components/ClipboardItem.tsx",
+      "line": 74,
+      "key": "tiez_surface_opacity",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/clipboard/components/CompactPreviewWindow.tsx",
+      "line": 151,
+      "key": "tiez_store_css_${theme}",
+      "kind": "template"
+    },
+    {
+      "file": "src/features/tag/components/TagManager.tsx",
+      "line": 33,
+      "key": "tiez_tag_manager_view_mode",
+      "kind": "constant"
+    },
+    {
+      "file": "src/features/tag/components/TagManager.tsx",
+      "line": 60,
+      "key": "tiez_tag_manager_view_mode",
+      "kind": "constant"
+    },
+    {
+      "file": "src/features/theme-store/api.ts",
+      "line": 16,
+      "key": "tiez_theme_store_token",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeApply.ts",
+      "line": 43,
+      "key": "tiez_store_css_${themeId}",
+      "kind": "template"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeApply.ts",
+      "line": 76,
+      "key": "tiez_store_css_${themeId}",
+      "kind": "template"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeApply.ts",
+      "line": 95,
+      "key": "tiez_theme",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeApply.ts",
+      "line": 116,
+      "key": "tiez_theme",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeApply.ts",
+      "line": 130,
+      "key": "tiez_store_css_${theme}",
+      "kind": "template"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 9,
+      "key": "tiez_theme_store_token",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 10,
+      "key": "tiez_theme_store_username",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 20,
+      "key": "tiez_theme_store_token",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 21,
+      "key": "tiez_theme_store_username",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 32,
+      "key": "tiez_theme_store_token",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 33,
+      "key": "tiez_theme_store_username",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 42,
+      "key": "tiez_theme_store_token",
+      "kind": "literal"
+    },
+    {
+      "file": "src/features/theme-store/hooks/useThemeAuth.ts",
+      "line": 43,
+      "key": "tiez_theme_store_username",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useAnnouncements.ts",
+      "line": 81,
+      "key": "device_id",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useAnnouncements.ts",
+      "line": 84,
+      "key": "device_id",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useAnnouncements.ts",
+      "line": 109,
+      "key": "dismissed_announcements",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useAnnouncements.ts",
+      "line": 143,
+      "key": "dismissed_announcements",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useAnnouncements.ts",
+      "line": 147,
+      "key": "dismissed_announcements",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useSettingsInit.ts",
+      "line": 59,
+      "key": "tiez_store_css_${loadedTheme}",
+      "kind": "template"
+    },
+    {
+      "file": "src/shared/hooks/useSettingsInit.ts",
+      "line": 74,
+      "key": "tiez_theme",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useSettingsInit.ts",
+      "line": 75,
+      "key": "tiez_color_mode",
+      "kind": "literal"
+    },
+    {
+      "file": "src/shared/hooks/useSettingsInit.ts",
+      "line": 76,
+      "key": "tiez_compact_mode",
+      "kind": "literal"
+    }
+  ],
+  "coverage_limits": [
+    "Dynamic string candidates are evidence, not evaluated bindings.",
+    "Template interpolation, aliases, plugins, events, native menus and background services require manual review.",
+    "Browser keys are inventoried without reading stored values; migration and runtime acceptance remain pending."
   ],
   "unregistered_frontend_literal_invocations": [
     "get_download_url",
@@ -1169,6 +1428,7 @@
     "app.cleanup_rules",
     "app.clipboard_item_font_size",
     "app.clipboard_tag_font_size",
+    "app.code",
     "app.color_mode",
     "app.compact_mode",
     "app.custom_background",
@@ -1179,12 +1439,15 @@
     "app.emoji_favorites",
     "app.emoji_panel_enabled",
     "app.emoji_panel_tab",
+    "app.file",
     "app.follow_mouse",
     "app.hide_dock_icon",
     "app.hide_tray_icon",
     "app.hotkey",
+    "app.image",
     "app.language",
     "app.last_ping_date",
+    "app.link",
     "app.move_to_top_after_paste",
     "app.notice_v028_shown",
     "app.paste_method",
@@ -1202,6 +1465,7 @@
     "app.relay_fetch_hotkey",
     "app.relay_send_hotkey",
     "app.rich_paste_hotkey",
+    "app.rich_text",
     "app.rich_text_snapshot_preview",
     "app.search_hotkey",
     "app.sensitive_mask_email_domain",
@@ -1223,7 +1487,9 @@
     "app.text",
     "app.theme",
     "app.theme_customization",
+    "app.url",
     "app.use_win_v_shortcut",
+    "app.video",
     "app.window_height",
     "app.window_pinned",
     "app.window_width",

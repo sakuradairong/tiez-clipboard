@@ -73,7 +73,7 @@ The previous 47-phase check invokes real native buttons/dialogs through automati
 
 ## Complete replacement tracking and shared storage
 
-See [MIGRATION.md](MIGRATION.md) and [compatibility.json](compatibility.json) for the full replacement scope and unresolved acceptance gates. Check source coverage with `python native/tools/inventory.py --check`.
+See [MIGRATION.md](MIGRATION.md) and [compatibility.json](compatibility.json) for the full replacement scope and unresolved acceptance gates. Check source coverage with `python native/tools/inventory.py --check`. Run `python -I -B native/tools/test_inventory.py` for extraction regressions. Format 2 also inventories dynamic command evidence, the reviewed opener-key family and browser-storage keys without reading their values; unresolved paths still require manual review.
 
 `native/storage` compiles the existing model, database initialization, migrations, repositories and DPAPI code directly from their legacy source files. This is transitional source sharing, not a copied schema or a Tauri dependency; do not delete those files while either shell uses them. Validate with `cargo test --locked --manifest-path native/storage/Cargo.toml`. The initial 36 Windows tests cover whitespace/hash semantics, schema migrations, repository transaction rollback, attachments, sensitive tags and encrypted settings. The shared core now uses this crate for its history database, with the prototype settings connection opening the same explicit database file.
 
