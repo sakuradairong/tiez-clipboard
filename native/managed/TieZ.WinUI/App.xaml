@@ -7,6 +7,20 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+            <CornerRadius x:Key="NativePanelCornerRadius">12</CornerRadius>
+            <Thickness x:Key="NativePanelPadding">16</Thickness>
+            <Style x:Key="NativeSurfaceStyle" TargetType="Border">
+                <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
+                <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="CornerRadius" Value="{StaticResource NativePanelCornerRadius}"/>
+                <Setter Property="Padding" Value="{StaticResource NativePanelPadding}"/>
+            </Style>
+            <Style x:Key="NativeCaptionStyle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="12"/>
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            </Style>
             <Style x:Key="NativeSettingsSurfaceStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource ApplicationPageBackgroundThemeBrush}"/>
             </Style>

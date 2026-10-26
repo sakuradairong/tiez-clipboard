@@ -4,29 +4,52 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:TieZ.Native">
     <Grid x:Name="MainRoot" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-        <NavigationView x:Name="Navigation" PaneDisplayMode="LeftCompact"
-                        IsPaneOpen="True" OpenPaneLength="196"
+        <NavigationView x:Name="Navigation" PaneDisplayMode="Auto"
+                        IsPaneOpen="False" OpenPaneLength="216" CompactPaneLength="48"
+                        ExpandedModeThresholdWidth="1180" CompactModeThresholdWidth="640"
                         IsBackButtonVisible="Collapsed" IsSettingsVisible="True">
             <NavigationView.PaneHeader>
-                <TextBlock Text="TieZ" FontSize="28" FontWeight="SemiBold" Margin="16,12"/>
+                <TextBlock x:Name="PaneTitle" Text="TieZ" FontSize="20" FontWeight="SemiBold" Margin="16,8,12,8"/>
             </NavigationView.PaneHeader>
             <NavigationView.MenuItems>
-                <NavigationViewItem x:Name="HistoryNav" Content="剪贴板" Tag="history">
+                <NavigationViewItem x:Name="HistoryNav" Content="剪贴板" Tag="history"
+                                    AutomationProperties.Name="剪贴板">
                     <NavigationViewItem.Icon><SymbolIcon Symbol="Copy"/></NavigationViewItem.Icon>
                 </NavigationViewItem>
-                <NavigationViewItem x:Name="TagsNav" Content="标签" Tag="tags">
+                <NavigationViewItem x:Name="TagsNav" Content="标签" Tag="tags"
+                                    AutomationProperties.Name="标签">
                     <NavigationViewItem.Icon><SymbolIcon Symbol="Tag"/></NavigationViewItem.Icon>
                 </NavigationViewItem>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
-                <StackPanel Spacing="8" Margin="12">
-                    <Button x:Name="HideButton" Content="隐藏到托盘" IsEnabled="False"/>
-                    <Button x:Name="QuitButton" Content="退出 TieZ"/>
-                    <TextBlock Text="原生迁移版&#xA;使用独立数据" TextWrapping="Wrap"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <StackPanel x:Name="LifecyclePane" Spacing="4" Margin="4,8,4,8">
+                    <Button x:Name="HideButton" HorizontalAlignment="Stretch" MinWidth="40" MinHeight="40"
+                            Padding="4" HorizontalContentAlignment="Center" IsEnabled="False" IsTabStop="True"
+                            AutomationProperties.Name="隐藏到托盘"
+                            ToolTipService.ToolTip="隐藏到托盘，后台服务继续运行">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE921;" FontSize="16"/>
+                            <TextBlock x:Name="HideLabel" Text="隐藏到托盘" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="QuitButton" HorizontalAlignment="Stretch" MinWidth="40" MinHeight="40"
+                            Padding="4" HorizontalContentAlignment="Center" IsTabStop="True"
+                            AutomationProperties.Name="退出 TieZ"
+                            ToolTipService.ToolTip="退出 TieZ 并停止后台服务">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE7E8;" FontSize="16"/>
+                            <TextBlock x:Name="QuitLabel" Text="退出 TieZ" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <TextBlock x:Name="ExitProgress" TextWrapping="Wrap" Visibility="Collapsed"
+                               AutomationProperties.Name="退出进度" Style="{StaticResource NativeCaptionStyle}"/>
+                    <TextBlock x:Name="MigrationNote" Text="原生迁移版 · 使用独立数据库" TextWrapping="Wrap" MaxWidth="180"
+                               AutomationProperties.Name="原生迁移版，使用独立数据库"
+                               ToolTipService.ToolTip="不会自动打开已安装旧版的剪贴板数据。"
+                               Style="{StaticResource NativeCaptionStyle}"/>
                 </StackPanel>
             </NavigationView.PaneFooter>
-            <Grid Margin="16" RowSpacing="8">
+            <Grid Margin="24,16,24,20" RowSpacing="8">
                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                 <StackPanel Spacing="8">
                     <InfoBar x:Name="ShellError" IsOpen="False" Severity="Warning" Title="后台服务状态"/>

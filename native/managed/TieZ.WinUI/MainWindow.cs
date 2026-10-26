@@ -53,8 +53,14 @@ public sealed partial class MainWindow : Window
             && (AppWindow.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter presenter
                 || presenter.State != Microsoft.UI.Windowing.OverlappedPresenterState.Minimized));
         HideButton.Click += (_, _) => HideToTray();
-        QuitButton.Click += (_, _) => _ = Quit();
+        QuitButton.Click += async (_, _) => await Quit();
         RetryExitButton.Click += (_, _) => _ = Quit();
+        Navigation.Loaded += (_, _) => UpdateNavigationChrome();
+        Navigation.SizeChanged += (_, _) => UpdateNavigationChrome();
+        Navigation.PaneOpened += (_, _) => UpdateNavigationChrome();
+        Navigation.PaneClosed += (_, _) => UpdateNavigationChrome();
+        Navigation.DisplayModeChanged += (_, _) => UpdateNavigationChrome();
+        UpdateNavigationChrome();
         Navigation.SelectedItem = HistoryNav;
         Navigation.SelectionChanged += (_, args) =>
         {
@@ -80,6 +86,45 @@ public sealed partial class MainWindow : Window
     {
         residentMode = enabled && !quitting;
         HideButton.IsEnabled = residentMode;
+    }
+    private bool adjustingNavigation;
+    private void SetExitProgress(string text)
+    {
+        ExitProgress.Text = text;
+        UpdateNavigationChrome();
+    }
+    private void UpdateNavigationChrome()
+    {
+        if (adjustingNavigation) return;
+        adjustingNavigation = true;
+        try
+        {
+            // Auto keeps a narrow footer when the overlay opens. A measured wide window uses the full left pane.
+            if (Navigation.ActualWidth >= 1200)
+            {
+                if (Navigation.PaneDisplayMode != Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Left)
+                    Navigation.PaneDisplayMode = Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Left;
+                if (!Navigation.IsPaneOpen) Navigation.IsPaneOpen = true;
+            }
+            else if (Navigation.ActualWidth > 0)
+            {
+                if (Navigation.PaneDisplayMode != Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.LeftCompact)
+                    Navigation.PaneDisplayMode = Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.LeftCompact;
+                if (Navigation.IsPaneOpen) Navigation.IsPaneOpen = false;
+            }
+            bool labels = Navigation.DisplayMode == Microsoft.UI.Xaml.Controls.NavigationViewDisplayMode.Expanded
+                || Navigation.PaneDisplayMode == Microsoft.UI.Xaml.Controls.NavigationViewPaneDisplayMode.Left;
+            var labelVisibility = labels ? Visibility.Visible : Visibility.Collapsed;
+            HideLabel.Visibility = QuitLabel.Visibility = PaneTitle.Visibility = MigrationNote.Visibility = labelVisibility;
+            ExitProgress.Visibility = labels && ExitProgress.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            var alignment = labels ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            HideButton.HorizontalContentAlignment = QuitButton.HorizontalContentAlignment = alignment;
+            var padding = labels ? new Thickness(12, 8, 12, 8) : new Thickness(4);
+            HideButton.Padding = QuitButton.Padding = padding;
+            LifecyclePane.Margin = labels ? new Thickness(8, 4, 8, 12) : new Thickness(4, 8, 4, 8);
+            LifecyclePane.Width = labels ? double.NaN : Math.Max(32, Navigation.CompactPaneLength - 8);
+        }
+        finally { adjustingNavigation = false; }
     }
     internal void SetShellUnavailable(string message)
     {
@@ -115,7 +160,7 @@ public sealed partial class MainWindow : Window
         quitting = true;
         SetResidentMode(false);
         QuitButton.IsEnabled = RetryExitButton.IsEnabled = false;
-        QuitButton.Content = "正在退出…";
+        SetExitProgress("正在退出…");
         ExitError.Title = "正在退出"; ExitError.Message = "正在停止后台服务并清理临时文件，请稍候。";
         ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
         ExitError.IsOpen = true;
@@ -137,7 +182,7 @@ public sealed partial class MainWindow : Window
                 ? "临时导出文件仍被外部应用占用。请先关闭对应编辑器，再选择“重试退出”。剪贴板采集和其他后台服务已停止，临时文件仍由核心跟踪。"
                 : "核心资源释放失败。请重试退出；当前窗口会保留，避免丢失清理重试入口。";
             ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error;
-            QuitButton.Content = "重试退出"; QuitButton.IsEnabled = RetryExitButton.IsEnabled = true;
+            SetExitProgress("重试退出"); QuitButton.IsEnabled = RetryExitButton.IsEnabled = true;
             ShowMain();
             return false;
         }

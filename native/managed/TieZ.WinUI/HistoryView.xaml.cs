@@ -189,10 +189,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
         captureStatus = status;
         CaptureButton.Label = status.Running ? "暂停采集" : "开始采集";
         CaptureButton.Icon = new SymbolIcon(status.Running ? Symbol.Pause : Symbol.Play);
-        CaptureInfo.Severity = status.LastError is null ? InfoBarSeverity.Informational : InfoBarSeverity.Warning;
-        string state = status.Running ? "采集中" : "采集已停止";
-        CaptureInfo.Message = $"{state} · 已接收 {status.Accepted} 条 · 忽略 {status.Ignored} 条 · 失败 {status.Failed} 次。使用独立数据库；粘贴仍在迁移。"
-            + (status.LastError is null ? "" : $" 服务错误：{status.LastError}");
+        string state = status.Running ? "正在监听" : "采集已暂停";
+        CaptureStatus.Text = $"{state} · 已接收 {status.Accepted} 条";
+        ToolTipService.SetToolTip(CaptureStatus, $"已接收 {status.Accepted} 条 · 已忽略 {status.Ignored} 条 · 失败 {status.Failed} 次。使用独立数据库。");
+        CaptureInfo.Severity = InfoBarSeverity.Warning;
+        CaptureInfo.Message = status.LastError is null ? "" : $"采集服务错误：{status.LastError}";
+        CaptureInfo.IsOpen = status.LastError is not null;
     }
 
     private async Task SetCaptureAsync(bool enabled)
@@ -213,6 +215,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             if (!disposed)
             {
+                CaptureStatus.Text = "采集状态未确认";
+                CaptureInfo.IsOpen = true;
                 CaptureInfo.Severity = InfoBarSeverity.Error;
                 CaptureInfo.Message = $"采集状态未确认：{error.Message}";
                 ShowError(error.Message);
@@ -406,7 +410,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             return;
         }
         if (row.IsStale) { UpdateCommands(); return; }
-        DetailTitle.Text = row.Summary.ContentType;
+        DetailTitle.Text = row.TypeLabel;
         DetailMetadata.Text = row.Metadata;
         UpdateCommands();
         if (row.Summary.IsSensitive && !reveal)
@@ -474,6 +478,13 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (!CanReadThumbnails) InvalidateThumbnails(); else QueueThumbnailRefresh();
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
+        int selectedCount = ActiveList.SelectedItems.Count;
+        SelectionInfo.Text = selectedCount == 0 ? "选择记录以复制、粘贴或编辑" : $"已选择 {selectedCount} 条记录";
+        bool showDetail = selected is { IsStale: false } && selectedEntry?.Id == selected.Id;
+        DetailBody.Visibility = showDetail ? Visibility.Visible : Visibility.Collapsed;
+        DetailHint.Visibility = showDetail ? Visibility.Collapsed : Visibility.Visible;
+        DetailHintText.Text = selectedCount > 1 ? "已选择多条记录，可统一删除。" : selected is { IsStale: true } ? "记录已更新，请刷新后查看。"
+            : selected?.Summary.IsSensitive == true ? "敏感内容已隐藏，确认后可显示。" : selected is null ? "选择一条记录查看详情" : "正在载入记录…";
         bool available = !busy && activeDialog is null;
         OrderChoice.IsEnabled = LayoutChoice.IsEnabled = ReloadLayoutButton.IsEnabled = available;
         if (busy || activeDialog is not null || externalPending) PreviewInvalidated?.Invoke();
