@@ -8,6 +8,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 修正焦点 smoke 夹具因临时根目录尾分隔符导致的误拒绝清理，避免异常覆盖环境不可用的退出码；清理继续要求专属 GUID 目录及非重解析点，新增 9 项不触碰焦点或剪贴板的规则检查。
+
 - 原生托管图标响应为数组、null、标量或未定义值时统一保持 `invalid_response` 契约，不再泄漏 JSON 对象访问异常；新增 24 项解析检查及仅监控自有进程的 smoke 看门狗，未改变 Rust ABI。
 
 - 原生缺失主快捷键配置时改用旧版数据库默认的 `Alt+C`，读取不写入；已保存的 `Win+V`、自定义组合或禁用空值保持不变，修正此前文档错误的默认值说明。

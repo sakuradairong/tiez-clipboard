@@ -1,5 +1,7 @@
 using TieZ.Core;
 
+if (args.Contains("--cleanup-only")) { FixturePaths.CheckRules(); return; }
+
 if (args.Contains("--fixture-target")) { FixtureChild.RunTarget(); return; }
 static T Read<T>(Task<T> request)
 {
@@ -81,8 +83,7 @@ catch (FixtureForegroundUnavailable)
 finally
 {
     string resolved = Path.GetFullPath(directory);
-    if (new DirectoryInfo(resolved).Parent?.FullName != temporaryRoot || !Path.GetFileName(resolved).StartsWith("TieZ-focus-", StringComparison.Ordinal)
-        || (File.GetAttributes(resolved) & FileAttributes.ReparsePoint) != 0)
+    if (!FixturePaths.CanDelete(resolved, temporaryRoot))
         throw new InvalidOperationException("Fixture cleanup target escaped its temporary root");
     Directory.Delete(resolved, recursive: true);
 }
