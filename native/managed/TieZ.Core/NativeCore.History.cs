@@ -15,15 +15,28 @@ public sealed partial class NativeCore
         HistoryRequestAsync<HistoryChanges>(new { op = "history_changes", handle, after_revision = afterRevision }, cancellationToken);
 
     public Task<HistoryMutation> AddManualAsync(string content, string contentType = "text",
-        string? htmlContent = null, IReadOnlyList<string>? tags = null, CancellationToken cancellationToken = default) =>
-        HistoryRequestAsync<HistoryMutation>(new { op = "history_add", handle,
-            content_type = contentType, content, html_content = htmlContent, tags = tags ?? [] }, cancellationToken);
+        string? htmlContent = null, IReadOnlyList<string>? tags = null, CancellationToken cancellationToken = default)
+    {
+        VerifyAccess(); ArgumentNullException.ThrowIfNull(content); ArgumentNullException.ThrowIfNull(contentType);
+        string[] copiedTags = tags?.ToArray() ?? [];
+        return NeedsHistoryStaging(content, htmlContent, contentType, copiedTags)
+            ? LargeHistoryMutationAsync(new LargeHistoryPayload(content, contentType, htmlContent, copiedTags), null, cancellationToken)
+            : HistoryRequestAsync<HistoryMutation>(new { op = "history_add", handle,
+                content_type = contentType, content, html_content = htmlContent, tags = copiedTags }, cancellationToken);
+    }
 
     public Task<HistoryMutation> SetPinnedAsync(long id, bool isPinned, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<HistoryMutation>(new { op = "history_pin", handle, id, is_pinned = isPinned }, cancellationToken);
 
-    public Task<HistoryMutation> EditEntryAsync(long id, string content, CancellationToken cancellationToken = default) =>
-        HistoryRequestAsync<HistoryMutation>(new { op = "history_edit", handle, id, content }, cancellationToken);
+    public Task<HistoryMutation> EditEntryAsync(long id, string content, CancellationToken cancellationToken = default)
+    {
+        VerifyAccess(); ArgumentNullException.ThrowIfNull(content);
+        // This method is an explicit edit authorization, as in the existing small-edit API.
+        // Views continue to require their ordinary sensitive reveal before enabling editing.
+        return NeedsHistoryStaging(content)
+            ? LargeHistoryMutationAsync(new LargeHistoryPayload(content, null, null, []), id, cancellationToken)
+            : HistoryRequestAsync<HistoryMutation>(new { op = "history_edit", handle, id, content }, cancellationToken);
+    }
 
     public Task<HistoryMutation> SetTagsAsync(long id, IReadOnlyList<string> tags, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<HistoryMutation>(new { op = "history_tags", handle, id, tags }, cancellationToken);

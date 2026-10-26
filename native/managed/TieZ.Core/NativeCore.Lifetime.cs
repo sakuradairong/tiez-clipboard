@@ -21,8 +21,9 @@ public sealed partial class NativeCore
         // Admitted icon requests are cancelled by the shutdown token; wait for them to settle
         // without the owner dispatcher or the request gate. The native close then joins the real
         // Shell workers that a cancelled request may have started.
-        BeginIconDrain();
-        await iconDrained.Task.ConfigureAwait(false);
+        BeginIconDrain(); BeginLargeHistoryDrain();
+        await Task.WhenAll(iconDrained.Task, largeHistoryDrained.Task).ConfigureAwait(false);
+        largeHistoryObserved = null;
         await appsGate.WaitAsync().ConfigureAwait(false);
         try
         {

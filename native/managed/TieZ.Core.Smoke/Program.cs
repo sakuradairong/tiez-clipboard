@@ -17,6 +17,11 @@ string directory = Path.Combine(Path.GetTempPath(), $"TieZ-原生-{Guid.NewGuid(
 Directory.CreateDirectory(directory);
 try
 {
+    if (args.Contains("--large-history-only"))
+    {
+        LargeHistorySmoke.Run(Path.Combine(directory, "大正文"));
+        return;
+    }
     if (args.Contains("--app-icons-only"))
     {
         AppIconsSmoke.Run(Path.Combine(directory, "应用图标"));
@@ -25,6 +30,7 @@ try
     AppsSmoke.Run(Path.Combine(directory, "应用目录"));
     if (args.Contains("--apps-only")) return;
     AppIconsSmoke.Run(Path.Combine(directory, "应用图标"));
+    LargeHistorySmoke.Run(Path.Combine(directory, "大正文"));
     OpenSmoke.Run(Path.Combine(directory, "打开核心"));
     TagSmoke.Run(Path.Combine(directory, "标签目录"));
     LayoutPreferenceSmoke.Run(Path.Combine(directory, "布局.db"));

@@ -80,6 +80,8 @@ public sealed partial class NativeCore : IDisposable, IAsyncDisposable
         // Managed drain: admitted icon requests (queued, running or cancelling) settle before the
         // handle is released. Joining the real Shell workers stays part of the native close.
         WaitIconDrain();
+        WaitLargeHistoryDrain();
+        largeHistoryObserved = null;
         appsGate.Wait();
         openGate.Wait();
         requestGate.Wait();

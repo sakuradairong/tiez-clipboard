@@ -36,6 +36,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- C# 历史新增/编辑自动接入有界分块传输：后台分段编码保留 Unicode/换行，限制准入并释放每块请求门，取消清理暂存且不隐藏原生已接受结果；同步/异步关闭先排空传输再释放句柄。新增真实 DLL 专项，实际大编辑对话框验收仍待后续。
+
 - 原生核心新增历史大内容分块 ABI：保留单次 64 KiB 请求上限，资源绑定核心与新增/编辑目标，以随机令牌、SHA-256、UTF-8 字节偏移、版本和敏感授权校验后一次性原子提交；保留负数会话 ID 和原始文本/HTML，取消、过期或退出释放有界暂存。C# 与编辑窗口接入、其他大内容协议仍待后续完成。
 
 - 新增原生 Rust→WinUI 发布脚本及隔离资产审计：普通/portable 核心和 Debug/Release 分离，默认同时自包含 .NET 与 Windows App Runtime，验证真实 ABI、刚构建 DLL 哈希与源码收据，并排除 WebView2/旧壳运行资产。修复 unpackaged `dotnet publish` 漏应用 XBF/PRI 导致主窗口无法启动的问题。安装器、真正便携数据路径、升级回滚及干净系统验收仍未完成。

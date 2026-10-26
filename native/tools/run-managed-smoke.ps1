@@ -1,9 +1,11 @@
 param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
     [ValidateRange(1, 600)][int]$TimeoutSeconds = 120,
-    [switch]$IconsOnly
+    [switch]$IconsOnly,
+    [switch]$LargeHistoryOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($IconsOnly -and $LargeHistoryOnly) { throw 'Choose one focused smoke scope.' }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $exe = Join-Path $root "native/managed/TieZ.Core.Smoke/bin/$Configuration/net10.0/win-x64/TieZ.Core.Smoke.exe"
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
@@ -15,6 +17,7 @@ $info.UseShellExecute = $false
 $info.RedirectStandardOutput = $true
 $info.RedirectStandardError = $true
 if ($IconsOnly) { $info.ArgumentList.Add('--app-icons-only') }
+if ($LargeHistoryOnly) { $info.ArgumentList.Add('--large-history-only') }
 $process = [Diagnostics.Process]::new()
 $process.StartInfo = $info
 $started = $false
