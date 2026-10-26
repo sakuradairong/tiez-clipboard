@@ -101,7 +101,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             _ = SetCaptureAsync(startCapture);
         };
         CaptureButton.Click += async (_, _) => await SetCaptureAsync(captureStatus?.Running != true);
-        AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", value => core!.AddManualAsync(value));
+        AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", (value, token) => core!.AddManualAsync(value, cancellationToken: token));
         ReturnTargetButton.Click += async (_, _) => await ReturnTargetAsync();
         StartTargetButton.Click += async (_, _) => await StartTargetAsync();
         PasteButton.Click += async (_, _) => await PasteSelectedAsync(false);
@@ -115,7 +115,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         EditButton.Click += async (_, _) =>
         {
             if (selectedEntry is { } entry)
-                await ShowTextDialogAsync("编辑内容", entry.Content, value => core!.EditEntryAsync(entry.Id, value));
+                await ShowTextDialogAsync("编辑内容", entry.Content, (value, token) => core!.EditEntryAsync(entry.Id, value, cancellationToken: token));
         };
         TagsButton.Click += async (_, _) =>
         {
@@ -613,9 +613,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
         }
     }
 
-    private async Task ShowTextDialogAsync(string title, string initial, Func<string, Task<HistoryMutation>> save)
+    private async Task ShowTextDialogAsync(string title, string initial, Func<string, CancellationToken, Task<HistoryMutation>> save)
     {
         if (disposed || activeDialog is not null || mutating || loading || filterPending) return;
+        using var dialogCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        bool dialogClosed = false;
         var input = new TextBox { Text = initial, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
             MinWidth = 360, MaxHeight = 300, PlaceholderText = "输入内容" };
         // TextBox normalizes line endings. Opening and accepting without edits must preserve the original payload.
@@ -626,6 +628,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         content.Children.Add(error);
         var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = "保存",
             CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = XamlRoot };
+        dialog.Closing += (_, _) => dialogCancellation.Cancel();
         dialog.PrimaryButtonClick += async (_, args) =>
         {
             var deferral = args.GetDeferral();
@@ -634,8 +637,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
             try
             {
                 string value = input.Text == initialInput ? initial : input.Text;
-                args.Cancel = !await MutateAsync(() => save(value));
-                if (args.Cancel && !disposed)
+                args.Cancel = !await MutateAsync(() => save(value, dialogCancellation.Token));
+                if (args.Cancel && !disposed && !dialogClosed)
                 {
                     error.Text = Feedback.Message;
                     error.Visibility = Visibility.Visible;
@@ -643,7 +646,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             }
             finally
             {
-                if (!disposed)
+                if (!disposed && !dialogClosed)
                 {
                     input.IsEnabled = true;
                     dialog.IsPrimaryButtonEnabled = true;
@@ -658,6 +661,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         catch (Exception failure) { if (!disposed) ShowError(failure.Message); }
         finally
         {
+            dialogClosed = true; dialogCancellation.Cancel();
+            input.Text = ""; error.Text = ""; content.Children.Clear(); dialog.Content = null;
             activeDialog = null;
             dialogInput = null;
             if (!disposed) UpdateCommands();

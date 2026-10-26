@@ -9,9 +9,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using TieZ.Core;
-using Windows.Graphics.Imaging;
-using Windows.Storage;
-using Windows.Storage.Streams;
 
 namespace TieZ.Native;
 
@@ -105,20 +102,8 @@ internal sealed class ApplicationIconsWindowSmoke(MainWindow main, NativeCore co
     }
     private async Task Capture(ApplicationPickerView view)
     {
-        var bitmap = new RenderTargetBitmap();
-        await bitmap.RenderAsync(view);
-        Check(bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0, "Native picker screenshot was empty");
-        var buffer = await bitmap.GetPixelsAsync();
-        using var reader = DataReader.FromBuffer(buffer);
-        byte[] bytes = new byte[checked((int)buffer.Length)]; reader.ReadBytes(bytes);
-        var folder = await StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(Path.GetFullPath(report))!);
-        var file = await folder.CreateFileAsync(Path.GetFileName(report) + ".png", CreationCollisionOption.GenerateUniqueName);
-        using var stream = await file.OpenAsync(FileAccessMode.ReadWrite);
-        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
-        double dpi = 96 * (view.XamlRoot?.RasterizationScale ?? 1);
-        encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
-            (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, dpi, dpi, bytes);
-        await encoder.FlushAsync(); screenshot = file.Path;
+        screenshot = await NativeSmokeCapture.CaptureAsync(view, report);
+        Check(File.Exists(screenshot), "Native picker screenshot was empty");
     }
     internal async void Start()
     {
