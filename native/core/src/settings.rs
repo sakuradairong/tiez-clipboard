@@ -67,7 +67,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.video", ""),
         ("app.url", ""),
         ("app.link", ""),
-        ("app.hotkey", "Win+V"),
+        ("app.hotkey", "Alt+C"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
@@ -332,6 +332,48 @@ mod tests {
     }
 
     #[test]
+    fn hotkey_default_matches_legacy_seed_without_saving() {
+        let service = service();
+        let writes = service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap();
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.values["app.hotkey"], "Alt+C");
+        assert_eq!(snapshot.revision, 0);
+        assert_eq!(service.snapshot().unwrap(), snapshot);
+        assert_eq!(service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap(), writes);
+        let count: i64 = service.connection.query_row(
+            "SELECT COUNT(*) FROM settings", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+
+        let legacy = Connection::open_in_memory().unwrap();
+        legacy.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)").unwrap();
+        tiez_storage::database::seed_defaults(&legacy).unwrap();
+        let legacy_hotkey: String = legacy.query_row(
+            "SELECT value FROM settings WHERE key='app.hotkey'", [], |row| row.get(0)).unwrap();
+        assert_eq!(snapshot.values["app.hotkey"], legacy_hotkey);
+    }
+
+    #[test]
+    fn saved_hotkeys_survive_reopen_without_default_rewrites() {
+        let root = std::env::temp_dir().join(format!("TieZ-hotkey-default-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("settings.db");
+        for (index, value) in ["Win+V", "Ctrl+Alt+F12", ""].iter().enumerate() {
+            {
+                let mut service = SettingsService::open(&path).unwrap();
+                service.update(index as u64, patch("app.hotkey", value)).unwrap();
+            }
+            let service = SettingsService::open(&path).unwrap();
+            let writes = service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap();
+            let snapshot = service.snapshot().unwrap();
+            assert_eq!(snapshot.values["app.hotkey"], *value);
+            assert_eq!(snapshot.revision, index as u64 + 1);
+            assert_eq!(service.snapshot().unwrap(), snapshot);
+            assert_eq!(service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap(), writes);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn validation_and_stale_edits_preserve_accepted_state() {
         let mut service = service();
         for (key, value) in [
@@ -527,7 +569,7 @@ mod effect_tests {
         assert!(result.is_err());
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(service.snapshot().unwrap().revision, 0);
-        assert_eq!(service.snapshot().unwrap().values["app.hotkey"], "Win+V");
+        assert_eq!(service.snapshot().unwrap().values["app.hotkey"], "Alt+C");
     }
     #[test]
     fn compact_mode_defaults_without_writes_and_requires_boolean_values() {
