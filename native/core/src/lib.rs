@@ -3,6 +3,7 @@ mod app_catalog;
 mod app_icons;
 mod capture;
 mod cleanup_preview;
+mod large_history;
 pub mod external_open;
 mod paste;
 pub use capture::{CaptureService, CaptureStatus};
@@ -32,6 +33,7 @@ struct CoreRuntime {
     icons: Arc<app_icons::IconService>,
     settings: SettingsService,
     history: Arc<Mutex<HistoryService>>,
+    uploads: large_history::Uploads,
     capture: capture::CaptureService,
     opens: Arc<Mutex<external_open::OpenService>>,
     target: tiez_native_platform::target::TargetTracker,
@@ -91,6 +93,19 @@ enum Request {
         color: Option<String>,
         expected_revision: u64,
     },
+    HistoryUploadLimits { handle: u64 },
+    HistoryUploadBegin {
+        handle: u64,
+        version: u32,
+        target: large_history::Target,
+        expected_revision: u64,
+        total_bytes: usize,
+        sha256: String,
+    },
+    HistoryUploadAppend { handle: u64, token: String, offset: usize, data: String },
+    HistoryUploadStatus { handle: u64, token: String },
+    HistoryUploadCommit { handle: u64, token: String },
+    HistoryUploadAbort { handle: u64, token: String },
     HistoryPage {
         handle: u64,
         query: HistoryQuery,
@@ -270,6 +285,12 @@ impl Request {
             | Self::TagDelete { handle, .. }
             | Self::TagRename { handle, .. }
             | Self::TagColor { handle, .. }
+            | Self::HistoryUploadLimits { handle }
+            | Self::HistoryUploadBegin { handle, .. }
+            | Self::HistoryUploadAppend { handle, .. }
+            | Self::HistoryUploadStatus { handle, .. }
+            | Self::HistoryUploadCommit { handle, .. }
+            | Self::HistoryUploadAbort { handle, .. }
             | Self::HistoryPage { handle, .. }
             | Self::HistoryEntry { handle, .. }
             | Self::HistoryPreviewEntry { handle, .. }
@@ -323,6 +344,9 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
     {
         return Err(CoreError::new("core_closing", "Core shutdown is in progress; retry close if cleanup fails"));
     }
+    if let Some(handle) = request.handle() {
+        if let Some(runtime) = registry.services.get_mut(&handle) { runtime.uploads.reap(); }
+    }
     match request {
         Request::Open { database_path } => {
             if !registry.services.is_empty() || !registry.closing.is_empty() {
@@ -355,6 +379,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     icons,
                     settings: service,
                     history,
+                    uploads: Default::default(),
                     capture,
                     opens,
                     target: Default::default(),
@@ -478,6 +503,33 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             .lock()
             .map_err(|_| CoreError::new("history", "History unavailable"))?
             .set_tag_color(name, color, expected_revision)?)),
+        Request::HistoryUploadLimits { handle } => {
+            let runtime = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            let history = runtime.history.lock().map_err(|_| CoreError::new("history", "History unavailable"))?;
+            Ok(json!(large_history::limits(history.revision())))
+        }
+        Request::HistoryUploadBegin { handle, version, target, expected_revision, total_bytes, sha256 } => {
+            let runtime = registry.services.get_mut(&handle).ok_or_else(invalid_handle)?;
+            let history = runtime.history.lock().map_err(|_| CoreError::new("history", "History unavailable"))?;
+            Ok(json!(runtime.uploads.begin(version, target, expected_revision, total_bytes, &sha256, &history)?))
+        }
+        Request::HistoryUploadAppend { handle, token, offset, data } => {
+            let runtime = registry.services.get_mut(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(runtime.uploads.append(&token, offset, &data)?))
+        }
+        Request::HistoryUploadStatus { handle, token } => {
+            let runtime = registry.services.get_mut(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(runtime.uploads.status(&token)?))
+        }
+        Request::HistoryUploadAbort { handle, token } => {
+            let runtime = registry.services.get_mut(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!({ "aborted": runtime.uploads.abort(&token)? }))
+        }
+        Request::HistoryUploadCommit { handle, token } => {
+            let runtime = registry.services.get_mut(&handle).ok_or_else(invalid_handle)?;
+            let mut history = runtime.history.lock().map_err(|_| CoreError::new("history", "History unavailable"))?;
+            Ok(json!(runtime.uploads.commit(&token, &mut history)?))
+        }
         Request::HistoryPage { handle, query } => Ok(json!(registry
             .services
             .get(&handle)
@@ -847,6 +899,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             // Reserve this runtime's slot until close succeeds or the stopped owner is restored.
             registry.closing.insert(handle);
             drop(registry);
+            service.uploads.clear();
             // No registry/history/policy guards held while joining or waiting for a native open.
             let _ = service.shell.stop();
             let shell = shell_status(service.shell.status());

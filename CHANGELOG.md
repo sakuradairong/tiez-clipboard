@@ -34,6 +34,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- 原生核心新增历史大内容分块 ABI：保留单次 64 KiB 请求上限，资源绑定核心与新增/编辑目标，以随机令牌、SHA-256、UTF-8 字节偏移、版本和敏感授权校验后一次性原子提交；保留负数会话 ID 和原始文本/HTML，取消、过期或退出释放有界暂存。C# 与编辑窗口接入、其他大内容协议仍待后续完成。
+
 - 新增原生 Rust→WinUI 发布脚本及隔离资产审计：普通/portable 核心和 Debug/Release 分离，默认同时自包含 .NET 与 Windows App Runtime，验证真实 ABI、刚构建 DLL 哈希与源码收据，并排除 WebView2/旧壳运行资产。修复 unpackaged `dotnet publish` 漏应用 XBF/PRI 导致主窗口无法启动的问题。安装器、真正便携数据路径、升级回滚及干净系统验收仍未完成。
 
 - 原生应用选择器显示真实 Windows 应用图标：绑定目录代际和完整行标识，仅可见容器持有原生位图，两个在途请求包含取消中的实际任务；刷新、筛选、回收、隐藏/最小化、重开与退出释放资源并拒绝迟到结果。单图标失败不影响选择，保留明确占位说明。新增真实窗口专项和完整回归，物理输入、混合 DPI、无障碍及无 WebView2 干净系统验收仍未完成。

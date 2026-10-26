@@ -734,3 +734,22 @@ An initial dotnet publish compiled but could not create MainWindow: the unpackag
 **Deployment limits:** portable selects the Rust portable encryption feature only; the current host still opens its isolated prototype data path, so this is not yet a finished portable distribution. There is no new installer, updater or default-entry switch. Actual minimum Windows/VC++ runtime support, install/upgrade/uninstall/rollback, real-data migration and a clean Windows environment without .NET/WinAppRuntime/WebView2 remain unverified. This development host has those runtimes installed; local module paths and asset checks do not replace clean-system acceptance. No production dependency or legacy fallback was deleted.
 
 A later full-window repeat deterministically exposed a genuine preview ownership defect: queued old row pointer events could replace/cancel a new explicit toolbar preview. The controller now owns the explicit/hover distinction; privacy/revision/scroll/blur/close guards are retained. The regression first failed before the fix, then four consecutive 139-phase Release runs passed. Subsequent full runs from both final self-contained publish directories pass 139 phases; their icon suites and the Debug/framework-dependent icon suite each pass 115 assertions on this host. Other physical input/environment gates remain open.
+
+## Bounded history upload ABI v1
+
+The existing 64 KiB request cap and ABI-version export remain unchanged. New operations add runtime-owned UTF-8 JSON staging for history add/edit only; this is not an arbitrary-command/file transport:
+
+```json
+{"op":"history_upload_limits","handle":1}
+{"op":"history_upload_begin","handle":1,"version":1,"target":{"kind":"add"},"expected_revision":0,"total_bytes":123,"sha256":"64 hexadecimal characters"}
+{"op":"history_upload_append","handle":1,"token":"32-character server token","offset":0,"data":"a UTF-8 JSON fragment"}
+{"op":"history_upload_status","handle":1,"token":"32-character server token"}
+{"op":"history_upload_commit","handle":1,"token":"32-character server token"}
+{"op":"history_upload_abort","handle":1,"token":"32-character server token"}
+```
+
+Limits reports the current metadata-only history revision, protocol version 1, 16 MiB per payload, two retained uploads/32 MiB total reservation, 4096 UTF-8 bytes per nonempty chunk and 120 seconds of cooperative idle expiry. Offsets count decoded UTF-8 bytes, not UTF-16 characters or escaped wire bytes. Exact already-stored chunk replays are idempotent; gaps, different overlaps and overflow are rejected unchanged. Status polling does not extend expiry. Every valid runtime command reaps expired uploads; close clears all resources even if unrelated export cleanup later needs retry. Staged buffers are zeroized when released; this does not claim every immutable UI/runtime string copy can be erased.
+
+The add payload is `{content_type, content, html_content?, tags?}`. Edit binds `{kind:edit,id,allow_sensitive?}` at begin and accepts only `{content}` as its payload. No paths, handles or alternate operations may be injected into the payload/target. Begin and commit check history revision; edit uses metadata-only sensitive authorization and checks it again at commit. A complete commit is one-shot and releases its staging reservation even on digest/schema/revision/SQLite failure. An incomplete commit retains the resource for completion or abort. Success reuses the existing authoritative history transaction and receipt; callers must not blindly retry commit after an accepted outcome. Errors never echo the staged body.
+
+Nine native regressions pass; default/portable core suites each pass 148 tests, including actual C ABI chunked Unicode/whitespace round trips, original HTML, quota/expiry, malformed target rejection, digest/offset/replay, negative IDs, sensitive/stale guards, SQL rollback and close/reopen. The unchanged managed full-DLL suite and 16/379 catalog/picker window checks pass against the new DLL. A newer full-window attempt was cancelled by genuine interactive clipboard/focus changes; it is not reported as passed, and existing privacy/blur assertions were retained. C# automatic staging and actual large-editor UI are the next integration unit. Outbound large-entry streaming, settings/import/AI transports and payloads beyond this explicit limit remain open; no full-replacement claim follows.
