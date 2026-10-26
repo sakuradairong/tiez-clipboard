@@ -1503,8 +1503,18 @@ mod tests {
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut request = [0u8; 2048];
-                        let _ = stream.read(&mut request);
+                        // Windows may inherit the listener's nonblocking mode on accept.
+                        stream.set_nonblocking(false).unwrap();
+                        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                        stream.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                        let mut request = Vec::new();
+                        let mut chunk = [0u8; 512];
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let received = stream.read(&mut chunk).unwrap();
+                            assert!(received > 0, "Image fixture received an incomplete request");
+                            request.extend_from_slice(&chunk[..received]);
+                            assert!(request.len() <= 8192, "Image fixture request exceeds its bound");
+                        }
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             content_type,
@@ -1526,6 +1536,28 @@ mod tests {
         });
 
         (format!("http://{address}/{path}"), handle)
+    }
+
+    #[test]
+    fn image_http_fixture_waits_for_complete_request_headers() {
+        let (url, server) = serve_image_once("fragmented.gif", "image/gif", b"GIF89a".to_vec());
+        let url = reqwest::Url::parse(&url).unwrap();
+        let mut stream = std::net::TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        stream.write_all(b"GET /fragmented.gif HTTP/1.1\r\n").unwrap();
+        let early = stream.read(&mut [0u8; 1]);
+        let waited_for_headers = matches!(early, Err(ref error) if matches!(error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+        let completed = stream.write_all(b"Host: localhost\r\n\r\n");
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut response = Vec::new();
+        let received = stream.read_to_end(&mut response);
+        drop(stream);
+        server.join().unwrap();
+        assert!(waited_for_headers, "Fixture replied before receiving complete request headers: {early:?}");
+        completed.unwrap(); received.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.ends_with(b"GIF89a"));
     }
 
     #[test]

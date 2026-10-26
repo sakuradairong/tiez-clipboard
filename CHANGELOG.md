@@ -8,6 +8,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 修正同源远程图片测试 HTTP 服务器：Windows 接受的连接显式恢复阻塞模式，并在有界超时和请求大小限制下读完请求头再回复，避免忽略 `WouldBlock` 或分片请求后提前关闭连接。新增确定性分片请求回归，生产下载行为未改变。
+
 - 修正焦点 smoke 夹具因临时根目录尾分隔符导致的误拒绝清理，避免异常覆盖环境不可用的退出码；清理继续要求专属 GUID 目录及非重解析点，新增 9 项不触碰焦点或剪贴板的规则检查。
 
 - 原生托管图标响应为数组、null、标量或未定义值时统一保持 `invalid_response` 契约，不再泄漏 JSON 对象访问异常；新增 24 项解析检查及仅监控自有进程的 smoke 看门狗，未改变 Rust ABI。
