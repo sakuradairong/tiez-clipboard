@@ -8,7 +8,7 @@ using Windows.Graphics;
 namespace TieZ.Native;
 
 internal sealed record CompactPreviewRequest(HistorySummary Summary, ulong Revision, bool AllowSensitive,
-    FrameworkElement Anchor, Func<bool> IsCurrent);
+    FrameworkElement Anchor, Func<bool> IsCurrent, bool IsExplicit);
 
 internal sealed class CompactPreviewController : IDisposable
 {
@@ -19,12 +19,13 @@ internal sealed class CompactPreviewController : IDisposable
     private CompactPreviewRequest? pending;
     private CancellationTokenSource? cancellation;
     private int generation;
-    private bool disposed, enabled;
+    private bool disposed, enabled, explicitRequest;
     private ElementTheme theme;
     internal int WindowsCreated { get; private set; }
     internal nint WindowHandle => window is null ? 0 : WinRT.Interop.WindowNative.GetWindowHandle(window);
     internal bool Visible => window?.AppWindow.IsVisible == true;
     internal bool HasPending => pending is not null;
+    internal bool IsExplicitActive => explicitRequest && (HasPending || Visible);
     internal string StateDiagnostic => $"generation={generation}, pending={pending?.Summary.Id}, displayed={DisplayedId}, visible={Visible}, image={HasImage}, document={HasDocument}, windows={WindowsCreated}";
     internal long? DisplayedId => window?.DisplayedId;
     internal bool HasImage => window?.HasImage == true;
@@ -55,11 +56,11 @@ internal sealed class CompactPreviewController : IDisposable
         Cancel();
         if (disposed || !enabled || !owner.AppWindow.IsVisible || !request.IsCurrent()
             || request.Summary.ContentType == "file" || (request.Summary.IsSensitive && !request.AllowSensitive)) return;
-        pending = request; cancellation = new(); delay.Start();
+        explicitRequest = request.IsExplicit; pending = request; cancellation = new(); delay.Start();
     }
     internal void Cancel()
     {
-        generation++; delay.Stop(); pending = null;
+        generation++; delay.Stop(); pending = null; explicitRequest = false;
         cancellation?.Cancel(); cancellation?.Dispose(); cancellation = null;
         window?.HideAndClear();
     }

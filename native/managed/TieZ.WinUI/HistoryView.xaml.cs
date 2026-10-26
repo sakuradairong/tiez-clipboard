@@ -40,6 +40,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private bool compactMode;
     internal event Action<CompactPreviewRequest>? PreviewRequested;
     internal event Action? PreviewInvalidated;
+    internal Func<bool>? IsExplicitPreviewActive { get; set; }
     internal bool CompactMode
     {
         get => compactMode;
@@ -759,7 +760,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; exactTagFilter = null; OrderChoice.SelectedIndex = 0;
+        disposed = true; IsExplicitPreviewActive = null; exactTagFilter = null; OrderChoice.SelectedIndex = 0;
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         generation++;
         detailGeneration++;
@@ -786,15 +787,15 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private void OnRowPointerEntered(object sender, PointerRoutedEventArgs args)
     {
-        if (args.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse
+        if (IsExplicitPreviewActive?.Invoke() == true || args.Pointer.PointerDeviceType != Microsoft.UI.Input.PointerDeviceType.Mouse
             || sender is not FrameworkElement anchor || anchor.DataContext is not HistoryRow row) return;
-        hoveredAnchor = anchor; RequestPreview(row, anchor, requireHover: true);
+        RequestPreview(row, anchor, requireHover: true);
     }
     private void OnRowPointerExited(object sender, PointerRoutedEventArgs args) => EndHover(sender);
     private void OnRowUnloaded(object sender, RoutedEventArgs args) => EndHover(sender);
     private void EndHover(object sender)
     {
-        if (!ReferenceEquals(sender, hoveredAnchor)) return;
+        if (IsExplicitPreviewActive?.Invoke() == true || !ReferenceEquals(sender, hoveredAnchor)) return;
         hoveredAnchor = null; PreviewInvalidated?.Invoke();
     }
     private void RequestPreview(HistoryRow row, FrameworkElement anchor, bool requireHover)
@@ -803,11 +804,14 @@ public sealed partial class HistoryView : UserControl, IDisposable
             || loading || mutating || filterPending || activeDialog is not null || row.Summary.ContentType == "file") return;
         bool allowSensitive = selectedEntry?.Id == row.Id && ActiveList.SelectedItems.Count == 1;
         if (row.Summary.IsSensitive && !allowSensitive) return;
+        // Only an accepted hover owns pointer-exit cancellation. Explicit commands detach the
+        // previous hover so a queued exit/unload cannot cancel their independent request.
+        hoveredAnchor = requireHover ? anchor : null;
         PreviewRequested?.Invoke(new(row.Summary, expected, allowSensitive, anchor, () =>
             !disposed && Visibility == Visibility.Visible && compactMode && !externalPending && !loading && !mutating && !filterPending
             && activeDialog is null && revision == expected && rows.Contains(row) && anchor.IsLoaded
             && (ReferenceEquals(anchor, ActiveList) || (anchor.DataContext is HistoryRow current && current.Id == row.Id))
-            && (!requireHover || ReferenceEquals(hoveredAnchor, anchor))));
+            && (!requireHover || ReferenceEquals(hoveredAnchor, anchor)), IsExplicit: !requireHover));
     }
     internal void PreviewRow(long id)
     {

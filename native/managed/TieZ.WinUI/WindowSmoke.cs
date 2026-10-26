@@ -63,7 +63,15 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         timer.Start();
     }
 
-    private void OnPreviewInvalidated() => compactInvalidation = $"phase={phase}: {new StackTrace(1, false)}";
+    private void OnPreviewInvalidated()
+    {
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var view = main.History;
+        string fields = string.Join(", ", new[] { "loading", "mutating", "filterPending", "targetBusy", "externalPending", "revision", "observedRevision" }
+            .Select(name => $"{name}={typeof(HistoryView).GetField(name, flags)!.GetValue(view)}"));
+        var capture = (CaptureStatus?)typeof(HistoryView).GetField("captureStatus", flags)!.GetValue(view);
+        compactInvalidation = $"phase={phase}: {fields}, captured={capture?.Accepted}: {new StackTrace(1, false)}";
+    }
     private void OnSmokeActivation(object sender, WindowActivatedEventArgs args) =>
         compactActivation = $"phase={phase}: {args.WindowActivationState}";
 
@@ -564,10 +572,19 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     break;
                 case 87:
                     view.Search(""); await view.ReloadAsync(compactDocumentId);
+                    // Model an old row exit arriving after the actual explicit preview button.
+                    // This is a controlled routed-event boundary, not physical pointer acceptance.
+                    var oldHover = (FrameworkElement)view.FindName("HistoryList");
+                    const System.Reflection.BindingFlags hiddenInstance = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                    typeof(HistoryView).GetField("hoveredAnchor", hiddenInstance)!.SetValue(view, oldHover);
                     view.Invoke("preview");
+                    // A later queued pointer notification must not retake explicit ownership.
+                    typeof(HistoryView).GetField("hoveredAnchor", hiddenInstance)!.SetValue(view, oldHover);
+                    typeof(HistoryView).GetMethod("EndHover", hiddenInstance)!.Invoke(view, [oldHover]);
+                    Require(main.CompactPreview.HasPending, "Old pointer-exit cancelled an explicit preview request.");
                     break;
                 case 88:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Document hover failed.");
+                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, $"Document hover failed: {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1,
                         $"Compact table preview did not reuse the native window: expected={compactDocumentId}, {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
@@ -1179,7 +1196,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         catch (Exception failure) { passed = false; error = failure.ToString(); }
         File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = rulesOnly ? "rules" : "full", phases = rulesOnly ? phase - 125 : phase + 1,
             framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,
-            compactWindowsCreated = main.CompactPreview.WindowsCreated, compactFocusPreserved,
+            compactWindowsCreated = main.CompactPreview.WindowsCreated, compactFocusPreserved, compactInvalidation, compactActivation,
             elapsedSeconds = elapsed.Elapsed.TotalSeconds }));
         Environment.ExitCode = passed ? 0 : 1;
     }

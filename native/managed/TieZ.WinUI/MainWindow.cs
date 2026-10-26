@@ -34,6 +34,7 @@ public sealed partial class MainWindow : Window
         compactPreview = new CompactPreviewController(this, core);
         openLifetime = new OpenLifetimeController(this, core);
         HistoryWorkspace.PreviewRequested += compactPreview.Request;
+        HistoryWorkspace.IsExplicitPreviewActive = () => compactPreview.IsExplicitActive;
         HistoryWorkspace.PreviewInvalidated += compactPreview.Cancel;
         Title = "TieZ · 原生迁移版";
         AppWindow.Resize(new SizeInt32(1080, 760));
