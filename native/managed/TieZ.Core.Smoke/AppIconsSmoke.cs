@@ -81,6 +81,15 @@ internal static class AppIconsSmoke
         var jobId = Method("IconJobId", typeof(JsonElement));
         var start = Method("ValidateIconStart", typeof(JsonElement), typeof(ulong), typeof(ulong), typeof(uint));
         var poll = Method("ParseIconPoll", typeof(JsonElement), typeof(ulong), typeof(ulong), typeof(uint), typeof(ApplicationIconIdentity));
+        var pixels = Method("ParseIconPixels", typeof(JsonElement), typeof(int));
+        foreach (var shape in new[] { default(JsonElement), Json("[]"), Json("null"), Json("true"), Json("17"),
+            JsonSerializer.SerializeToElement("not an object") })
+        {
+            Check((ulong)Invoke(jobId, shape)! == 0, "Malformed result fabricated a job ID");
+            Invalid(start, shape, 5UL, 7UL, 32U);
+            Invalid(poll, shape, 1UL, 7UL, 32U, identity);
+            Invalid(pixels, shape, 4);
+        }
         string running = "{\"job_id\":5,\"catalog_job_id\":7,\"edge\":32,\"state\":\"running\"}";
         ulong job = (ulong)Invoke(jobId, Json(running))!;
         Check(job == 5, "Icon job ID read");
@@ -139,7 +148,7 @@ internal static class AppIconsSmoke
             "\"width\":1,\"height\":1,\"pixels\":null",
         })
             Invalid(poll, Json(head + body + "}"), 1UL, 7UL, 32U, identity);
-        Console.WriteLine($"PASS icon response parsing: {checks} controlled malformed job/catalog/edge/state/identity/dimension/byte-array vectors rejected");
+        Console.WriteLine($"PASS icon response parsing: {checks} controlled parsing checks, including non-object results and malformed job/catalog/edge/state/identity/dimension/byte-array fields");
     }
 
     internal static void Run(string directory)

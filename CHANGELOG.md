@@ -8,6 +8,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Fixed
 
+- 原生托管图标响应为数组、null、标量或未定义值时统一保持 `invalid_response` 契约，不再泄漏 JSON 对象访问异常；新增 24 项解析检查及仅监控自有进程的 smoke 看门狗，未改变 Rust ABI。
+
 - 原生缺失主快捷键配置时改用旧版数据库默认的 `Alt+C`，读取不写入；已保存的 `Win+V`、自定义组合或禁用空值保持不变，修正此前文档错误的默认值说明。
 
 - 修正原生迁移清单漏掉带分号/嵌套泛型调用的问题，补动态 relay 命令、八类打开方式键及浏览器持久状态来源；增加提取回归测试，不读取用户存储值，也不将源码覆盖计数视作功能验收。

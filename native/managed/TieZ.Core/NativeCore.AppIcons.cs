@@ -254,7 +254,7 @@ public sealed partial class NativeCore
     // byte[] default) or any non-byte member is rejected rather than decoded.
     private static byte[] ParseIconPixels(JsonElement result, int length)
     {
-        if (!result.TryGetProperty("pixels", out var pixels) || pixels.ValueKind != JsonValueKind.Array)
+        if (!TryIconProperty(result, "pixels", out var pixels) || pixels.ValueKind != JsonValueKind.Array)
             throw InvalidIcon("Application icon raster is not a JSON numeric array.");
         if (pixels.GetArrayLength() != length)
             throw InvalidIcon("Application icon raster byte count is inconsistent with its dimensions.");
@@ -271,7 +271,7 @@ public sealed partial class NativeCore
 
     private static ApplicationIconIdentity ParseIconIdentity(JsonElement result)
     {
-        if (!result.TryGetProperty("identity", out var identity) || identity.ValueKind != JsonValueKind.Object)
+        if (!TryIconProperty(result, "identity", out var identity) || identity.ValueKind != JsonValueKind.Object)
             throw InvalidIcon("Application icon response has no catalog identity.");
         string? sourceId = IconOptionalString(identity, "source_id");
         string? kind = IconOptionalString(identity, "kind");
@@ -281,12 +281,12 @@ public sealed partial class NativeCore
     }
 
     private static ulong IconJobId(JsonElement result) =>
-        result.TryGetProperty("job_id", out var value) && value.ValueKind == JsonValueKind.Number
+        TryIconProperty(result, "job_id", out var value) && value.ValueKind == JsonValueKind.Number
             && value.TryGetUInt64(out ulong job) ? job : 0;
 
     private static ulong IconUInt64(JsonElement result, string name)
     {
-        if (!result.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Number
+        if (!TryIconProperty(result, name, out var value) || value.ValueKind != JsonValueKind.Number
             || !value.TryGetUInt64(out ulong parsed))
             throw InvalidIcon($"Application icon response field '{name}' is not an unsigned integer.");
         return parsed;
@@ -294,7 +294,7 @@ public sealed partial class NativeCore
 
     private static int IconInt32(JsonElement result, string name)
     {
-        if (!result.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Number
+        if (!TryIconProperty(result, name, out var value) || value.ValueKind != JsonValueKind.Number
             || !value.TryGetInt32(out int parsed))
             throw InvalidIcon($"Application icon response field '{name}' is not an integer.");
         return parsed;
@@ -307,13 +307,21 @@ public sealed partial class NativeCore
 
     private static string? IconOptionalString(JsonElement element, string name)
     {
-        if (!element.TryGetProperty(name, out var value)) return null;
+        if (!TryIconProperty(element, name, out var value)) return null;
         return value.ValueKind switch
         {
             JsonValueKind.Null => null,
             JsonValueKind.String => value.GetString(),
             _ => throw InvalidIcon($"Application icon response field '{name}' is not a string."),
         };
+    }
+
+    // JsonElement.TryGetProperty throws for null/array/scalar/undefined receivers.
+    // Missing or malformed icon fields must keep the invalid_response contract instead.
+    private static bool TryIconProperty(JsonElement element, string name, out JsonElement value)
+    {
+        value = default;
+        return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out value);
     }
 
     private static CoreException InvalidIcon(string message) => new("invalid_response", message);
