@@ -12,6 +12,7 @@ public sealed class SettingsWindow : Window
     private static readonly string[] Languages = ["zh", "en", "tw"];
     private static readonly string[] Themes = ["system", "light", "dark"];
     private readonly NativeCore core;
+    private readonly Border surface = new();
     private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
     private readonly ComboBox language = new() { Header = "语言（配置值）", ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox theme = new() { Header = "外观", ItemsSource = new[] { "跟随系统", "浅色", "深色" }, HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -33,7 +34,7 @@ public sealed class SettingsWindow : Window
     internal OpenerSettingsEditor Openers => openers;
     private readonly Button save = new() { Content = "保存设置", IsEnabled = false };
     private readonly InfoBar message = new() { IsOpen = false, IsClosable = true };
-    private readonly TextBlock revision = new() { Opacity = 0.6 };
+    private readonly TextBlock revision = new() { TextWrapping = TextWrapping.Wrap };
     private bool loading;
     private bool dirty;
     private ulong expectedRevision;
@@ -47,7 +48,9 @@ public sealed class SettingsWindow : Window
         Title = "TieZ · 设置";
         AppWindow.Resize(new SizeInt32(520, 740));
         panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", Opacity = 0.6 });
+        var intro = new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", TextWrapping = TextWrapping.Wrap };
+        intro.Style = revision.Style = (Style)Application.Current.Resources["NativeCaptionStyle"];
+        panel.Children.Add(intro);
         panel.Children.Add(language); panel.Children.Add(theme); panel.Children.Add(hotkey);
         ToolTipService.SetToolTip(hotkey, "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。");
         panel.Children.Add(deduplicate); panel.Children.Add(showSearch); panel.Children.Add(compact);
@@ -60,9 +63,9 @@ public sealed class SettingsWindow : Window
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         actions.Children.Add(save); actions.Children.Add(reload);
         panel.Children.Add(actions); panel.Children.Add(revision); panel.Children.Add(message);
-        panel.ActualThemeChanged += (_, _) => panel.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-            panel.ActualTheme == ElementTheme.Dark ? Microsoft.UI.ColorHelper.FromArgb(255, 30, 30, 30) : Microsoft.UI.ColorHelper.FromArgb(255, 250, 250, 250));
-        Content = new ScrollViewer { Content = panel };
+        surface.Child = new ScrollViewer { Content = panel };
+        surface.Style = (Style)Application.Current.Resources["NativeSettingsSurfaceStyle"];
+        Content = surface;
         language.SelectionChanged += (_, _) => MarkDirty();
         theme.SelectionChanged += (_, _) => MarkDirty();
         deduplicate.Toggled += (_, _) => MarkDirty();
@@ -117,7 +120,7 @@ public sealed class SettingsWindow : Window
             privacy.IsOn = snapshot.Values["app.privacy_protection"] == "true";
             limitEnabled.IsOn = snapshot.Values["app.persistent_limit_enabled"] == "true";
             limit.Text = snapshot.Values["app.persistent_limit"];
-            panel.RequestedTheme = ViewTheme.From(snapshot);
+            panel.RequestedTheme = surface.RequestedTheme = ViewTheme.From(snapshot);
             revision.Text = $"已保存配置版本 {snapshot.Revision}";
             dirty = false; save.IsEnabled = false;
         }
@@ -126,7 +129,7 @@ public sealed class SettingsWindow : Window
 
     private void OnChanged(SettingsSnapshot snapshot)
     {
-        panel.RequestedTheme = ViewTheme.From(snapshot);
+        panel.RequestedTheme = surface.RequestedTheme = ViewTheme.From(snapshot);
         if (dirty && snapshot.Revision != expectedRevision)
         {
             openers.InvalidatePickerChoice();

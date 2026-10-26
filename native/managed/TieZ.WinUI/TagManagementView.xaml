@@ -48,7 +48,8 @@
                 </ListView>
                 <Button x:Name="MoreButton" Grid.Row="1" Content="载入更多标签"/>
             </Grid>
-            <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Disabled">
+            <Border Grid.Column="1" Style="{StaticResource NativeSurfaceStyle}" Padding="12">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                 <StackPanel x:Name="Editor" Spacing="12">
                     <TextBlock x:Name="SelectedName" Text="选择一个标签" FontSize="20" TextWrapping="Wrap"/>
                     <TextBlock x:Name="SelectedCounts" TextWrapping="Wrap"/>
@@ -72,6 +73,7 @@
                                TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>
             </ScrollViewer>
+            </Border>
         </Grid>
     </Grid>
 </UserControl>
