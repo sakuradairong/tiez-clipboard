@@ -6,8 +6,13 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NativeCoreProfile Condition="'$(Configuration)' == 'Release'">release</NativeCoreProfile>
     <NativeCoreProfile Condition="'$(NativeCoreProfile)' == ''">debug</NativeCoreProfile>
+    <NativeCoreTargetDir Condition="'$(NativeCoreTargetDir)' == ''">$(MSBuildThisFileDirectory)../../core/target</NativeCoreTargetDir>
+    <NativeCoreLibrary>$(NativeCoreTargetDir)/$(NativeCoreProfile)/tiez_native_core.dll</NativeCoreLibrary>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="../../core/target/$(NativeCoreProfile)/tiez_native_core.dll" Link="tiez_native_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(NativeCoreLibrary)" Link="tiez_native_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="RequireNativeCoreLibrary" BeforeTargets="PrepareForBuild" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Error Condition="!Exists('$(NativeCoreLibrary)')" Text="Build the matching Rust core first. Native library missing: $(NativeCoreLibrary)" />
+  </Target>
 </Project>

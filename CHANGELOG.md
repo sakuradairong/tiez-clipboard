@@ -34,6 +34,8 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0
 
 ### Added
 
+- 新增原生 Rust→WinUI 发布脚本及隔离资产审计：普通/portable 核心和 Debug/Release 分离，默认同时自包含 .NET 与 Windows App Runtime，验证真实 ABI、刚构建 DLL 哈希与源码收据，并排除 WebView2/旧壳运行资产。修复 unpackaged `dotnet publish` 漏应用 XBF/PRI 导致主窗口无法启动的问题。安装器、真正便携数据路径、升级回滚及干净系统验收仍未完成。
+
 - 原生应用选择器显示真实 Windows 应用图标：绑定目录代际和完整行标识，仅可见容器持有原生位图，两个在途请求包含取消中的实际任务；刷新、筛选、回收、隐藏/最小化、重开与退出释放资源并拒绝迟到结果。单图标失败不影响选择，保留明确占位说明。新增真实窗口专项和完整回归，物理输入、混合 DPI、无障碍及无 WebView2 干净系统验收仍未完成。
 
 - 托管 C# 新增有界应用图标客户端（`NativeCore.AppIcons.cs`）：`GetApplicationIconAsync(目录代际, 精确目录行, 边长, 取消令牌)` 绑定到某一已接受目录代际与该行的 `source_id`/`handler`/`kind`/`unavailable`（含仅推荐行），只发送这四个目录字段，不接受显示名、任意路径或调用方像素，返回只读、受请求边长与 64 KiB 限制的自有 RGBA 结果；无效边长/标识/代际在本地即报 `icons_edge`/`icons_identity`/`icons_unavailable`/`icons_catalog`，权威成员校验仍在 C ABI。准入在首次挂起前计数：最多 2 个并发加 8 个等待，第 11 个显式 `icons_busy`，取消与失败严格归还计数；后端 `icons_busy` 以联动令牌延迟最多重试 8 次，不空转也不无限重试。原生响应逐字段校验（非零 `job_id`、精确目录代际/边长/状态/回显标识、尺寸、恰为 `width*height*4` 且各值 0..255 的 JSON 数字数组），缺失或不符一律 `invalid_response`，不解码 base64、不伪造像素；内部等待不捕获调度器，原生接受后即使令牌已取消仍保留真实任务 ID 以便 `finally` 发送取消，成功返回前再次检查自身令牌与生命周期。同步与异步释放都会先排空已准入图标任务（排队/运行/取消中）再释放原生句柄，且不依赖所有者调度器或请求闸门，并明确区分托管排空与原生关闭 join Shell 工作线程。`--app-icons-only` 专项 102 项真实 DLL 检查（本机目录 394 行、259 候选；桌面 32/16/64/128 边长、6/6 打包应用、仅推荐行接受、真实过期代际与缺失标识拒绝、37 项畸形解析向量、严格准入上限、所有者校验、预取消与排队取消不创建原生任务、有界忙重试、同步/异步排空）与完整托管套件通过；构建零警告错误，窗口回归 16/379/30/139 通过且未加载 WebView2。WinUI 图标呈现、单图标失败界面、物理/DPI 与干净系统验收仍待迁移。

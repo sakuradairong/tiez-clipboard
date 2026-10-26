@@ -715,3 +715,22 @@ The focused icon suite emits a native XAML-tree PNG beside its JSON report (repo
 ## Focus-fixture cleanup checks
 
 `dotnet run --project native/managed/TieZ.Focus.Smoke -- --cleanup-only` runs nine pure ownership checks without opening windows, loading the core or calling focus/clipboard/input APIs. The cleanup guard normalizes trailing separators while preserving volume roots, requires a strict TieZ-focus GUID name under the exact temporary parent, and rejects reparse directories. A real focus attempt still reports exit 77 on this host because Windows refuses setup activation; cleanup no longer masks it with an exception. These tests are not target-focus or paste acceptance.
+
+## Reproducible native publish pipeline
+
+Use PowerShell 7, Rust 1.88+, .NET SDK 10 and the Windows build prerequisites from this repository. These commands build Rust first, then publish the native host without npm, Vite, React or a Tauri build:
+
+```powershell
+pwsh -NoProfile -File native/tools/test-native-publish.ps1
+pwsh -NoProfile -File native/tools/build-native.ps1
+pwsh -NoProfile -File native/tools/build-native.ps1 -Flavor portable
+pwsh -NoProfile -File native/tools/build-native.ps1 -Configuration Debug -FrameworkDependent
+```
+
+Release is the default. Default publication is self-contained for both .NET and Windows App Runtime (not single-file); FrameworkDependent is an explicit development option. The Rust target is explicitly x86_64-pc-windows-msvc, independent of CARGO_BUILD_TARGET. Each flavor has a separate Cargo cache under native/build/target/cargo, managed intermediates are configuration/flavor-isolated, and every publish uses a fresh GUID directory under native/build/target/publish. `NativeCoreTargetDir` points all managed consumers to the just-built Rust library; missing libraries fail explicitly. The script calls the real ABI-version export before unloading, compares the published DLL SHA-256, rejects WebView2/legacy assets and dependency entries, requires application XBF/PRI and the appropriate runtime assets, and checks that a self-contained runtimeconfig does not request an installed .NET framework. native-build.json records commit/dirty state, source-input hashes, configuration/flavor, ABI, tool versions and hashes of staged files; source changes during the build fail the receipt. It does not contain application records or secrets.
+
+An initial dotnet publish compiled but could not create MainWindow: the unpackaged SDK had omitted the application's six XBF files and TieZ.WinUI.pri. The project now explicitly includes those generated output items in publish, and the audit rejects missing resources. Ordinary and portable-core Release outputs each stage 515 files before their manifest, pass asset checks and actual 139-phase full-window/115-assertion icon suites. Module-path inspection confirms coreclr.dll, Microsoft.UI.Xaml.dll and tiez_native_core.dll load from each publish directory. Debug/framework-dependent publication stages 50 files and passes its real icon window suite (115 assertions in the final run). The isolated audit has 11 checks, including stale DLL, browser dependencies, XAML resources, runtime assets and wrong runtimeconfig rejection. Existing default developer builds still pass with zero managed warnings/errors.
+
+**Deployment limits:** portable selects the Rust portable encryption feature only; the current host still opens its isolated prototype data path, so this is not yet a finished portable distribution. There is no new installer, updater or default-entry switch. Actual minimum Windows/VC++ runtime support, install/upgrade/uninstall/rollback, real-data migration and a clean Windows environment without .NET/WinAppRuntime/WebView2 remain unverified. This development host has those runtimes installed; local module paths and asset checks do not replace clean-system acceptance. No production dependency or legacy fallback was deleted.
+
+A later full-window repeat deterministically exposed a genuine preview ownership defect: queued old row pointer events could replace/cancel a new explicit toolbar preview. The controller now owns the explicit/hover distinction; privacy/revision/scroll/blur/close guards are retained. The regression first failed before the fix, then four consecutive 139-phase Release runs passed. Subsequent full runs from both final self-contained publish directories pass 139 phases; their icon suites and the Debug/framework-dependent icon suite each pass 115 assertions on this host. Other physical input/environment gates remain open.

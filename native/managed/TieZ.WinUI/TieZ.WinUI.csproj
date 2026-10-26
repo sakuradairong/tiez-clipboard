@@ -19,4 +19,17 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.8249" />
     <ProjectReference Include="../TieZ.Core/TieZ.Core.csproj" />
   </ItemGroup>
+  <!-- The unpackaged WinUI SDK copies these to build output, not dotnet publish. -->
+  <Target Name="PublishNativeXamlResources" AfterTargets="ComputeFilesToPublish">
+    <Error Condition="'@(GeneratedXamlDest)' == ''" Text="WinUI generated no XAML resource files to publish." />
+    <Error Condition="!Exists('$(TargetDir)$(AssemblyName).pri')" Text="WinUI application PRI is missing from build output." />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(GeneratedXamlDest)" Exclude="@(ResolvedFileToPublish)">
+        <RelativePath>$([MSBuild]::MakeRelative('$(TargetDir)', '%(FullPath)'))</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)$(AssemblyName).pri" Exclude="@(ResolvedFileToPublish)"
+                             RelativePath="$(AssemblyName).pri" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 </Project>
