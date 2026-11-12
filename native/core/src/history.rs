@@ -1048,6 +1048,32 @@ impl HistoryService {
         }
         Ok(self.committed(revision, id, None, Vec::new(), true))
     }
+    /// Legacy quick paste addresses the merged pinned-first list and ignores an unpinned slot.
+    pub fn quick_paste_target(&self, index: usize) -> CoreResult<Option<(i64, String)>> {
+        if index > 9 {
+            return Err(CoreError::new(
+                "invalid_request",
+                "Quick paste index must be 0..=9",
+            ));
+        }
+        let mut items = self
+            .repository
+            .get_history((index + 1) as i32, 0, None)
+            .map_err(failure)?;
+        items.extend(self.session.iter().cloned());
+        items.sort_by(|a, b| {
+            b.is_pinned
+                .cmp(&a.is_pinned)
+                .then_with(|| b.pinned_order.cmp(&a.pinned_order))
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        items.truncate(index + 1);
+        Ok(items
+            .get(index)
+            .filter(|entry| entry.is_pinned)
+            .map(|entry| (entry.id, entry.content_type.clone())))
+    }
 }
 
 #[cfg(test)]
@@ -1063,6 +1089,17 @@ mod tests {
         s.add_manual("text".into(), text.into(), None, Vec::new())
             .unwrap()
             .id
+    }
+    #[test]
+    fn quick_paste_uses_only_the_pinned_slot_at_that_index() {
+        let mut history = service();
+        let _older = add(&mut history, "one");
+        let newer = add(&mut history, "two");
+        assert!(history.quick_paste_target(0).unwrap().is_none());
+        history.pin(newer, true).unwrap();
+        assert_eq!(history.quick_paste_target(0).unwrap().unwrap().0, newer);
+        assert!(history.quick_paste_target(1).unwrap().is_none());
+        assert_eq!(history.quick_paste_target(10).unwrap_err().code, "invalid_request");
     }
     fn processed(text: &str) -> ClipboardEntry {
         ClipboardEntry {

@@ -270,6 +270,171 @@ impl<B: Backend> Bindings<B> {
         })
     }
 }
+/// Modifier+digit chords for pinned quick paste. `None` means the feature is off.
+/// Top-row and numpad digits share an index: 1-9 are 0-8 and 0 is 9, matching the legacy hook.
+pub fn quick_paste_modifier(value: &str) -> Result<Option<u32>, &'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disabled" => Ok(None),
+        "alt" => Ok(Some(1)),
+        "ctrl" => Ok(Some(2)),
+        "shift" => Ok(Some(4)),
+        "win" => Ok(Some(8)),
+        _ => Err("invalid_value"),
+    }
+}
+const QUICK_PASTE_KEYS: [(u8, u32); 20] = [
+    (0, 0x31),
+    (0, 0x61),
+    (1, 0x32),
+    (1, 0x62),
+    (2, 0x33),
+    (2, 0x63),
+    (3, 0x34),
+    (3, 0x64),
+    (4, 0x35),
+    (4, 0x65),
+    (5, 0x36),
+    (5, 0x66),
+    (6, 0x37),
+    (6, 0x67),
+    (7, 0x38),
+    (7, 0x68),
+    (8, 0x39),
+    (8, 0x69),
+    (9, 0x30),
+    (9, 0x60),
+];
+struct QuickSlot {
+    id: i32,
+    index: u8,
+    chord: Chord,
+}
+struct QuickPending {
+    token: u64,
+    same: bool,
+    next: Vec<QuickSlot>,
+}
+pub(crate) struct QuickPasteSet<B: Backend> {
+    backend: B,
+    current: Vec<QuickSlot>,
+    pending: Option<QuickPending>,
+    next_base: i32,
+    token: u64,
+    pub error: Option<&'static str>,
+}
+impl<B: Backend> QuickPasteSet<B> {
+    pub fn new(backend: B) -> Self {
+        Self {
+            backend,
+            current: Vec::new(),
+            pending: None,
+            next_base: 0x6100,
+            token: 0,
+            error: None,
+        }
+    }
+    pub fn prepare(&mut self, modifier: Option<u32>) -> Result<u64, &'static str> {
+        if self.pending.is_some() {
+            return Err("hotkey_update_pending");
+        }
+        let next_token = self
+            .token
+            .checked_add(1)
+            .ok_or("hotkey_generation_exhausted")?;
+        let desired: Vec<Chord> = modifier
+            .map(|modifiers| {
+                QUICK_PASTE_KEYS
+                    .into_iter()
+                    .map(|(_, key)| Chord { modifiers, key })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let same = self
+            .current
+            .iter()
+            .map(|slot| slot.chord)
+            .eq(desired.iter().copied());
+        let next = if same {
+            Vec::new()
+        } else {
+            if self.next_base > 0x6F00 {
+                return Err("hotkey_restart_required");
+            }
+            let mut registered: Vec<QuickSlot> = Vec::new();
+            for (offset, ((index, _), chord)) in QUICK_PASTE_KEYS.iter().zip(desired).enumerate() {
+                let id = self.next_base + offset as i32;
+                if let Err(code) = self.backend.register(id, chord) {
+                    for slot in registered.iter().rev() {
+                        let _ = self.backend.unregister(slot.id);
+                    }
+                    self.error = Some(code);
+                    return Err(code);
+                }
+                registered.push(QuickSlot {
+                    id,
+                    index: *index,
+                    chord,
+                });
+            }
+            registered
+        };
+        self.token = next_token;
+        self.pending = Some(QuickPending {
+            token: next_token,
+            same,
+            next,
+        });
+        self.error = None;
+        Ok(next_token)
+    }
+    pub fn resolve(&mut self, token: u64, commit: bool) -> Result<(), &'static str> {
+        if self
+            .pending
+            .as_ref()
+            .is_none_or(|pending| pending.token != token)
+        {
+            return Err("hotkey_stale_transaction");
+        }
+        let pending = self.pending.take().unwrap();
+        if pending.same {
+            return Ok(());
+        }
+        let obsolete = if commit {
+            self.next_base += 20;
+            std::mem::replace(&mut self.current, pending.next)
+        } else {
+            pending.next
+        };
+        let mut release_error = None;
+        for slot in obsolete {
+            if let Err(code) = self.backend.unregister(slot.id) {
+                release_error = Some(code);
+            }
+        }
+        self.error = release_error;
+        release_error.map_or(Ok(()), Err)
+    }
+    pub fn accepts(&self, id: usize, packed: isize) -> Option<u8> {
+        self.current.iter().find_map(|slot| {
+            (slot.id as usize == id
+                && slot.chord.modifiers == packed as u32 & 0xffff
+                && slot.chord.key == (packed as u32 >> 16) & 0xffff)
+                .then_some(slot.index)
+        })
+    }
+}
+impl<B: Backend> Drop for QuickPasteSet<B> {
+    fn drop(&mut self) {
+        for slot in self.current.drain(..).chain(
+            self.pending
+                .take()
+                .into_iter()
+                .flat_map(|pending| pending.next),
+        ) {
+            let _ = self.backend.unregister(slot.id);
+        }
+    }
+}
 impl<B: Backend> Drop for Bindings<B> {
     fn drop(&mut self) {
         if let Some(binding) = self.current.take() {
@@ -411,5 +576,30 @@ mod tests {
             Err("hotkey_restart_required")
         );
         assert_eq!(bindings.retired.len(), 1);
+    }
+    #[test]
+    fn quick_paste_registers_both_digit_rows_and_rolls_back_a_conflict() {
+        assert_eq!(quick_paste_modifier(" Ctrl ").unwrap(), Some(2));
+        assert_eq!(quick_paste_modifier("disabled").unwrap(), None);
+        assert!(quick_paste_modifier("ctrl+shift").is_err());
+        let mut slots = QuickPasteSet::new(Fake::default());
+        let enabled = slots.prepare(Some(2)).unwrap();
+        assert!(slots.accepts(0x6100, (0x31 << 16) | 2).is_none());
+        slots.resolve(enabled, true).unwrap();
+        assert_eq!(slots.accepts(0x6100, (0x31 << 16) | 2), Some(0));
+        assert_eq!(slots.accepts(0x6113, (0x60 << 16) | 2), Some(9));
+        assert_eq!(slots.backend.registered.len(), 20);
+        slots.backend.conflict = true;
+        assert_eq!(slots.prepare(Some(1)).unwrap_err(), "hotkey_conflict");
+        assert_eq!(slots.backend.registered.len(), 20);
+        assert_eq!(slots.accepts(0x6100, (0x31 << 16) | 2), Some(0));
+        slots.backend.conflict = false;
+        let replacement = slots.prepare(Some(1)).unwrap();
+        slots.resolve(replacement, false).unwrap();
+        assert_eq!(slots.backend.registered.len(), 20);
+        assert!(slots.accepts(0x6120, (0x31 << 16) | 1).is_none());
+        let off = slots.prepare(None).unwrap();
+        slots.resolve(off, true).unwrap();
+        assert!(slots.backend.registered.is_empty());
     }
 }

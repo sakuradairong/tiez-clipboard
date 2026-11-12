@@ -14,6 +14,9 @@ internal sealed class SettingsStrings
     internal required string ThemeDark { get; init; }
     internal required string HotkeyHeader { get; init; }
     internal required string HotkeyHint { get; init; }
+    internal required string QuickPasteHeader { get; init; }
+    internal required string QuickPasteHint { get; init; }
+    internal required string QuickPasteOff { get; init; }
     internal required string Deduplicate { get; init; }
     internal required string ShowSearch { get; init; }
     internal required string Compact { get; init; }
@@ -48,6 +51,9 @@ internal sealed class SettingsStrings
         ThemeDark = "深色",
         HotkeyHeader = "主窗口快捷键（留空禁用）",
         HotkeyHint = "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。",
+        QuickPasteHeader = "数字快捷粘贴",
+        QuickPasteHint = "用修饰键加 1 到 9 粘贴对应位置的置顶条目，0 是第 10 条。默认关闭。",
+        QuickPasteOff = "关闭",
         Deduplicate = "自动去重",
         ShowSearch = "显示主窗口搜索框",
         Compact = "紧凑列表（鼠标悬停 1 秒显示预览）",
@@ -83,6 +89,9 @@ internal sealed class SettingsStrings
         ThemeDark = "深色",
         HotkeyHeader = "主視窗快速鍵（留空停用）",
         HotkeyHint = "Win+V 可能被 Windows 佔用。支援鍵盤組合；留空可停用。",
+        QuickPasteHeader = "數字快速貼上",
+        QuickPasteHint = "用修飾鍵加 1 到 9 貼上對應位置的置頂項目，0 是第 10 筆。預設關閉。",
+        QuickPasteOff = "關閉",
         Deduplicate = "自動去重",
         ShowSearch = "顯示主視窗搜尋方塊",
         Compact = "精簡清單（滑鼠停留 1 秒顯示預覽）",
@@ -118,6 +127,9 @@ internal sealed class SettingsStrings
         ThemeDark = "Dark",
         HotkeyHeader = "Main window shortcut (leave empty to disable)",
         HotkeyHint = "Win+V may be taken by Windows. Keyboard combinations are supported; leave empty to disable.",
+        QuickPasteHeader = "Number quick paste",
+        QuickPasteHint = "Modifier plus 1-9 pastes the pinned item at that position. 0 is the 10th. Off by default.",
+        QuickPasteOff = "Off",
         Deduplicate = "Remove duplicates automatically",
         ShowSearch = "Show the search box in the main window",
         Compact = "Compact list (hover for 1 second to preview)",

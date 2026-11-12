@@ -20,6 +20,7 @@ internal static class PopupStrings
     internal static string NoTarget => Text("没有可用的粘贴目标。请回到目标应用，再用快捷键唤出。也可从条目菜单选择仅复制。", "沒有可用的貼上目標。請回到目標應用程式，再用快速鍵叫出。也可從項目選單選擇僅複製。", "No paste target. Return to the target app and use the hotkey, or choose Copy from the item menu.");
     internal static string Changed => Text("记录已变化，请刷新后重试。", "記錄已變更，請重新整理後再試。", "History changed. Refresh and try again.");
     internal static string Failed => Text("粘贴未完成。请回到目标应用后重新唤出。", "貼上未完成。請回到目標應用程式後重新叫出。", "Paste did not complete. Return to the target app and reopen.");
+    internal static string NotPinned => Text("这个位置没有置顶条目。", "這個位置沒有置頂項目。", "That position has no pinned item.");
     internal static string Paused => Text("采集已暂停", "擷取已暫停", "Capture paused");
     internal static string Sent => Text("已提交粘贴请求", "已提交貼上請求", "Paste request sent");
 }

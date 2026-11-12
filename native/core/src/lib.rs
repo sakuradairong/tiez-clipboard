@@ -16,7 +16,7 @@ pub use settings::{CoreError, CoreResult, SettingsChange, SettingsService, Setti
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{c_char, CString};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{atomic::AtomicBool, Arc, Mutex, OnceLock};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 fn default_true() -> bool {
@@ -38,6 +38,8 @@ struct CoreRuntime {
     opens: Arc<Mutex<external_open::OpenService>>,
     target: tiez_native_platform::target::TargetTracker,
     shell: tiez_native_platform::shell::ShellService,
+    /// Set when edge docking exists. Quick paste reads it; nothing sets it yet.
+    edge_hidden: AtomicBool,
 }
 static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
 // ABI fixtures share the production singleton, but keep their own concurrent worker checks.
@@ -235,6 +237,10 @@ enum Request {
         #[serde(default)]
         allow_sensitive: bool,
     },
+    QuickPaste {
+        handle: u64,
+        index: u8,
+    },
     ShellStart {
         handle: u64,
         show_tray: bool,
@@ -319,6 +325,7 @@ impl Request {
             | Self::AppsIconCancel { handle, .. }
             | Self::ClipboardCopy { handle, .. }
             | Self::ClipboardPaste { handle, .. }
+            | Self::QuickPaste { handle, .. }
             | Self::ShellStart { handle, .. }
             | Self::ShellPoll { handle, .. }
             | Self::ShellStop { handle, .. }
@@ -386,6 +393,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     opens,
                     target: Default::default(),
                     shell: Default::default(),
+                    edge_hidden: AtomicBool::new(false),
                 },
             );
             Ok(json!({ "handle": handle, "snapshot": snapshot }))
@@ -420,20 +428,37 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 service
                     .settings
                     .update_with(expected_revision, patch, |current, next| {
-                        if current.values["app.hotkey"] != next.values["app.hotkey"]
-                            && shell.status().running
+                        let running = shell.status().running;
+                        let hotkey = if current.values["app.hotkey"] != next.values["app.hotkey"]
+                            && running
                         {
-                            shell
-                                .prepare_hotkey(&next.values["app.hotkey"])
-                                .map(Some)
-                                .map_err(hotkey_error)
+                            Some(
+                                shell
+                                    .prepare_hotkey(&next.values["app.hotkey"])
+                                    .map_err(hotkey_error)?,
+                            )
                         } else {
-                            Ok(None)
-                        }
+                            None
+                        };
+                        let quick_paste = if current.values["app.quick_paste_modifier"]
+                            != next.values["app.quick_paste_modifier"]
+                            && running
+                        {
+                            Some(
+                                shell
+                                    .prepare_quick_paste(&next.values["app.quick_paste_modifier"])
+                                    .map_err(hotkey_error)?,
+                            )
+                        } else {
+                            None
+                        };
+                        Ok((hotkey, quick_paste))
                     })?;
-            let effect_error = prepared
-                .flatten()
-                .and_then(|prepared| prepared.commit().err());
+            let effect_error = prepared.and_then(|(hotkey, quick_paste)| {
+                let hotkey_error = hotkey.and_then(|prepared| prepared.commit().err());
+                let quick_paste_error = quick_paste.and_then(|prepared| prepared.commit().err());
+                hotkey_error.or(quick_paste_error)
+            });
             service.capture.apply_settings(&change.snapshot);
             let mut result = serde_json::to_value(change).expect("serializable settings");
             result["side_effect_error"] = json!(effect_error);
@@ -799,6 +824,10 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 expected_revision
             )?))
         }
+        Request::QuickPaste { handle, index } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(paste::quick_paste(service, index)?))
+        }
         Request::ShellStart {
             handle,
             show_tray,
@@ -815,6 +844,12 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 if let Ok(prepared) = service.shell.prepare_hotkey(&snapshot.values["app.hotkey"]) {
                     let _ = prepared.commit();
                 }
+                if let Ok(prepared) = service
+                    .shell
+                    .prepare_quick_paste(&snapshot.values["app.quick_paste_modifier"])
+                {
+                    let _ = prepared.commit();
+                }
             }
             Ok(shell_status(service.shell.status()))
         }
@@ -826,10 +861,11 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .drain()
                 .into_iter()
                 .map(|action| match action {
-                    ShellAction::ShowMain => "show_main",
-                    ShellAction::OpenSettings => "open_settings",
-                    ShellAction::Quit => "quit",
-                    ShellAction::ToggleMain => "toggle_main",
+                    ShellAction::ShowMain => "show_main".to_string(),
+                    ShellAction::OpenSettings => "open_settings".to_string(),
+                    ShellAction::Quit => "quit".to_string(),
+                    ShellAction::ToggleMain => "toggle_main".to_string(),
+                    ShellAction::QuickPaste(index) => format!("quick_paste:{index}"),
                 })
                 .collect();
             Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))

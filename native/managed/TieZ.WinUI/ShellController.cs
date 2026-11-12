@@ -78,6 +78,13 @@ internal sealed class ShellController : IDisposable
                     case "toggle_main": if (popup is not null) await popup.ToggleAsync(); else main.ToggleMain(); break;
                     case "open_settings": main.OpenSettings(); break;
                     case "quit": _ = main.Quit(); return;
+                    default:
+                        if (action.StartsWith("quick_paste:", StringComparison.Ordinal)
+                            && byte.TryParse(action.AsSpan("quick_paste:".Length), out byte index))
+                        {
+                            await PastePinnedAsync(index);
+                        }
+                        break;
                 }
             }
         }
@@ -93,6 +100,24 @@ internal sealed class ShellController : IDisposable
             }
         }
         finally { polling = false; }
+    }
+    private async Task PastePinnedAsync(byte index)
+    {
+        try
+        {
+            var result = await core.QuickPasteAsync(index, lifetime.Token);
+            if (disposed || result.Pasted || popup is null) return;
+            popup.SetMessage(result.Reason == "not_pinned" ? PopupStrings.NotPinned : PopupStrings.Failed);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (CoreException error)
+        {
+            if (disposed) return;
+            string message = error.Code == "no_target" ? PopupStrings.NoTarget : PopupStrings.Failed;
+            if (popup is not null) popup.SetMessage(message);
+            else main.SetShellUnavailable(message);
+        }
     }
     public void Dispose()
     {

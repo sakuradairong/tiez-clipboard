@@ -1,5 +1,5 @@
 //! One owned native tray/message thread. Actions are bounded/coalesced host requests.
-use crate::hotkey::{Bindings, Shortcut, WindowsBackend};
+use crate::hotkey::{Bindings, QuickPasteSet, Shortcut, WindowsBackend};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{
@@ -28,6 +28,7 @@ pub enum ShellAction {
     OpenSettings,
     Quit,
     ToggleMain,
+    QuickPaste(u8),
 }
 #[derive(Default)]
 struct State {
@@ -65,6 +66,16 @@ impl State {
             self.pending.push_back(action);
         }
     }
+    fn queue_quick_paste(&mut self, index: u8) {
+        if self.pending.front() == Some(&ShellAction::Quit) {
+            return;
+        }
+        if self.pending.len() == 32 {
+            self.pending.pop_front();
+            self.last_error = Some("shell_action_overflow");
+        }
+        self.pending.push_back(ShellAction::QuickPaste(index));
+    }
     fn drain(&mut self) -> Vec<ShellAction> {
         self.pending.drain(..).collect()
     }
@@ -78,6 +89,7 @@ struct Context {
     icon: HICON,
     commands: RefCell<mpsc::Receiver<Command>>,
     hotkeys: RefCell<Option<Bindings<WindowsBackend>>>,
+    quick_paste: RefCell<Option<QuickPasteSet<WindowsBackend>>>,
 }
 thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
 struct ResetContext;
@@ -189,6 +201,19 @@ impl ShellService {
         let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
         let token = endpoint.call(CommandKind::Prepare(shortcut))?;
         Ok(PreparedHotkey {
+            endpoint,
+            token,
+            finished: false,
+        })
+    }
+    pub fn prepare_quick_paste(&self, value: &str) -> Result<PreparedQuickPaste, &'static str> {
+        let modifier = crate::hotkey::quick_paste_modifier(value)?;
+        if !self.status().running {
+            return Err("shell_stopped");
+        }
+        let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
+        let token = endpoint.call(CommandKind::PrepareQuickPaste(modifier))?;
+        Ok(PreparedQuickPaste {
             endpoint,
             token,
             finished: false,
@@ -342,6 +367,7 @@ fn run(
             icon,
             commands: RefCell::new(commands),
             hotkeys: RefCell::new(None),
+            quick_paste: RefCell::new(None),
         })
     });
     let _reset = ResetContext;
@@ -366,6 +392,8 @@ fn run(
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
             *context.hotkeys.borrow_mut() = Some(Bindings::new(WindowsBackend(resources.window)));
+            *context.quick_paste.borrow_mut() =
+                Some(QuickPasteSet::new(WindowsBackend(resources.window)));
         }
     });
     shared_window.store(resources.window.0 as isize, Ordering::Release);
@@ -461,6 +489,19 @@ unsafe extern "system" fn window_proc(
                 return true;
             }
             if message == WM_HOTKEY {
+                let quick = context.quick_paste.try_borrow().ok().and_then(|slots| {
+                    slots
+                        .as_ref()
+                        .and_then(|slots| slots.accepts(wparam.0, lparam.0))
+                });
+                if let Some(index) = quick {
+                    context
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .queue_quick_paste(index);
+                    return true;
+                }
                 let accepted = context.hotkeys.try_borrow().ok().is_some_and(|hotkeys| {
                     hotkeys
                         .as_ref()
@@ -664,6 +705,8 @@ mod tests {
 enum CommandKind {
     Prepare(Shortcut),
     Resolve { token: u64, commit: bool },
+    PrepareQuickPaste(Option<u32>),
+    ResolveQuickPaste { token: u64, commit: bool },
 }
 struct Command {
     kind: CommandKind,
@@ -712,9 +755,42 @@ impl Drop for PreparedHotkey {
         }
     }
 }
+pub struct PreparedQuickPaste {
+    endpoint: Arc<Endpoint>,
+    token: u64,
+    finished: bool,
+}
+impl PreparedQuickPaste {
+    pub fn commit(mut self) -> Result<(), &'static str> {
+        self.finished = true;
+        self.endpoint
+            .call(CommandKind::ResolveQuickPaste {
+                token: self.token,
+                commit: true,
+            })
+            .map(|_| ())
+    }
+}
+impl Drop for PreparedQuickPaste {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.endpoint.call(CommandKind::ResolveQuickPaste {
+                token: self.token,
+                commit: false,
+            });
+        }
+    }
+}
 fn handle_commands(context: &Context) {
     let commands: Vec<_> = context.commands.borrow_mut().try_iter().take(8).collect();
     for command in commands {
+        if matches!(
+            command.kind,
+            CommandKind::PrepareQuickPaste(_) | CommandKind::ResolveQuickPaste { .. }
+        ) {
+            handle_quick_paste(context, command);
+            continue;
+        }
         let Ok(mut hotkeys) = context.hotkeys.try_borrow_mut() else {
             let _ = command.reply.send(Err("hotkey_update_pending"));
             continue;
@@ -738,6 +814,9 @@ fn handle_commands(context: &Context) {
                 }
                 result
             }
+            CommandKind::PrepareQuickPaste(_) | CommandKind::ResolveQuickPaste { .. } => {
+                unreachable!("quick paste is handled above")
+            }
         };
         // If the preparer's response receiver disappeared, roll back its provisional registration.
         let prepared_token = if preparing {
@@ -757,6 +836,47 @@ fn handle_commands(context: &Context) {
                 state.hotkey_active = bindings.active();
                 state.hotkey_error = bindings.error;
             }
+        }
+    }
+}
+fn handle_quick_paste(context: &Context, command: Command) {
+    let Ok(mut slots) = context.quick_paste.try_borrow_mut() else {
+        let _ = command.reply.send(Err("hotkey_update_pending"));
+        return;
+    };
+    let Some(slots) = slots.as_mut() else {
+        let _ = command.reply.send(Err("shell_stopped"));
+        return;
+    };
+    let preparing = matches!(command.kind, CommandKind::PrepareQuickPaste(_));
+    let result = match command.kind {
+        CommandKind::PrepareQuickPaste(modifier) => slots.prepare(modifier),
+        CommandKind::ResolveQuickPaste { token, commit } => {
+            let result = slots.resolve(token, commit).map(|_| 0);
+            if commit {
+                context
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .pending
+                    .retain(|action| !matches!(action, ShellAction::QuickPaste(_)));
+            }
+            result
+        }
+        _ => unreachable!("only quick-paste commands reach this function"),
+    };
+    let prepared_token = if preparing {
+        result.as_ref().ok().copied()
+    } else {
+        None
+    };
+    if slots.error.is_some() {
+        let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.hotkey_error = slots.error;
+    }
+    if command.reply.send(result).is_err() {
+        if let Some(token) = prepared_token {
+            let _ = slots.resolve(token, false);
         }
     }
 }

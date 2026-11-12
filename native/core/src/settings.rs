@@ -68,6 +68,8 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.url", ""),
         ("app.link", ""),
         ("app.hotkey", "Alt+C"),
+        ("app.quick_paste_modifier", "disabled"),
+        ("app.quick_paste_when_edge_hidden", "true"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
@@ -118,6 +120,10 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
         "app.hotkey" => tiez_native_platform::hotkey::Shortcut::parse(value).is_ok(),
+        "app.quick_paste_modifier" => {
+            tiez_native_platform::hotkey::quick_paste_modifier(value).is_ok()
+        }
+        "app.quick_paste_when_edge_hidden" => matches!(value, "true" | "false"),
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
         "app.history_view_mode" | "app.tag_history_view_mode" => matches!(value, "list" | "grid"),
         "app.deduplicate"
@@ -180,6 +186,10 @@ fn read_snapshot(connection: &Connection) -> CoreResult<SettingsSnapshot> {
         {
             // Legacy selections must remain visible/fixable even if no longer launchable.
             // Validate only new opener edits; opening itself parses and validates the selection.
+            // An unrecognized quick-paste modifier keeps the disabled default and is not rewritten.
+            if key == "app.quick_paste_modifier" && validate(key, &stored).is_err() {
+                continue;
+            }
             if !is_opener_key(key) {
                 validate(key, &stored)?;
             }
@@ -350,6 +360,24 @@ mod tests {
         let legacy_hotkey: String = legacy.query_row(
             "SELECT value FROM settings WHERE key='app.hotkey'", [], |row| row.get(0)).unwrap();
         assert_eq!(snapshot.values["app.hotkey"], legacy_hotkey);
+    }
+    #[test]
+    fn quick_paste_modifier_defaults_without_writes_and_keeps_invalid_legacy_rows() {
+        let mut service = service();
+        let writes = service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap();
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.values["app.quick_paste_modifier"], "disabled");
+        assert_eq!(snapshot.values["app.quick_paste_when_edge_hidden"], "true");
+        assert_eq!(snapshot.revision, 0);
+        assert!(!service.update(0, patch("app.quick_paste_modifier", "disabled")).unwrap().changed);
+        assert_eq!(service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap(), writes);
+        assert_eq!(service.update(0, patch("app.quick_paste_modifier", "ctrl")).unwrap().snapshot.values["app.quick_paste_modifier"], "ctrl");
+        assert!(service.update(1, patch("app.quick_paste_modifier", "ctrl+alt")).is_err());
+        assert_eq!(service.snapshot().unwrap().values["app.quick_paste_modifier"], "ctrl");
+        service.connection.execute("INSERT INTO settings (key, value) VALUES ('app.quick_paste_modifier', 'nope') ON CONFLICT(key) DO UPDATE SET value = excluded.value", []).unwrap();
+        let reloaded = service.snapshot().unwrap();
+        assert_eq!(reloaded.values["app.quick_paste_modifier"], "disabled");
+        assert_eq!(service.connection.query_row("SELECT value FROM settings WHERE key='app.quick_paste_modifier'", [], |row| row.get::<_, String>(0)).unwrap(), "nope");
     }
 
     #[test]
@@ -684,7 +712,7 @@ mod effect_tests {
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.values.len(), 26);
+        assert_eq!(snapshot.values.len(), 28);
         assert_eq!(snapshot.values["app.text"], "old unsupported selection");
         assert!(
             !service

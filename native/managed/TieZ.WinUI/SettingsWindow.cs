@@ -11,6 +11,7 @@ public sealed class SettingsWindow : Window
 {
     private static readonly string[] Languages = ["zh", "en", "tw"];
     private static readonly string[] Themes = ["system", "light", "dark"];
+    private static readonly string[] QuickPasteModifiers = ["disabled", "ctrl", "alt", "shift", "win"];
     private readonly NativeCore core;
     private readonly Border surface = new();
     private readonly StackPanel panel = new() { Spacing = 12, Padding = new Thickness(20, 16, 20, 20) };
@@ -47,6 +48,17 @@ public sealed class SettingsWindow : Window
         finally { applying = false; }
         hotkey.Header = text.HotkeyHeader;
         ToolTipService.SetToolTip(hotkey, text.HotkeyHint);
+        var quickPasteIndex = quickPaste.SelectedIndex;
+        quickPaste.Header = text.QuickPasteHeader;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(quickPaste, text.QuickPasteHeader);
+        ToolTipService.SetToolTip(quickPaste, text.QuickPasteHint);
+        applying = true;
+        try
+        {
+            quickPaste.ItemsSource = new[] { text.QuickPasteOff, "Ctrl", "Alt", "Shift", "Win" };
+            quickPaste.SelectedIndex = Math.Max(0, quickPasteIndex);
+        }
+        finally { applying = false; }
         deduplicate.Header = text.Deduplicate;
         showSearch.Header = text.ShowSearch;
         compact.Header = text.Compact;
@@ -73,6 +85,7 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox language = new() { ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox theme = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox hotkey = new() { PlaceholderText = "Ctrl+Alt+V" };
+    private readonly ComboBox quickPaste = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ToggleSwitch deduplicate = new();
     private readonly ToggleSwitch showSearch = new();
     private readonly ToggleSwitch compact = new();
@@ -109,7 +122,7 @@ public sealed class SettingsWindow : Window
         intro = new TextBlock { TextWrapping = TextWrapping.Wrap };
         intro.Style = revision.Style = (Style)Application.Current.Resources["NativeCaptionStyle"];
         panel.Children.Add(intro);
-        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, ToggleRow(showSearch), ToggleRow(compact)));
+        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, quickPaste, ToggleRow(showSearch), ToggleRow(compact)));
         ToolTipService.SetToolTip(hotkey, SettingsStrings.Current.HotkeyHint);
         panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(privacy)));
         panel.Children.Add(SettingsCard(storageHeading, ToggleRow(persistent), ToggleRow(limitEnabled), limit));
@@ -135,6 +148,7 @@ public sealed class SettingsWindow : Window
         Content = surface;
         language.SelectionChanged += (_, _) => MarkDirty();
         theme.SelectionChanged += (_, _) => MarkDirty();
+        quickPaste.SelectionChanged += (_, _) => MarkDirty();
         deduplicate.Toggled += (_, _) => MarkDirty();
         showSearch.Toggled += (_, _) => MarkDirty();
         compact.Toggled += (_, _) => MarkDirty();
@@ -203,6 +217,7 @@ public sealed class SettingsWindow : Window
             loadedSnapshot = snapshot;
             openers.Bind(snapshot);
             hotkey.Text = snapshot.Values["app.hotkey"];
+            quickPaste.SelectedIndex = Math.Max(0, Array.IndexOf(QuickPasteModifiers, snapshot.Values["app.quick_paste_modifier"]));
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
             deduplicate.IsOn = snapshot.Values["app.deduplicate"] == "true";
@@ -218,6 +233,7 @@ public sealed class SettingsWindow : Window
             revisionValue = snapshot.Revision;
         revision.Text = string.Format(SettingsStrings.Current.RevisionFormat, revisionValue);
         ApplyLanguage();
+            quickPaste.SelectedIndex = Math.Max(0, Array.IndexOf(QuickPasteModifiers, snapshot.Values["app.quick_paste_modifier"]));
             dirty = false; save.IsEnabled = false;
         }
         finally { loading = false; }
@@ -240,6 +256,7 @@ public sealed class SettingsWindow : Window
         var values = new Dictionary<string, string>
         {
             ["app.hotkey"] = hotkey.Text,
+            ["app.quick_paste_modifier"] = QuickPasteModifiers[Math.Clamp(quickPaste.SelectedIndex, 0, QuickPasteModifiers.Length - 1)],
             ["app.language"] = Languages[Math.Clamp(language.SelectedIndex, 0, Languages.Length - 1)],
             ["app.color_mode"] = Themes[Math.Clamp(theme.SelectedIndex, 0, Themes.Length - 1)],
             ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
