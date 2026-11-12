@@ -29,6 +29,7 @@ pub enum ShellAction {
     Quit,
     ToggleMain,
     QuickPaste(u8),
+    FocusSearch,
 }
 #[derive(Default)]
 struct State {
@@ -76,6 +77,19 @@ impl State {
         }
         self.pending.push_back(ShellAction::QuickPaste(index));
     }
+    fn queue_focus_search(&mut self) {
+        if self.pending.front() == Some(&ShellAction::Quit) {
+            return;
+        }
+        if self.pending.back() == Some(&ShellAction::FocusSearch) {
+            return;
+        }
+        if self.pending.len() == 32 {
+            self.pending.pop_front();
+            self.last_error = Some("shell_action_overflow");
+        }
+        self.pending.push_back(ShellAction::FocusSearch);
+    }
     fn drain(&mut self) -> Vec<ShellAction> {
         self.pending.drain(..).collect()
     }
@@ -89,6 +103,7 @@ struct Context {
     icon: HICON,
     commands: RefCell<mpsc::Receiver<Command>>,
     hotkeys: RefCell<Option<Bindings<WindowsBackend>>>,
+    search: RefCell<Option<Bindings<WindowsBackend>>>,
     quick_paste: RefCell<Option<QuickPasteSet<WindowsBackend>>>,
 }
 thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
@@ -214,6 +229,19 @@ impl ShellService {
         let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
         let token = endpoint.call(CommandKind::PrepareQuickPaste(modifier))?;
         Ok(PreparedQuickPaste {
+            endpoint,
+            token,
+            finished: false,
+        })
+    }
+    pub fn prepare_search_hotkey(&self, value: &str) -> Result<PreparedSearchHotkey, &'static str> {
+        let shortcut = Shortcut::parse(value)?;
+        if !self.status().running {
+            return Err("shell_stopped");
+        }
+        let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
+        let token = endpoint.call(CommandKind::PrepareSearch(shortcut))?;
+        Ok(PreparedSearchHotkey {
             endpoint,
             token,
             finished: false,
@@ -367,6 +395,7 @@ fn run(
             icon,
             commands: RefCell::new(commands),
             hotkeys: RefCell::new(None),
+            search: RefCell::new(None),
             quick_paste: RefCell::new(None),
         })
     });
@@ -392,6 +421,8 @@ fn run(
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
             *context.hotkeys.borrow_mut() = Some(Bindings::new(WindowsBackend(resources.window)));
+            *context.search.borrow_mut() =
+                Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7100));
             *context.quick_paste.borrow_mut() =
                 Some(QuickPasteSet::new(WindowsBackend(resources.window)));
         }
@@ -500,6 +531,19 @@ unsafe extern "system" fn window_proc(
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .queue_quick_paste(index);
+                    return true;
+                }
+                let search = context.search.try_borrow().ok().is_some_and(|slots| {
+                    slots
+                        .as_ref()
+                        .is_some_and(|bindings| bindings.accepts(wparam.0, lparam.0))
+                });
+                if search {
+                    context
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .queue_focus_search();
                     return true;
                 }
                 let accepted = context.hotkeys.try_borrow().ok().is_some_and(|hotkeys| {
@@ -707,6 +751,8 @@ enum CommandKind {
     Resolve { token: u64, commit: bool },
     PrepareQuickPaste(Option<u32>),
     ResolveQuickPaste { token: u64, commit: bool },
+    PrepareSearch(Shortcut),
+    ResolveSearch { token: u64, commit: bool },
 }
 struct Command {
     kind: CommandKind,
@@ -781,6 +827,32 @@ impl Drop for PreparedQuickPaste {
         }
     }
 }
+pub struct PreparedSearchHotkey {
+    endpoint: Arc<Endpoint>,
+    token: u64,
+    finished: bool,
+}
+impl PreparedSearchHotkey {
+    pub fn commit(mut self) -> Result<(), &'static str> {
+        self.finished = true;
+        self.endpoint
+            .call(CommandKind::ResolveSearch {
+                token: self.token,
+                commit: true,
+            })
+            .map(|_| ())
+    }
+}
+impl Drop for PreparedSearchHotkey {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.endpoint.call(CommandKind::ResolveSearch {
+                token: self.token,
+                commit: false,
+            });
+        }
+    }
+}
 fn handle_commands(context: &Context) {
     let commands: Vec<_> = context.commands.borrow_mut().try_iter().take(8).collect();
     for command in commands {
@@ -789,6 +861,13 @@ fn handle_commands(context: &Context) {
             CommandKind::PrepareQuickPaste(_) | CommandKind::ResolveQuickPaste { .. }
         ) {
             handle_quick_paste(context, command);
+            continue;
+        }
+        if matches!(
+            command.kind,
+            CommandKind::PrepareSearch(_) | CommandKind::ResolveSearch { .. }
+        ) {
+            handle_search(context, command);
             continue;
         }
         let Ok(mut hotkeys) = context.hotkeys.try_borrow_mut() else {
@@ -816,6 +895,9 @@ fn handle_commands(context: &Context) {
             }
             CommandKind::PrepareQuickPaste(_) | CommandKind::ResolveQuickPaste { .. } => {
                 unreachable!("quick paste is handled above")
+            }
+            CommandKind::PrepareSearch(_) | CommandKind::ResolveSearch { .. } => {
+                unreachable!("search hotkey is handled above")
             }
         };
         // If the preparer's response receiver disappeared, roll back its provisional registration.
@@ -877,6 +959,47 @@ fn handle_quick_paste(context: &Context, command: Command) {
     if command.reply.send(result).is_err() {
         if let Some(token) = prepared_token {
             let _ = slots.resolve(token, false);
+        }
+    }
+}
+fn handle_search(context: &Context, command: Command) {
+    let Ok(mut slots) = context.search.try_borrow_mut() else {
+        let _ = command.reply.send(Err("hotkey_update_pending"));
+        return;
+    };
+    let Some(bindings) = slots.as_mut() else {
+        let _ = command.reply.send(Err("shell_stopped"));
+        return;
+    };
+    let preparing = matches!(command.kind, CommandKind::PrepareSearch(_));
+    let result = match command.kind {
+        CommandKind::PrepareSearch(shortcut) => bindings.prepare(shortcut),
+        CommandKind::ResolveSearch { token, commit } => {
+            let result = bindings.resolve(token, commit).map(|_| 0);
+            if commit {
+                context
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .pending
+                    .retain(|action| *action != ShellAction::FocusSearch);
+            }
+            result
+        }
+        _ => unreachable!("only search commands reach this function"),
+    };
+    let prepared_token = if preparing {
+        result.as_ref().ok().copied()
+    } else {
+        None
+    };
+    if bindings.error.is_some() {
+        let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.hotkey_error = bindings.error;
+    }
+    if command.reply.send(result).is_err() {
+        if let Some(token) = prepared_token {
+            let _ = bindings.resolve(token, false);
         }
     }
 }

@@ -77,6 +77,14 @@ internal sealed class ShellController : IDisposable
                     case "show_main": if (popup is not null) await popup.ShowAsync(); else main.ShowMain(); break;
                     case "toggle_main": if (popup is not null) await popup.ToggleAsync(); else main.ToggleMain(); break;
                     case "open_settings": main.OpenSettings(); break;
+                    case "focus_search":
+                        if (popup is not null)
+                        {
+                            if (!popup.AppWindow.IsVisible) await popup.ShowAsync();
+                            else popup.FocusSearch();
+                        }
+                        else main.ShowMain();
+                        break;
                     case "quit": _ = main.Quit(); return;
                     default:
                         if (action.StartsWith("quick_paste:", StringComparison.Ordinal)

@@ -457,12 +457,25 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                         } else {
                             None
                         };
-                        Ok((hotkey, quick_paste))
+                        let search = if current.values["app.search_hotkey"]
+                            != next.values["app.search_hotkey"]
+                            && running
+                        {
+                            Some(
+                                shell
+                                    .prepare_search_hotkey(&next.values["app.search_hotkey"])
+                                    .map_err(hotkey_error)?,
+                            )
+                        } else {
+                            None
+                        };
+                        Ok((hotkey, quick_paste, search))
                     })?;
-            let effect_error = prepared.and_then(|(hotkey, quick_paste)| {
+            let effect_error = prepared.and_then(|(hotkey, quick_paste, search)| {
                 let hotkey_error = hotkey.and_then(|prepared| prepared.commit().err());
                 let quick_paste_error = quick_paste.and_then(|prepared| prepared.commit().err());
-                hotkey_error.or(quick_paste_error)
+                let search_error = search.and_then(|prepared| prepared.commit().err());
+                hotkey_error.or(quick_paste_error).or(search_error)
             });
             service.capture.apply_settings(&change.snapshot);
             let mut result = serde_json::to_value(change).expect("serializable settings");
@@ -862,6 +875,12 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 {
                     let _ = prepared.commit();
                 }
+                if let Ok(prepared) = service
+                    .shell
+                    .prepare_search_hotkey(&snapshot.values["app.search_hotkey"])
+                {
+                    let _ = prepared.commit();
+                }
             }
             Ok(shell_status(service.shell.status()))
         }
@@ -878,6 +897,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     ShellAction::Quit => "quit".to_string(),
                     ShellAction::ToggleMain => "toggle_main".to_string(),
                     ShellAction::QuickPaste(index) => format!("quick_paste:{index}"),
+                    ShellAction::FocusSearch => "focus_search".to_string(),
                 })
                 .collect();
             Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))

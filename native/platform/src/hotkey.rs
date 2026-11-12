@@ -168,12 +168,15 @@ pub(crate) struct Bindings<B: Backend> {
 }
 impl<B: Backend> Bindings<B> {
     pub fn new(backend: B) -> Self {
+        Self::with_first_id(backend, 0x4100)
+    }
+    pub fn with_first_id(backend: B, first_id: i32) -> Self {
         Self {
             backend,
             current: None,
             pending: None,
             retired: Vec::new(),
-            next_id: 0x4100,
+            next_id: first_id,
             token: 0,
             error: None,
         }

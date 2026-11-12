@@ -68,6 +68,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.url", ""),
         ("app.link", ""),
         ("app.hotkey", "Alt+C"),
+        ("app.search_hotkey", "Alt+F"),
         ("app.quick_paste_modifier", "disabled"),
         ("app.quick_paste_when_edge_hidden", "true"),
         ("app.delete_after_paste", "false"),
@@ -122,7 +123,9 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
     }
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
-        "app.hotkey" => tiez_native_platform::hotkey::Shortcut::parse(value).is_ok(),
+        "app.hotkey" | "app.search_hotkey" => {
+            tiez_native_platform::hotkey::Shortcut::parse(value).is_ok()
+        }
         "app.quick_paste_modifier" => {
             tiez_native_platform::hotkey::quick_paste_modifier(value).is_ok()
         }
@@ -349,7 +352,7 @@ mod tests {
 
     #[test]
     fn hotkey_default_matches_legacy_seed_without_saving() {
-        let service = service();
+        let mut service = service();
         let writes = service.connection.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0)).unwrap();
         let snapshot = service.snapshot().unwrap();
         assert_eq!(snapshot.values["app.hotkey"], "Alt+C");
@@ -366,6 +369,11 @@ mod tests {
         let legacy_hotkey: String = legacy.query_row(
             "SELECT value FROM settings WHERE key='app.hotkey'", [], |row| row.get(0)).unwrap();
         assert_eq!(snapshot.values["app.hotkey"], legacy_hotkey);
+        assert_eq!(snapshot.values["app.search_hotkey"], "Alt+F");
+        assert!(!service.update(0, patch("app.search_hotkey", "Alt+F")).unwrap().changed);
+        assert!(service.update(0, patch("app.search_hotkey", "")).unwrap().changed);
+        assert_eq!(service.snapshot().unwrap().values["app.search_hotkey"], "");
+        assert!(service.update(1, patch("app.search_hotkey", "not a shortcut")).is_err());
     }
     #[test]
     fn quick_paste_modifier_defaults_without_writes_and_keeps_invalid_legacy_rows() {
@@ -718,7 +726,7 @@ mod effect_tests {
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.values.len(), 31);
+        assert_eq!(snapshot.values.len(), 32);
         assert_eq!(snapshot.values["app.text"], "old unsupported selection");
         assert!(
             !service

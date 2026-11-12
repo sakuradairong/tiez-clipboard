@@ -128,6 +128,12 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
         await ReloadAsync();
         if (!disposed && AppWindow.IsVisible) SearchBox.Focus(FocusState.Programmatic);
     }
+    internal void FocusSearch()
+    {
+        if (disposed || !AppWindow.IsVisible) return;
+        SearchBox.Focus(FocusState.Programmatic);
+        SearchBox.SelectAll();
+    }
     internal Task ToggleAsync()
     {
         if (AppWindow.IsVisible && active) { HidePopup(); return Task.CompletedTask; }
