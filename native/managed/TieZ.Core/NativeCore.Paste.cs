@@ -17,4 +17,7 @@ public sealed partial class NativeCore
 
     public Task<EdgeHiddenState> SetEdgeHiddenAsync(bool hidden, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<EdgeHiddenState>(new { op = "set_edge_hidden", handle, hidden }, cancellationToken);
+
+    public Task<QuickPasteResult> PasteLatestAsync(bool textOnly, CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<QuickPasteResult>(new { op = "paste_latest", handle, text_only = textOnly }, cancellationToken);
 }

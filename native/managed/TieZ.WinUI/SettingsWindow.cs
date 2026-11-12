@@ -50,6 +50,8 @@ public sealed class SettingsWindow : Window
         ToolTipService.SetToolTip(hotkey, text.HotkeyHint);
         searchHotkey.Header = text.SearchHotkeyHeader;
         ToolTipService.SetToolTip(searchHotkey, text.SearchHotkeyHint);
+        richPasteHotkey.Header = text.RichPasteHeader;
+        plainPasteHotkey.Header = text.PlainPasteHeader;
         var quickPasteIndex = quickPaste.SelectedIndex;
         quickPaste.Header = text.QuickPasteHeader;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(quickPaste, text.QuickPasteHeader);
@@ -91,6 +93,8 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox theme = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox hotkey = new() { PlaceholderText = "Ctrl+Alt+V" };
     private readonly TextBox searchHotkey = new() { PlaceholderText = "Alt+F" };
+    private readonly TextBox richPasteHotkey = new() { PlaceholderText = "Alt+Shift+V" };
+    private readonly TextBox plainPasteHotkey = new();
     private readonly ComboBox quickPaste = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ToggleSwitch deduplicate = new();
     private readonly ToggleSwitch showSearch = new();
@@ -131,7 +135,7 @@ public sealed class SettingsWindow : Window
         intro = new TextBlock { TextWrapping = TextWrapping.Wrap };
         intro.Style = revision.Style = (Style)Application.Current.Resources["NativeCaptionStyle"];
         panel.Children.Add(intro);
-        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, searchHotkey, quickPaste, ToggleRow(showSearch), ToggleRow(compact)));
+        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, quickPaste, ToggleRow(showSearch), ToggleRow(compact)));
         ToolTipService.SetToolTip(hotkey, SettingsStrings.Current.HotkeyHint);
         panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(deleteAfterPaste), ToggleRow(moveToTop), ToggleRow(edgeDocking), ToggleRow(privacy)));
         panel.Children.Add(SettingsCard(storageHeading, ToggleRow(persistent), ToggleRow(limitEnabled), limit));
@@ -163,7 +167,7 @@ public sealed class SettingsWindow : Window
         compact.Toggled += (_, _) => MarkDirty();
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, deleteAfterPaste, moveToTop, edgeDocking, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
-        foreach (var input in new[] { hotkey, searchHotkey, limit })
+        foreach (var input in new[] { hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, limit })
             // TextChanged is deferred; drafts must be current before Save or an external snapshot.
             input.TextChanging += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
@@ -227,6 +231,8 @@ public sealed class SettingsWindow : Window
             openers.Bind(snapshot);
             hotkey.Text = snapshot.Values["app.hotkey"];
             searchHotkey.Text = snapshot.Values["app.search_hotkey"];
+            richPasteHotkey.Text = snapshot.Values["app.rich_paste_hotkey"];
+            plainPasteHotkey.Text = snapshot.Values["app.plain_paste_hotkey"];
             quickPaste.SelectedIndex = Math.Max(0, Array.IndexOf(QuickPasteModifiers, snapshot.Values["app.quick_paste_modifier"]));
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
@@ -270,6 +276,8 @@ public sealed class SettingsWindow : Window
         {
             ["app.hotkey"] = hotkey.Text,
             ["app.search_hotkey"] = searchHotkey.Text,
+            ["app.rich_paste_hotkey"] = richPasteHotkey.Text,
+            ["app.plain_paste_hotkey"] = plainPasteHotkey.Text,
             ["app.quick_paste_modifier"] = QuickPasteModifiers[Math.Clamp(quickPaste.SelectedIndex, 0, QuickPasteModifiers.Length - 1)],
             ["app.language"] = Languages[Math.Clamp(language.SelectedIndex, 0, Languages.Length - 1)],
             ["app.color_mode"] = Themes[Math.Clamp(theme.SelectedIndex, 0, Themes.Length - 1)],

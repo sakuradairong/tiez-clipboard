@@ -1125,6 +1125,28 @@ impl HistoryService {
             .filter(|entry| entry.is_pinned)
             .map(|entry| (entry.id, entry.content_type.clone())))
     }
+    /// The first merged row, pinned or not. Plain paste skips non-text rows.
+    pub fn latest_paste_target(&self, text_only: bool) -> CoreResult<Option<(i64, String)>> {
+        let mut items = self
+            .repository
+            .get_history(1, 0, None)
+            .map_err(failure)?;
+        items.extend(self.session.iter().cloned());
+        items.sort_by(|a, b| {
+            b.is_pinned
+                .cmp(&a.is_pinned)
+                .then_with(|| b.pinned_order.cmp(&a.pinned_order))
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        let Some(entry) = items.into_iter().next() else {
+            return Ok(None);
+        };
+        if text_only && !matches!(entry.content_type.as_str(), "text" | "code" | "url" | "rich_text") {
+            return Ok(None);
+        }
+        Ok(Some((entry.id, entry.content_type)))
+    }
 }
 
 #[cfg(test)]
@@ -1184,6 +1206,19 @@ mod tests {
         assert!(session < 0);
         assert!(history.apply_after_paste(session, true, false).unwrap());
         assert!(history.entry(session).is_err());
+    }
+    #[test]
+    fn latest_paste_uses_the_first_row_and_plain_mode_skips_images() {
+        let mut history = service();
+        let _older = add(&mut history, "older");
+        let newer = add(&mut history, "newer");
+        assert_eq!(history.latest_paste_target(false).unwrap().unwrap().0, newer);
+        assert_eq!(history.latest_paste_target(true).unwrap().unwrap().0, newer);
+        history
+            .add_manual("image".into(), "picture".into(), None, vec![])
+            .unwrap();
+        assert_eq!(history.latest_paste_target(false).unwrap().unwrap().1, "image");
+        assert!(history.latest_paste_target(true).unwrap().is_none());
     }
     fn processed(text: &str) -> ClipboardEntry {
         ClipboardEntry {

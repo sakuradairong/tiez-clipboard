@@ -30,6 +30,8 @@ pub enum ShellAction {
     ToggleMain,
     QuickPaste(u8),
     FocusSearch,
+    PasteLatestRich,
+    PasteLatestPlain,
 }
 #[derive(Default)]
 struct State {
@@ -90,6 +92,24 @@ impl State {
         }
         self.pending.push_back(ShellAction::FocusSearch);
     }
+    fn queue_latest(&mut self, plain: bool) {
+        let action = if plain {
+            ShellAction::PasteLatestPlain
+        } else {
+            ShellAction::PasteLatestRich
+        };
+        if self.pending.front() == Some(&ShellAction::Quit) {
+            return;
+        }
+        if self.pending.back() == Some(&action) {
+            return;
+        }
+        if self.pending.len() == 32 {
+            self.pending.pop_front();
+            self.last_error = Some("shell_action_overflow");
+        }
+        self.pending.push_back(action);
+    }
     fn drain(&mut self) -> Vec<ShellAction> {
         self.pending.drain(..).collect()
     }
@@ -104,6 +124,8 @@ struct Context {
     commands: RefCell<mpsc::Receiver<Command>>,
     hotkeys: RefCell<Option<Bindings<WindowsBackend>>>,
     search: RefCell<Option<Bindings<WindowsBackend>>>,
+    rich_paste: RefCell<Option<Bindings<WindowsBackend>>>,
+    plain_paste: RefCell<Option<Bindings<WindowsBackend>>>,
     quick_paste: RefCell<Option<QuickPasteSet<WindowsBackend>>>,
 }
 thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
@@ -245,6 +267,31 @@ impl ShellService {
             endpoint,
             token,
             finished: false,
+            slot: 0,
+        })
+    }
+    pub fn prepare_rich_paste_hotkey(&self, value: &str) -> Result<PreparedSearchHotkey, &'static str> {
+        self.prepare_labeled_hotkey(value, true)
+    }
+    pub fn prepare_plain_paste_hotkey(&self, value: &str) -> Result<PreparedSearchHotkey, &'static str> {
+        self.prepare_labeled_hotkey(value, false)
+    }
+    fn prepare_labeled_hotkey(&self, value: &str, rich: bool) -> Result<PreparedSearchHotkey, &'static str> {
+        let shortcut = Shortcut::parse(value)?;
+        if !self.status().running {
+            return Err("shell_stopped");
+        }
+        let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
+        let token = endpoint.call(if rich {
+            CommandKind::PrepareRich(shortcut)
+        } else {
+            CommandKind::PreparePlain(shortcut)
+        })?;
+        Ok(PreparedSearchHotkey {
+            endpoint,
+            token,
+            finished: false,
+            slot: if rich { 1 } else { 2 },
         })
     }
     pub fn drain(&self) -> Vec<ShellAction> {
@@ -396,6 +443,8 @@ fn run(
             commands: RefCell::new(commands),
             hotkeys: RefCell::new(None),
             search: RefCell::new(None),
+            rich_paste: RefCell::new(None),
+            plain_paste: RefCell::new(None),
             quick_paste: RefCell::new(None),
         })
     });
@@ -423,6 +472,10 @@ fn run(
             *context.hotkeys.borrow_mut() = Some(Bindings::new(WindowsBackend(resources.window)));
             *context.search.borrow_mut() =
                 Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7100));
+            *context.rich_paste.borrow_mut() =
+                Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7200));
+            *context.plain_paste.borrow_mut() =
+                Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7300));
             *context.quick_paste.borrow_mut() =
                 Some(QuickPasteSet::new(WindowsBackend(resources.window)));
         }
@@ -544,6 +597,32 @@ unsafe extern "system" fn window_proc(
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .queue_focus_search();
+                    return true;
+                }
+                let rich = context.rich_paste.try_borrow().ok().is_some_and(|slots| {
+                    slots
+                        .as_ref()
+                        .is_some_and(|bindings| bindings.accepts(wparam.0, lparam.0))
+                });
+                if rich {
+                    context
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .queue_latest(false);
+                    return true;
+                }
+                let plain = context.plain_paste.try_borrow().ok().is_some_and(|slots| {
+                    slots
+                        .as_ref()
+                        .is_some_and(|bindings| bindings.accepts(wparam.0, lparam.0))
+                });
+                if plain {
+                    context
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .queue_latest(true);
                     return true;
                 }
                 let accepted = context.hotkeys.try_borrow().ok().is_some_and(|hotkeys| {
@@ -753,6 +832,10 @@ enum CommandKind {
     ResolveQuickPaste { token: u64, commit: bool },
     PrepareSearch(Shortcut),
     ResolveSearch { token: u64, commit: bool },
+    PrepareRich(Shortcut),
+    ResolveRich { token: u64, commit: bool },
+    PreparePlain(Shortcut),
+    ResolvePlain { token: u64, commit: bool },
 }
 struct Command {
     kind: CommandKind,
@@ -831,25 +914,25 @@ pub struct PreparedSearchHotkey {
     endpoint: Arc<Endpoint>,
     token: u64,
     finished: bool,
+    slot: u8,
 }
 impl PreparedSearchHotkey {
+    fn resolve_kind(&self, commit: bool) -> CommandKind {
+        match self.slot {
+            1 => CommandKind::ResolveRich { token: self.token, commit },
+            2 => CommandKind::ResolvePlain { token: self.token, commit },
+            _ => CommandKind::ResolveSearch { token: self.token, commit },
+        }
+    }
     pub fn commit(mut self) -> Result<(), &'static str> {
         self.finished = true;
-        self.endpoint
-            .call(CommandKind::ResolveSearch {
-                token: self.token,
-                commit: true,
-            })
-            .map(|_| ())
+        self.endpoint.call(self.resolve_kind(true)).map(|_| ())
     }
 }
 impl Drop for PreparedSearchHotkey {
     fn drop(&mut self) {
         if !self.finished {
-            let _ = self.endpoint.call(CommandKind::ResolveSearch {
-                token: self.token,
-                commit: false,
-            });
+            let _ = self.endpoint.call(self.resolve_kind(false));
         }
     }
 }
@@ -868,6 +951,16 @@ fn handle_commands(context: &Context) {
             CommandKind::PrepareSearch(_) | CommandKind::ResolveSearch { .. }
         ) {
             handle_search(context, command);
+            continue;
+        }
+        if matches!(
+            command.kind,
+            CommandKind::PrepareRich(_)
+                | CommandKind::ResolveRich { .. }
+                | CommandKind::PreparePlain(_)
+                | CommandKind::ResolvePlain { .. }
+        ) {
+            handle_labeled(context, command);
             continue;
         }
         let Ok(mut hotkeys) = context.hotkeys.try_borrow_mut() else {
@@ -898,6 +991,12 @@ fn handle_commands(context: &Context) {
             }
             CommandKind::PrepareSearch(_) | CommandKind::ResolveSearch { .. } => {
                 unreachable!("search hotkey is handled above")
+            }
+            CommandKind::PrepareRich(_)
+            | CommandKind::ResolveRich { .. }
+            | CommandKind::PreparePlain(_)
+            | CommandKind::ResolvePlain { .. } => {
+                unreachable!("latest paste hotkeys are handled above")
             }
         };
         // If the preparer's response receiver disappeared, roll back its provisional registration.
@@ -996,6 +1095,40 @@ fn handle_search(context: &Context, command: Command) {
     if bindings.error.is_some() {
         let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
         state.hotkey_error = bindings.error;
+    }
+    if command.reply.send(result).is_err() {
+        if let Some(token) = prepared_token {
+            let _ = bindings.resolve(token, false);
+        }
+    }
+}
+fn handle_labeled(context: &Context, command: Command) {
+    let rich = matches!(command.kind, CommandKind::PrepareRich(_) | CommandKind::ResolveRich { .. });
+    let slots = if rich { &context.rich_paste } else { &context.plain_paste };
+    let clear = if rich { ShellAction::PasteLatestRich } else { ShellAction::PasteLatestPlain };
+    let Ok(mut slots) = slots.try_borrow_mut() else {
+        let _ = command.reply.send(Err("hotkey_update_pending"));
+        return;
+    };
+    let Some(bindings) = slots.as_mut() else {
+        let _ = command.reply.send(Err("shell_stopped"));
+        return;
+    };
+    let preparing = matches!(command.kind, CommandKind::PrepareRich(_) | CommandKind::PreparePlain(_));
+    let result = match command.kind {
+        CommandKind::PrepareRich(shortcut) | CommandKind::PreparePlain(shortcut) => bindings.prepare(shortcut),
+        CommandKind::ResolveRich { token, commit } | CommandKind::ResolvePlain { token, commit } => {
+            let result = bindings.resolve(token, commit).map(|_| 0);
+            if commit {
+                context.state.lock().unwrap_or_else(|e| e.into_inner()).pending.retain(|action| *action != clear);
+            }
+            result
+        }
+        _ => unreachable!("only latest-paste commands reach this function"),
+    };
+    let prepared_token = if preparing { result.as_ref().ok().copied() } else { None };
+    if bindings.error.is_some() {
+        context.state.lock().unwrap_or_else(|e| e.into_inner()).hotkey_error = bindings.error;
     }
     if command.reply.send(result).is_err() {
         if let Some(token) = prepared_token {

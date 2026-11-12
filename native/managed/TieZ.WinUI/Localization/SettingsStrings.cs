@@ -16,6 +16,8 @@ internal sealed class SettingsStrings
     internal required string HotkeyHint { get; init; }
     internal required string SearchHotkeyHeader { get; init; }
     internal required string SearchHotkeyHint { get; init; }
+    internal required string RichPasteHeader { get; init; }
+    internal required string PlainPasteHeader { get; init; }
     internal required string QuickPasteHeader { get; init; }
     internal required string QuickPasteHint { get; init; }
     internal required string QuickPasteOff { get; init; }
@@ -58,6 +60,8 @@ internal sealed class SettingsStrings
         HotkeyHint = "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。",
         SearchHotkeyHeader = "搜索快捷键（留空禁用）",
         SearchHotkeyHint = "唤出速贴窗口并定位到搜索框。默认 Alt+F。",
+        RichPasteHeader = "原格式粘贴最新一条（留空禁用）",
+        PlainPasteHeader = "纯文本粘贴最新一条（留空禁用）",
         QuickPasteHeader = "数字快捷粘贴",
         QuickPasteHint = "用修饰键加 1 到 9 粘贴对应位置的置顶条目，0 是第 10 条。默认关闭。",
         QuickPasteOff = "关闭",
@@ -101,6 +105,8 @@ internal sealed class SettingsStrings
         HotkeyHint = "Win+V 可能被 Windows 佔用。支援鍵盤組合；留空可停用。",
         SearchHotkeyHeader = "搜尋快速鍵（留空停用）",
         SearchHotkeyHint = "叫出速貼視窗並移到搜尋方塊。預設 Alt+F。",
+        RichPasteHeader = "原格式貼上最新一筆（留空停用）",
+        PlainPasteHeader = "純文字貼上最新一筆（留空停用）",
         QuickPasteHeader = "數字快速貼上",
         QuickPasteHint = "用修飾鍵加 1 到 9 貼上對應位置的置頂項目，0 是第 10 筆。預設關閉。",
         QuickPasteOff = "關閉",
@@ -144,6 +150,8 @@ internal sealed class SettingsStrings
         HotkeyHint = "Win+V may be taken by Windows. Keyboard combinations are supported; leave empty to disable.",
         SearchHotkeyHeader = "Search shortcut (leave empty to disable)",
         SearchHotkeyHint = "Opens the quick-paste window and moves to the search box. Alt+F by default.",
+        RichPasteHeader = "Paste the newest item with formatting (empty disables)",
+        PlainPasteHeader = "Paste the newest text item as plain text (empty disables)",
         QuickPasteHeader = "Number quick paste",
         QuickPasteHint = "Modifier plus 1-9 pastes the pinned item at that position. 0 is the 10th. Off by default.",
         QuickPasteOff = "Off",

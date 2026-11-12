@@ -69,6 +69,8 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.link", ""),
         ("app.hotkey", "Alt+C"),
         ("app.search_hotkey", "Alt+F"),
+        ("app.rich_paste_hotkey", "Alt+Shift+V"),
+        ("app.plain_paste_hotkey", ""),
         ("app.quick_paste_modifier", "disabled"),
         ("app.quick_paste_when_edge_hidden", "true"),
         ("app.delete_after_paste", "false"),
@@ -123,7 +125,7 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
     }
     let valid = match key {
         "app.language" => matches!(value, "zh" | "en" | "tw"),
-        "app.hotkey" | "app.search_hotkey" => {
+        "app.hotkey" | "app.search_hotkey" | "app.rich_paste_hotkey" | "app.plain_paste_hotkey" => {
             tiez_native_platform::hotkey::Shortcut::parse(value).is_ok()
         }
         "app.quick_paste_modifier" => {
@@ -726,7 +728,7 @@ mod effect_tests {
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.values.len(), 32);
+        assert_eq!(snapshot.values.len(), 34);
         assert_eq!(snapshot.values["app.text"], "old unsupported selection");
         assert!(
             !service

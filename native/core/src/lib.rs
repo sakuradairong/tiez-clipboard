@@ -245,6 +245,10 @@ enum Request {
         handle: u64,
         hidden: bool,
     },
+    PasteLatest {
+        handle: u64,
+        text_only: bool,
+    },
     ShellStart {
         handle: u64,
         show_tray: bool,
@@ -331,6 +335,7 @@ impl Request {
             | Self::ClipboardPaste { handle, .. }
             | Self::QuickPaste { handle, .. }
             | Self::SetEdgeHidden { handle, .. }
+            | Self::PasteLatest { handle, .. }
             | Self::ShellStart { handle, .. }
             | Self::ShellPoll { handle, .. }
             | Self::ShellStop { handle, .. }
@@ -469,13 +474,43 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                         } else {
                             None
                         };
-                        Ok((hotkey, quick_paste, search))
+                        let rich = if current.values["app.rich_paste_hotkey"]
+                            != next.values["app.rich_paste_hotkey"]
+                            && running
+                        {
+                            Some(
+                                shell
+                                    .prepare_rich_paste_hotkey(&next.values["app.rich_paste_hotkey"])
+                                    .map_err(hotkey_error)?,
+                            )
+                        } else {
+                            None
+                        };
+                        let plain = if current.values["app.plain_paste_hotkey"]
+                            != next.values["app.plain_paste_hotkey"]
+                            && running
+                        {
+                            Some(
+                                shell
+                                    .prepare_plain_paste_hotkey(&next.values["app.plain_paste_hotkey"])
+                                    .map_err(hotkey_error)?,
+                            )
+                        } else {
+                            None
+                        };
+                        Ok((hotkey, quick_paste, search, rich, plain))
                     })?;
-            let effect_error = prepared.and_then(|(hotkey, quick_paste, search)| {
+            let effect_error = prepared.and_then(|(hotkey, quick_paste, search, rich, plain)| {
                 let hotkey_error = hotkey.and_then(|prepared| prepared.commit().err());
                 let quick_paste_error = quick_paste.and_then(|prepared| prepared.commit().err());
                 let search_error = search.and_then(|prepared| prepared.commit().err());
-                hotkey_error.or(quick_paste_error).or(search_error)
+                let rich_error = rich.and_then(|prepared| prepared.commit().err());
+                let plain_error = plain.and_then(|prepared| prepared.commit().err());
+                hotkey_error
+                    .or(quick_paste_error)
+                    .or(search_error)
+                    .or(rich_error)
+                    .or(plain_error)
             });
             service.capture.apply_settings(&change.snapshot);
             let mut result = serde_json::to_value(change).expect("serializable settings");
@@ -853,6 +888,10 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 .store(hidden, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "hidden": service.edge_hidden.load(std::sync::atomic::Ordering::Relaxed) }))
         }
+        Request::PasteLatest { handle, text_only } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(paste::paste_latest(service, text_only)?))
+        }
         Request::ShellStart {
             handle,
             show_tray,
@@ -881,6 +920,18 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 {
                     let _ = prepared.commit();
                 }
+                if let Ok(prepared) = service
+                    .shell
+                    .prepare_rich_paste_hotkey(&snapshot.values["app.rich_paste_hotkey"])
+                {
+                    let _ = prepared.commit();
+                }
+                if let Ok(prepared) = service
+                    .shell
+                    .prepare_plain_paste_hotkey(&snapshot.values["app.plain_paste_hotkey"])
+                {
+                    let _ = prepared.commit();
+                }
             }
             Ok(shell_status(service.shell.status()))
         }
@@ -898,6 +949,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     ShellAction::ToggleMain => "toggle_main".to_string(),
                     ShellAction::QuickPaste(index) => format!("quick_paste:{index}"),
                     ShellAction::FocusSearch => "focus_search".to_string(),
+                    ShellAction::PasteLatestRich => "paste_latest_rich".to_string(),
+                    ShellAction::PasteLatestPlain => "paste_latest_plain".to_string(),
                 })
                 .collect();
             Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))

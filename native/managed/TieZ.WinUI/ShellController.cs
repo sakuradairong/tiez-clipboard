@@ -85,6 +85,8 @@ internal sealed class ShellController : IDisposable
                         }
                         else main.ShowMain();
                         break;
+                    case "paste_latest_rich": await PasteLatestAsync(false); break;
+                    case "paste_latest_plain": await PasteLatestAsync(true); break;
                     case "quit": _ = main.Quit(); return;
                     default:
                         if (action.StartsWith("quick_paste:", StringComparison.Ordinal)
@@ -108,6 +110,24 @@ internal sealed class ShellController : IDisposable
             }
         }
         finally { polling = false; }
+    }
+    private async Task PasteLatestAsync(bool textOnly)
+    {
+        try
+        {
+            var result = await core.PasteLatestAsync(textOnly, lifetime.Token);
+            if (disposed || popup is null) return;
+            if (result.Pasted && result.PostPasteError is null) return;
+            popup.SetMessage(result.PostPasteError is not null ? PopupStrings.PostPaste
+                : result.Reason == "empty" ? PopupStrings.Failed : PopupStrings.NoTarget);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (CoreException error)
+        {
+            if (disposed || popup is null) return;
+            popup.SetMessage(error.Code == "no_target" ? PopupStrings.NoTarget : PopupStrings.Failed);
+        }
     }
     private async Task PastePinnedAsync(byte index)
     {

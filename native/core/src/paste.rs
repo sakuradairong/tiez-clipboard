@@ -115,3 +115,26 @@ pub(crate) fn quick_paste(service: &CoreRuntime, index: u8) -> CoreResult<serde_
         "post_paste_error": pasted.post_paste_error
     }))
 }
+pub(crate) fn paste_latest(service: &CoreRuntime, text_only: bool) -> CoreResult<serde_json::Value> {
+    let (id, revision) = {
+        let history = service
+            .history
+            .lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?;
+        let Some((id, _)) = history.latest_paste_target(text_only)? else {
+            return Ok(serde_json::json!({"pasted": false, "reason": "empty"}));
+        };
+        (id, history.revision())
+    };
+    let status = service.target.status();
+    if !status.running || !status.has_target {
+        return Err(before_write("no_target"));
+    }
+    let pasted = paste_entry(service, id, text_only, true, status.generation, Some(revision))?;
+    Ok(serde_json::json!({
+        "pasted": true,
+        "reason": null,
+        "id": pasted.id,
+        "post_paste_error": pasted.post_paste_error
+    }))
+}
