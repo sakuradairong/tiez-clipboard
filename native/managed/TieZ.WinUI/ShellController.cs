@@ -106,8 +106,10 @@ internal sealed class ShellController : IDisposable
         try
         {
             var result = await core.QuickPasteAsync(index, lifetime.Token);
-            if (disposed || result.Pasted || popup is null) return;
-            popup.SetMessage(result.Reason == "not_pinned" ? PopupStrings.NotPinned : PopupStrings.Failed);
+            if (disposed || popup is null) return;
+            if (!result.Pasted)
+                popup.SetMessage(result.Reason == "not_pinned" ? PopupStrings.NotPinned : PopupStrings.Failed);
+            else if (result.PostPasteError is not null) popup.SetMessage(PopupStrings.PostPaste);
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) when (disposed) { }

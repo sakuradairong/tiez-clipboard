@@ -25,6 +25,8 @@ internal sealed class SettingsStrings
     internal required string PersistentOff { get; init; }
     internal required string CaptureFiles { get; init; }
     internal required string CaptureRichText { get; init; }
+    internal required string DeleteAfterPaste { get; init; }
+    internal required string MoveToTop { get; init; }
     internal required string Privacy { get; init; }
     internal required string LimitEnabled { get; init; }
     internal required string LimitHeader { get; init; }
@@ -62,6 +64,8 @@ internal sealed class SettingsStrings
         PersistentOff = "仅保留本次会话",
         CaptureFiles = "采集文件路径",
         CaptureRichText = "采集富文本和表格原始格式",
+        DeleteAfterPaste = "粘贴后删除未置顶且无标签的条目",
+        MoveToTop = "粘贴后把未置顶条目移到最前",
         Privacy = "自动标记敏感内容",
         LimitEnabled = "限制磁盘历史数量（置顶和有标签条目不计入）",
         LimitHeader = "最多保留普通历史条数（0–1000000）",
@@ -100,6 +104,8 @@ internal sealed class SettingsStrings
         PersistentOff = "僅保留本次工作階段",
         CaptureFiles = "擷取檔案路徑",
         CaptureRichText = "擷取富文字與表格原始格式",
+        DeleteAfterPaste = "貼上後刪除未置頂且無標籤的項目",
+        MoveToTop = "貼上後把未置頂項目移到最前",
         Privacy = "自動標記敏感內容",
         LimitEnabled = "限制磁碟歷史數量（置頂與有標籤項目不計入）",
         LimitHeader = "最多保留一般歷史筆數（0–1000000）",
@@ -138,6 +144,8 @@ internal sealed class SettingsStrings
         PersistentOff = "This session only",
         CaptureFiles = "Capture file paths",
         CaptureRichText = "Capture rich text and table formatting",
+        DeleteAfterPaste = "Delete unpinned, untagged items after paste",
+        MoveToTop = "Move unpinned items to the front after paste",
         Privacy = "Flag sensitive content automatically",
         LimitEnabled = "Limit stored history (pinned and tagged entries are excluded)",
         LimitHeader = "Maximum stored plain history entries (0-1000000)",

@@ -70,6 +70,8 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.hotkey", "Alt+C"),
         ("app.quick_paste_modifier", "disabled"),
         ("app.quick_paste_when_edge_hidden", "true"),
+        ("app.delete_after_paste", "false"),
+        ("app.move_to_top_after_paste", "true"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
@@ -123,7 +125,6 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
         "app.quick_paste_modifier" => {
             tiez_native_platform::hotkey::quick_paste_modifier(value).is_ok()
         }
-        "app.quick_paste_when_edge_hidden" => matches!(value, "true" | "false"),
         "app.color_mode" => matches!(value, "system" | "light" | "dark"),
         "app.history_view_mode" | "app.tag_history_view_mode" => matches!(value, "list" | "grid"),
         "app.deduplicate"
@@ -133,7 +134,10 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
         | "app.capture_files"
         | "app.capture_rich_text"
         | "app.privacy_protection"
-        | "app.persistent_limit_enabled" => matches!(value, "true" | "false"),
+        | "app.persistent_limit_enabled"
+        | "app.quick_paste_when_edge_hidden"
+        | "app.delete_after_paste"
+        | "app.move_to_top_after_paste" => matches!(value, "true" | "false"),
         "app.persistent_limit" => value.parse::<u32>().is_ok_and(|limit| limit <= 1_000_000),
         "app.privacy_protection_kinds" => value.len() <= 4096,
         "app.privacy_protection_custom_rules" => value
@@ -712,7 +716,7 @@ mod effect_tests {
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.values.len(), 28);
+        assert_eq!(snapshot.values.len(), 30);
         assert_eq!(snapshot.values["app.text"], "old unsupported selection");
         assert!(
             !service

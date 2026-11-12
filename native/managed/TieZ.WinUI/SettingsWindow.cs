@@ -67,10 +67,12 @@ public sealed class SettingsWindow : Window
         persistent.OnContent = text.PersistentOn;
         captureFiles.Header = text.CaptureFiles;
         captureRichText.Header = text.CaptureRichText;
+        deleteAfterPaste.Header = text.DeleteAfterPaste;
+        moveToTop.Header = text.MoveToTop;
         privacy.Header = text.Privacy;
         limitEnabled.Header = text.LimitEnabled;
         // A toggle switch renders Windows' own on/off words until the app supplies its own.
-        foreach (var toggle in new[] { deduplicate, showSearch, compact, captureFiles, captureRichText, privacy, limitEnabled })
+        foreach (var toggle in new[] { deduplicate, showSearch, compact, captureFiles, captureRichText, deleteAfterPaste, moveToTop, privacy, limitEnabled })
         {
             toggle.OnContent = CommonStrings.Current.On;
             toggle.OffContent = CommonStrings.Current.Off;
@@ -92,6 +94,8 @@ public sealed class SettingsWindow : Window
     private readonly ToggleSwitch persistent = new();
     private readonly ToggleSwitch captureFiles = new();
     private readonly ToggleSwitch captureRichText = new();
+    private readonly ToggleSwitch deleteAfterPaste = new();
+    private readonly ToggleSwitch moveToTop = new();
     private readonly ToggleSwitch privacy = new();
     private readonly ToggleSwitch limitEnabled = new();
     private readonly TextBox limit = new();
@@ -124,7 +128,7 @@ public sealed class SettingsWindow : Window
         panel.Children.Add(intro);
         panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, quickPaste, ToggleRow(showSearch), ToggleRow(compact)));
         ToolTipService.SetToolTip(hotkey, SettingsStrings.Current.HotkeyHint);
-        panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(privacy)));
+        panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(deleteAfterPaste), ToggleRow(moveToTop), ToggleRow(privacy)));
         panel.Children.Add(SettingsCard(storageHeading, ToggleRow(persistent), ToggleRow(limitEnabled), limit));
         openerSection.Content = openers; panel.Children.Add(openerSection);
         openers.Changed += MarkDirty; openers.Error += ShowError;
@@ -152,7 +156,7 @@ public sealed class SettingsWindow : Window
         deduplicate.Toggled += (_, _) => MarkDirty();
         showSearch.Toggled += (_, _) => MarkDirty();
         compact.Toggled += (_, _) => MarkDirty();
-        foreach (var toggle in new[] { persistent, captureFiles, captureRichText, privacy, limitEnabled })
+        foreach (var toggle in new[] { persistent, captureFiles, captureRichText, deleteAfterPaste, moveToTop, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
         foreach (var input in new[] { hotkey, limit })
             // TextChanged is deferred; drafts must be current before Save or an external snapshot.
@@ -226,6 +230,8 @@ public sealed class SettingsWindow : Window
             persistent.IsOn = snapshot.Values["app.persistent"] == "true";
             captureFiles.IsOn = snapshot.Values["app.capture_files"] == "true";
             captureRichText.IsOn = snapshot.Values["app.capture_rich_text"] == "true";
+            deleteAfterPaste.IsOn = snapshot.Values["app.delete_after_paste"] == "true";
+            moveToTop.IsOn = snapshot.Values["app.move_to_top_after_paste"] == "true";
             privacy.IsOn = snapshot.Values["app.privacy_protection"] == "true";
             limitEnabled.IsOn = snapshot.Values["app.persistent_limit_enabled"] == "true";
             limit.Text = snapshot.Values["app.persistent_limit"];
@@ -265,6 +271,8 @@ public sealed class SettingsWindow : Window
             ["app.persistent"] = persistent.IsOn ? "true" : "false",
             ["app.capture_files"] = captureFiles.IsOn ? "true" : "false",
             ["app.capture_rich_text"] = captureRichText.IsOn ? "true" : "false",
+            ["app.delete_after_paste"] = deleteAfterPaste.IsOn ? "true" : "false",
+            ["app.move_to_top_after_paste"] = moveToTop.IsOn ? "true" : "false",
             ["app.privacy_protection"] = privacy.IsOn ? "true" : "false",
             ["app.persistent_limit_enabled"] = limitEnabled.IsOn ? "true" : "false",
             ["app.persistent_limit"] = limit.Text,

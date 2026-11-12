@@ -1,7 +1,7 @@
 namespace TieZ.Core;
 
-public sealed record ClipboardPasteResult(long Id, uint ClipboardSequence, ulong TargetGeneration, uint InputEvents);
-public sealed record QuickPasteResult(bool Pasted, string? Reason, long? Id);
+public sealed record ClipboardPasteResult(long Id, uint ClipboardSequence, ulong TargetGeneration, uint InputEvents, string? PostPasteError);
+public sealed record QuickPasteResult(bool Pasted, string? Reason, long? Id, string? PostPasteError);
 
 public sealed partial class NativeCore
 {

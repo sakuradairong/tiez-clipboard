@@ -9,6 +9,7 @@ pub(crate) struct PasteResult {
     clipboard_sequence: u32,
     target_generation: u64,
     input_events: u32,
+    post_paste_error: Option<String>,
 }
 fn before_write(code: &'static str) -> CoreError {
     CoreError::new(
@@ -47,12 +48,31 @@ pub(crate) fn paste_entry(
             "Clipboard was written; paste input accepted {}/4 events, cleanup accepted {} events, cleanup complete: {}. History retained",
             error.sent, error.cleanup_sent, error.cleanup_complete)))?;
     // Sending a complete batch does not prove the target consumed its clipboard.
+    let post_paste_error = apply_after_successful_paste(service, copied.id);
     Ok(PasteResult {
         id: copied.id,
         clipboard_sequence: copied.clipboard_sequence,
         target_generation: expected_generation,
         input_events: 4,
+        post_paste_error,
     })
+}
+fn apply_after_successful_paste(service: &CoreRuntime, id: i64) -> Option<String> {
+    let snapshot = match service.settings.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => return Some(error.message),
+    };
+    let delete_after = snapshot.values["app.delete_after_paste"] == "true";
+    let move_to_top = snapshot.values["app.move_to_top_after_paste"] != "false";
+    let mut history = match service.history.lock() {
+        Ok(history) => history,
+        Err(_) => return Some("History unavailable".to_string()),
+    };
+    // The paste already reached the OS. A bookkeeping failure must not be reported as an unsent paste.
+    history
+        .apply_after_paste(id, delete_after, move_to_top)
+        .err()
+        .map(|error| error.message)
 }
 pub(crate) fn quick_paste(service: &CoreRuntime, index: u8) -> CoreResult<serde_json::Value> {
     let snapshot = service.settings.snapshot()?;
@@ -91,6 +111,7 @@ pub(crate) fn quick_paste(service: &CoreRuntime, index: u8) -> CoreResult<serde_
         "id": pasted.id,
         "clipboard_sequence": pasted.clipboard_sequence,
         "target_generation": pasted.target_generation,
-        "input_events": pasted.input_events
+        "input_events": pasted.input_events,
+        "post_paste_error": pasted.post_paste_error
     }))
 }

@@ -723,6 +723,57 @@ impl HistoryService {
         }
         Ok(self.committed(revision, id, None, vec![id], id > 0))
     }
+    /// Legacy post-paste policy. Stored pinned or tagged rows are never deleted.
+    /// Session rows follow the delete flag even when pinned. A kept stored row
+    /// gains one use, and an unpinned row can move to the front.
+    pub fn apply_after_paste(
+        &mut self,
+        id: i64,
+        delete_after: bool,
+        move_to_top: bool,
+    ) -> CoreResult<bool> {
+        let entry = self.entry(id)?;
+        let protected = id > 0 && (entry.is_pinned || !entry.tags.is_empty());
+        if delete_after && !protected {
+            self.delete(id)?;
+            return Ok(true);
+        }
+        if id <= 0 {
+            return Ok(false);
+        }
+        let uses = entry.use_count.saturating_add(1);
+        let touch = move_to_top && !entry.is_pinned;
+        if uses == entry.use_count && !touch {
+            return Ok(false);
+        }
+        let revision = self.next_revision()?;
+        let now = now_ms();
+        {
+            let mut connection = self.connection.lock().map_err(failure)?;
+            let transaction = connection.transaction().map_err(failure)?;
+            let rows = if touch {
+                transaction.execute(
+                    "UPDATE clipboard_history SET use_count=?1, timestamp=?2, sync_updated_at=?2,
+                     sync_updated_by=COALESCE((SELECT value FROM settings WHERE key='app.anon_id'),'') WHERE id=?3",
+                    rusqlite::params![uses, now, id],
+                )
+            } else {
+                transaction.execute(
+                    "UPDATE clipboard_history SET use_count=?1,
+                     sync_updated_at=MAX(COALESCE(sync_updated_at,0)+1,?2),
+                     sync_updated_by=COALESCE((SELECT value FROM settings WHERE key='app.anon_id'),'') WHERE id=?3",
+                    rusqlite::params![uses, now, id],
+                )
+            }
+            .map_err(failure)?;
+            if rows != 1 {
+                return Err(missing());
+            }
+            transaction.commit().map_err(failure)?;
+        }
+        self.committed(revision, id, None, Vec::new(), true);
+        Ok(false)
+    }
     /// Deletes an explicit selection as one revision. Session rows and attachments remain
     /// untouched until the entire persistent transaction has committed.
     pub fn delete_many(
@@ -1100,6 +1151,39 @@ mod tests {
         assert_eq!(history.quick_paste_target(0).unwrap().unwrap().0, newer);
         assert!(history.quick_paste_target(1).unwrap().is_none());
         assert_eq!(history.quick_paste_target(10).unwrap_err().code, "invalid_request");
+    }
+    #[test]
+    fn after_paste_deletes_only_unprotected_rows_and_moves_plain_ones_forward() {
+        let mut history = service();
+        let plain = add(&mut history, "plain");
+        let pinned = add(&mut history, "pinned");
+        history.pin(pinned, true).unwrap();
+        let tagged = history
+            .add_manual("text".into(), "tagged".into(), None, vec!["work".into()])
+            .unwrap()
+            .id;
+        let before = history.entry(plain).unwrap().timestamp;
+        assert!(!history.apply_after_paste(plain, false, true).unwrap());
+        let moved = history.entry(plain).unwrap();
+        assert_eq!(moved.use_count, 1);
+        assert!(moved.timestamp >= before);
+        assert!(history.apply_after_paste(plain, true, false).unwrap());
+        assert!(history.entry(plain).is_err());
+        let pinned_time = history.entry(pinned).unwrap().timestamp;
+        assert!(!history.apply_after_paste(pinned, true, true).unwrap());
+        let kept = history.entry(pinned).unwrap();
+        assert!(kept.is_pinned);
+        assert_eq!(kept.use_count, 1);
+        assert_eq!(kept.timestamp, pinned_time);
+        assert!(!history.apply_after_paste(tagged, true, false).unwrap());
+        assert_eq!(history.entry(tagged).unwrap().tags, vec!["work".to_string()]);
+        let session = history
+            .record_processed(processed("session"), false)
+            .unwrap()
+            .id;
+        assert!(session < 0);
+        assert!(history.apply_after_paste(session, true, false).unwrap());
+        assert!(history.entry(session).is_err());
     }
     fn processed(text: &str) -> ClipboardEntry {
         ClipboardEntry {

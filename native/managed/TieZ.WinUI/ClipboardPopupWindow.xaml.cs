@@ -322,13 +322,14 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
                 while (ActivationKeysHeld() && Environment.TickCount64 < until) await Task.Delay(15, lifetime.Token);
                 if (ActivationKeysHeld()) { SetMessage(PopupStrings.Failed); return; }
                 if (!Current(row) || current != generation) return;
-                await core.PasteEntryAsync(row.Id, destination.Generation, plainText, row.Summary.IsSensitive,
+                var pasted = await core.PasteEntryAsync(row.Id, destination.Generation, plainText, row.Summary.IsSensitive,
                     lifetime.Token, expectedRevision: row.Revision);
                 accepted = true;
                 if (!disposed)
                 {
+                    if (pasted.PostPasteError is not null) SetMessage(PopupStrings.PostPaste);
                     if (KeepOpen.IsChecked != true) HidePopup();
-                    else SetMessage(PopupStrings.Sent);
+                    else if (pasted.PostPasteError is null) SetMessage(PopupStrings.Sent);
                 }
             }
         }
