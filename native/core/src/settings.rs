@@ -72,6 +72,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("app.quick_paste_when_edge_hidden", "true"),
         ("app.delete_after_paste", "false"),
         ("app.move_to_top_after_paste", "true"),
+        ("app.edge_docking", "false"),
         ("app.color_mode", "system"),
         ("app.deduplicate", "true"),
         ("app.show_search_box", "true"),
@@ -137,7 +138,8 @@ fn validate(key: &str, value: &str) -> CoreResult<()> {
         | "app.persistent_limit_enabled"
         | "app.quick_paste_when_edge_hidden"
         | "app.delete_after_paste"
-        | "app.move_to_top_after_paste" => matches!(value, "true" | "false"),
+        | "app.move_to_top_after_paste"
+        | "app.edge_docking" => matches!(value, "true" | "false"),
         "app.persistent_limit" => value.parse::<u32>().is_ok_and(|limit| limit <= 1_000_000),
         "app.privacy_protection_kinds" => value.len() <= 4096,
         "app.privacy_protection_custom_rules" => value
@@ -716,7 +718,7 @@ mod effect_tests {
             .query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap();
         let snapshot = service.snapshot().unwrap();
-        assert_eq!(snapshot.values.len(), 30);
+        assert_eq!(snapshot.values.len(), 31);
         assert_eq!(snapshot.values["app.text"], "old unsupported selection");
         assert!(
             !service

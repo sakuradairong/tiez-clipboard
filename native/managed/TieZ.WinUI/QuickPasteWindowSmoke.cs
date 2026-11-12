@@ -35,6 +35,7 @@ internal sealed class QuickPasteWindowSmoke(MainWindow main, ClipboardPopupWindo
         bool passed = false; string? failure = null;
         try
         {
+            EdgeDock.AssertFixtures();
             var root = (FrameworkElement)popup.Content;
             await Wait(() => root.IsLoaded && root.ActualHeight > 100 && !popup.IsBusy, "Popup failed to load");
             Check(Directory.Exists(directory), "Isolated fixture data missing");

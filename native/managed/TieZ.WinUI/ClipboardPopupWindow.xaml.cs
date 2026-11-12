@@ -22,6 +22,7 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
     private readonly ObservableCollection<PopupRow> rows = [];
     private readonly SemaphoreSlim thumbnailSlots = new(2, 2);
     private readonly CancellationTokenSource lifetime = new();
+    private readonly EdgeDockController edgeDock;
     private readonly DispatcherQueueTimer debounce, poll;
     private CancellationTokenSource read = new();
     private ContentDialog? dialog;
@@ -79,6 +80,7 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
         owner.ShutdownStarted += Dispose;
         core.Changed += ApplySettings;
         LanguageService.Changed += ApplyLanguage;
+        edgeDock = new EdgeDockController(this, core);
         ApplySettings(core.Snapshot); ApplyLanguage();
     }
 
@@ -476,7 +478,7 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; CloseTransient(); poll.Stop(); debounce.Stop();
+        disposed = true; edgeDock.Dispose(); CloseTransient(); poll.Stop(); debounce.Stop();
         owner.ShutdownStarted -= Dispose; core.Changed -= ApplySettings; LanguageService.Changed -= ApplyLanguage;
         read.Cancel(); read.Dispose(); lifetime.Cancel(); lifetime.Dispose();
         foreach (var row in rows) row.SetThumbnail(null); rows.Clear(); Close();

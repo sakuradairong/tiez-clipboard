@@ -2,6 +2,7 @@ namespace TieZ.Core;
 
 public sealed record ClipboardPasteResult(long Id, uint ClipboardSequence, ulong TargetGeneration, uint InputEvents, string? PostPasteError);
 public sealed record QuickPasteResult(bool Pasted, string? Reason, long? Id, string? PostPasteError);
+public sealed record EdgeHiddenState(bool Hidden);
 
 public sealed partial class NativeCore
 {
@@ -13,4 +14,7 @@ public sealed partial class NativeCore
 
     public Task<QuickPasteResult> QuickPasteAsync(byte index, CancellationToken cancellationToken = default) =>
         HistoryRequestAsync<QuickPasteResult>(new { op = "quick_paste", handle, index }, cancellationToken);
+
+    public Task<EdgeHiddenState> SetEdgeHiddenAsync(bool hidden, CancellationToken cancellationToken = default) =>
+        HistoryRequestAsync<EdgeHiddenState>(new { op = "set_edge_hidden", handle, hidden }, cancellationToken);
 }

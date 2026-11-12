@@ -241,6 +241,10 @@ enum Request {
         handle: u64,
         index: u8,
     },
+    SetEdgeHidden {
+        handle: u64,
+        hidden: bool,
+    },
     ShellStart {
         handle: u64,
         show_tray: bool,
@@ -326,6 +330,7 @@ impl Request {
             | Self::ClipboardCopy { handle, .. }
             | Self::ClipboardPaste { handle, .. }
             | Self::QuickPaste { handle, .. }
+            | Self::SetEdgeHidden { handle, .. }
             | Self::ShellStart { handle, .. }
             | Self::ShellPoll { handle, .. }
             | Self::ShellStop { handle, .. }
@@ -827,6 +832,13 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         Request::QuickPaste { handle, index } => {
             let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
             Ok(json!(paste::quick_paste(service, index)?))
+        }
+        Request::SetEdgeHidden { handle, hidden } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            service
+                .edge_hidden
+                .store(hidden, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "hidden": service.edge_hidden.load(std::sync::atomic::Ordering::Relaxed) }))
         }
         Request::ShellStart {
             handle,
