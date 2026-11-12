@@ -169,6 +169,7 @@ pub struct HistoryService {
     revision: u64,
     changes: VecDeque<HistoryChange>,
     persistent_sync_pending: bool,
+    pub(crate) paste_queue: crate::paste_queue::PasteQueue,
 }
 impl HistoryService {
     pub(crate) fn revision(&self) -> u64 {
@@ -193,7 +194,7 @@ impl HistoryService {
             path.parent().unwrap().into(),
         ))
     }
-    fn from_connection(connection: Connection, data_dir: PathBuf) -> Self {
+    pub(crate) fn from_connection(connection: Connection, data_dir: PathBuf) -> Self {
         let connection = Arc::new(Mutex::new(connection));
         Self {
             repository: SqliteClipboardRepository::new(connection.clone()),
@@ -204,6 +205,7 @@ impl HistoryService {
             revision: 0,
             changes: VecDeque::new(),
             persistent_sync_pending: false,
+            paste_queue: Default::default(),
         }
     }
     pub fn entry(&self, id: i64) -> CoreResult<ClipboardEntry> {

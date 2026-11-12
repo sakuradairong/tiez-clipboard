@@ -25,6 +25,12 @@ pub(crate) fn paste_entry(
     expected_generation: u64,
     expected_revision: Option<u64>,
 ) -> CoreResult<PasteResult> {
+    paste_entry_with_policy(service, id, plain_text, allow_sensitive, expected_generation, expected_revision, None)
+}
+fn paste_entry_with_policy(
+    service: &CoreRuntime, id: i64, plain_text: bool, allow_sensitive: bool,
+    expected_generation: u64, expected_revision: Option<u64>, move_to_top: Option<bool>,
+) -> CoreResult<PasteResult> {
     let ticket = service
         .target
         .ticket(expected_generation)
@@ -51,7 +57,7 @@ pub(crate) fn paste_entry(
             "Clipboard was written; paste input accepted {}/4 events, cleanup accepted {} events, cleanup complete: {}. History retained",
             error.sent, error.cleanup_sent, error.cleanup_complete)))?;
     // Sending a complete batch does not prove the target consumed its clipboard.
-    let post_paste_error = apply_after_successful_paste(service, copied.id, accepted_revision);
+    let post_paste_error = apply_after_successful_paste(service, copied.id, accepted_revision, move_to_top);
     Ok(PasteResult {
         id: copied.id,
         clipboard_sequence: copied.clipboard_sequence,
@@ -60,13 +66,13 @@ pub(crate) fn paste_entry(
         post_paste_error,
     })
 }
-fn apply_after_successful_paste(service: &CoreRuntime, id: i64, accepted_revision: u64) -> Option<String> {
+fn apply_after_successful_paste(service: &CoreRuntime, id: i64, accepted_revision: u64, move_override: Option<bool>) -> Option<String> {
     let snapshot = match service.settings.snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => return Some(error.message),
     };
     let delete_after = snapshot.values["app.delete_after_paste"] == "true";
-    let move_to_top = snapshot.values["app.move_to_top_after_paste"] != "false";
+    let move_to_top = move_override.unwrap_or(snapshot.values["app.move_to_top_after_paste"] != "false");
     let mut history = match service.history.lock() {
         Ok(history) => history,
         Err(_) => return Some("History unavailable".to_string()),
@@ -118,6 +124,26 @@ pub(crate) fn quick_paste(service: &CoreRuntime, index: u8) -> CoreResult<serde_
         "post_paste_error": pasted.post_paste_error
     }))
 }
+pub(crate) fn paste_next(
+    service: &CoreRuntime, expected_queue_revision: u64, expected_history_revision: u64,
+    expected_generation: u64, allow_sensitive: bool,
+) -> CoreResult<serde_json::Value> {
+    let ticket = service.history.lock()
+        .map_err(|_| CoreError::new("history", "History unavailable"))?
+        .queue_ticket(expected_queue_revision, expected_history_revision)?;
+    let Some(ticket) = ticket else {
+        return Ok(serde_json::json!({"pasted": false, "reason": "empty"}));
+    };
+    let mut pasted = paste_entry_with_policy(service, ticket.id, false, allow_sensitive,
+        expected_generation, Some(expected_history_revision), Some(false))?;
+    match service.history.lock() {
+        Ok(mut history) => history.queue_complete(ticket),
+        Err(_) => { pasted.post_paste_error = Some("Input accepted; queue completion unavailable. Do not retry automatically".into()); }
+    }
+    Ok(serde_json::json!({"pasted": true, "reason": null, "id": pasted.id,
+        "post_paste_error": pasted.post_paste_error}))
+}
+
 pub(crate) fn paste_latest(service: &CoreRuntime, text_only: bool) -> CoreResult<serde_json::Value> {
     let (id, revision) = {
         let history = service

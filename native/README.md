@@ -22,6 +22,14 @@ Settings group appearance/controls, capture and storage into theme-aware native 
 
 The existing `--smoke <absolute-report> --workspace-ui-only` check now covers compact geometry, adaptive detail, reachable filters, empty searches and visible settings actions, and exports light/dark XAML-tree images. Add `--hold-ui-preview` only for local visual review: it holds the isolated, seeded, capture-disabled fixture until the real Quit action, which still owns shutdown and cleanup. Ordinary smoke runs finish automatically.
 
+## Sequential queue ABI
+
+The shared core owns a memory-only queue; no extra database, worker or listener is created. `queue_snapshot` takes `handle` and returns `revision`, `history_revision`, ordered `ids`, `requires_reset` and `last_error` (never content). `queue_replace` also takes `ids`, `expected_queue_revision` and `expected_history_revision`; an empty list clears it. At most 1000 nonzero IDs are accepted; duplicate IDs preserve intentional repeated pastes. Reads do not save settings. A conflict preserves the current queue.
+
+`queue_paste` takes the same expected revisions, `expected_generation` from target tracking, and optional `allow_sensitive` (false by default). It preserves original formats, refuses stale targets/held keys/sensitive content without consent, and consumes only that queue occurrence after Windows accepts the complete input batch. Failure keeps it queued; success does not prove target consumption. Post-paste history failures are separate `post_paste_error` outcomes. Unlike ordinary paste, sequential paste does not move retained rows to the front. ID promotion/removal is reconciled from history changes; missing change-feed evidence blocks paste with an explicit queue-rebuild error rather than guessing a reused ID.
+
+`app.sequential_mode` defaults to false. When enabled, future accepted captures append in capture order, and the first capture following a completed queue paste starts a fresh sequence. Overflow reports `queue_full`; it does not discard existing queue items or stop history capture. `app.sequential_hotkey` defaults to `Alt+V`; managed controls and shell registration are a separate increment, not yet provided by this core ABI alone. Close destroys the queue and reopen begins empty.
+
 ## Rust core
 
 ```powershell

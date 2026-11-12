@@ -15,6 +15,7 @@ struct Policy {
     read: capture::ReadOptions,
     transform: processing::TransformOptions,
     deduplicate: bool,
+    sequential: bool,
 }
 impl Policy {
     fn from_snapshot(snapshot: &SettingsSnapshot) -> Self {
@@ -26,6 +27,7 @@ impl Policy {
                 rich_text: get("app.capture_rich_text") == "true",
             },
             deduplicate: get("app.deduplicate") == "true",
+            sequential: get("app.sequential_mode") == "true",
             transform: processing::TransformOptions {
                 persistent: get("app.persistent") == "true",
                 privacy_protection: get("app.privacy_protection") == "true",
@@ -606,22 +608,22 @@ fn run(mut input: Box<dyn Input>, baseline: u32, state: &WorkerState) -> Result<
         {
             *state.echo.lock().unwrap_or_else(|e| e.into_inner()) = echo;
         }
-        let result = state
-            .history
-            .lock()
-            .map_err(|_| "capture_history_unavailable")?
-            .record_capture(
-                entry,
-                policy.transform.persistent,
-                policy.deduplicate,
-                false,
+        let (result, queue_error) = {
+            let mut history = state.history.lock().map_err(|_| "capture_history_unavailable")?;
+            let result = history.record_capture(
+                entry, policy.transform.persistent, policy.deduplicate, false,
             );
+            let queue_error = if policy.sequential {
+                result.as_ref().ok().and_then(|saved| history.queue_captured(saved.id).err())
+            } else { None };
+            (result, queue_error)
+        };
         last_sequence = sequence;
         let mut stats = state.stats.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(_) => {
                 stats.accepted += 1;
-                stats.last_error = None;
+                stats.last_error = queue_error.map(|error| error.code.into());
                 last_burst = Some((burst, policy.revision, Instant::now()));
             }
             Err(error) => {
@@ -1012,6 +1014,30 @@ mod tests {
             );
         });
     }
+    #[test]
+    fn sequential_capture_appends_accepted_records_and_stops_with_the_setting() {
+        fixture(|service, settings, _| {
+            let (sender, _) = input(service);
+            set(service, settings, "app.sequential_mode", "true");
+            sender.send(ClipboardData::Text("first queued".into())).unwrap();
+            wait(service, |s| s.accepted == 1);
+            sender.send(ClipboardData::Text("second queued".into())).unwrap();
+            wait(service, |s| s.accepted == 2);
+            {
+                let mut history = service.history.lock().unwrap();
+                let queue = history.queue_snapshot().unwrap();
+                assert_eq!(queue.ids.len(), 2);
+                assert!(queue.ids.iter().all(|id| *id < 0));
+                assert_eq!(history.entry(queue.ids[0]).unwrap().content, "first queued");
+                assert_eq!(history.entry(queue.ids[1]).unwrap().content, "second queued");
+            }
+            set(service, settings, "app.sequential_mode", "false");
+            sender.send(ClipboardData::Text("outside queue".into())).unwrap();
+            wait(service, |s| s.accepted == 3);
+            assert_eq!(service.history.lock().unwrap().queue_snapshot().unwrap().ids.len(), 2);
+        });
+    }
+
     #[test]
     fn worker_preserves_whitespace_source_and_privacy() {
         fixture(|service, _, _| {

@@ -6,6 +6,7 @@ mod cleanup_preview;
 mod large_history;
 pub mod external_open;
 mod paste;
+mod paste_queue;
 pub use capture::{CaptureService, CaptureStatus};
 mod history;
 pub use history::{HistoryQuery, HistoryService};
@@ -249,6 +250,10 @@ enum Request {
         handle: u64,
         text_only: bool,
     },
+    QueueSnapshot { handle: u64 },
+    QueueReplace { handle: u64, ids: Vec<i64>, expected_queue_revision: u64, expected_history_revision: u64 },
+    QueuePaste { handle: u64, expected_queue_revision: u64, expected_history_revision: u64,
+        expected_generation: u64, #[serde(default)] allow_sensitive: bool },
     ShellStart {
         handle: u64,
         show_tray: bool,
@@ -336,6 +341,9 @@ impl Request {
             | Self::QuickPaste { handle, .. }
             | Self::SetEdgeHidden { handle, .. }
             | Self::PasteLatest { handle, .. }
+            | Self::QueueSnapshot { handle, .. }
+            | Self::QueueReplace { handle, .. }
+            | Self::QueuePaste { handle, .. }
             | Self::ShellStart { handle, .. }
             | Self::ShellPoll { handle, .. }
             | Self::ShellStop { handle, .. }
@@ -891,6 +899,19 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
         Request::PasteLatest { handle, text_only } => {
             let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
             Ok(json!(paste::paste_latest(service, text_only)?))
+        }
+        Request::QueueSnapshot { handle } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(service.history.lock().map_err(|_| CoreError::new("history", "History unavailable"))?.queue_snapshot()?))
+        }
+        Request::QueueReplace { handle, ids, expected_queue_revision, expected_history_revision } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(service.history.lock().map_err(|_| CoreError::new("history", "History unavailable"))?
+                .queue_replace(ids, expected_queue_revision, expected_history_revision)?))
+        }
+        Request::QueuePaste { handle, expected_queue_revision, expected_history_revision, expected_generation, allow_sensitive } => {
+            let service = registry.services.get(&handle).ok_or_else(invalid_handle)?;
+            Ok(json!(paste::paste_next(service, expected_queue_revision, expected_history_revision, expected_generation, allow_sensitive)?))
         }
         Request::ShellStart {
             handle,
