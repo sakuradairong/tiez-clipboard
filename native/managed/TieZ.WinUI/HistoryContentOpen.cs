@@ -42,12 +42,14 @@ public sealed partial class HistoryView
     }
     private void OnCardOpenLoaded(object sender, RoutedEventArgs args)
     {
-        if (sender is Button button) button.IsEnabled = CanCopyCard(button);
+        if (sender is not Button button) return;
+        ApplyCardButtonText(button); button.IsEnabled = CanCopyCard(button);
     }
     private void OnCardOpenContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
     {
         if (ReferenceEquals(sender, contentOpenAnchor) && (sender.DataContext is not HistoryRow row || row.Id != contentOpenId)) CancelContentOpen();
-        if (sender is Button button) button.IsEnabled = CanCopyCard(button);
+        if (sender is not Button button) return;
+        ApplyCardButtonText(button); button.IsEnabled = CanCopyCard(button);
     }
     private void OnCardOpenUnloaded(object sender, RoutedEventArgs args)
     {
@@ -80,16 +82,15 @@ public sealed partial class HistoryView
             // A submitted native outcome stays authoritative after cancellation or card recycling.
             if (!disposed) { LastOpenResult = result; ShowOpenSuccess(result); }
         }
-        catch (OperationCanceledException) { if (!disposed) ShowError("打开请求已取消。"); }
+        catch (OperationCanceledException) { if (!disposed) ShowError(text => text.OpenCancelled); }
         catch (ObjectDisposedException) when (disposed) { }
-        catch (InvalidDataException) { if (!disposed) ShowError("无法核实打开结果，请先检查外部应用，避免重复打开。"); }
+        catch (InvalidDataException) { if (!disposed) ShowError(text => text.OpenUnverified); }
         catch (Exception error)
         {
-            if (!disposed) ShowError(error is CoreException { Code: "history_conflict" }
-                ? "记录已变化，本次未打开。请刷新后重试。"
-                : error is CoreException { Code: "sensitive_confirmation" }
-                    ? "请先单独选中敏感记录并显示详情，再打开。"
-                    : "无法打开记录，请检查默认应用或应用设置后重试。");
+            if (disposed) { }
+            else if (error is CoreException { Code: "history_conflict" }) ShowError(text => text.OpenConflict);
+            else if (error is CoreException { Code: "sensitive_confirmation" }) ShowError(text => text.OpenNeedsReveal);
+            else ShowError(text => text.OpenFailed);
         }
         finally
         {
@@ -100,13 +101,16 @@ public sealed partial class HistoryView
     }
     private void ShowOpenSuccess(OpenContentResult result)
     {
-        Feedback.Title = result.UsageError is null ? "已打开" : "已打开，使用次数未更新";
-        Feedback.Message = result.Exported
-            ? !result.EditWritebackAvailable
-                ? "临时副本已打开，修改不会回写历史。" : "临时副本已打开。"
-            : "已交给系统或所选应用打开。";
-        if (result.UsageError is not null) Feedback.Message += " 使用次数未能更新，请勿为重试计数而重复打开。";
-        Feedback.Severity = result.UsageError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
+        PresentFeedback(result.UsageError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning, () =>
+        {
+            var text = HistoryStrings.Current;
+            Feedback.Title = result.UsageError is null ? text.OpenSuccessTitle : text.OpenUsageTitle;
+            Feedback.Message = result.Exported
+                ? !result.EditWritebackAvailable
+                    ? text.OpenExportedNoWriteback : text.OpenExported
+                : text.OpenHanded;
+            if (result.UsageError is not null) Feedback.Message += text.OpenUsageWarning;
+        });
         Feedback.IsOpen = true;
     }
     private void CancelContentOpen() => contentOpenCancellation?.Cancel();

@@ -22,12 +22,16 @@ public sealed class DocumentPreviewView : Grid
     private readonly System.Text.StringBuilder renderedText = new();
     internal string RenderedText => renderedText.ToString();
     internal bool OmittedMedia { get; private set; }
+    private TextBlock? noteBlock;
+    private Expander? originalExpander;
+    private TextBox? originalBox;
+    private bool truncatedDocument, emptyDocument;
     public DocumentPreviewView()
     {
         Children.Add(new ScrollViewer { Content = content,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        AutomationProperties.SetName(this, "所选富文本的原生结构化预览");
+        RenderChrome();
         Visibility = Visibility.Collapsed;
     }
     internal void Clear()
@@ -35,6 +39,7 @@ public sealed class DocumentPreviewView : Grid
         content.Children.Clear(); DisplayedId = null; renderedText.Clear();
         CellCount = MergedCellCount = EmphasizedRuns = SafeLinkCount = runCount = 0;
         OmittedMedia = false; Visibility = Visibility.Collapsed;
+        noteBlock = null; originalExpander = null; originalBox = null; truncatedDocument = emptyDocument = false;
     }
     internal void Show(DocumentPreviewData document, string originalText)
     {
@@ -92,20 +97,34 @@ public sealed class DocumentPreviewView : Grid
                 }
                 else throw new InvalidDataException("Unknown document block.");
             }
-            string note = "结构化预览 · 字体、颜色和复杂布局可能简化；原始格式保留用于复制和粘贴。";
-            if (document.OmittedMedia) note += "\n嵌入图片、媒体和对象以替代提示显示，不加载外部资源。";
-            if (document.Truncated) note += "\n内容超过预览限制，仅显示部分；原始内容未修改。";
-            if (document.Blocks.Count == 0) note += "\n没有可显示的结构，请展开原始文本。";
-            content.Children.Add(new TextBlock { Text = note, TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
-            var original = new TextBox { Text = originalText, IsReadOnly = true, AcceptsReturn = true,
+            noteBlock = new TextBlock { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
+            content.Children.Add(noteBlock);
+            originalBox = new TextBox { Text = originalText, IsReadOnly = true, AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap, MaxHeight = 240 };
-            AutomationProperties.SetName(original, "富文本记录的原始纯文本");
-            content.Children.Add(new Expander { Header = "原始文本", Content = original,
-                HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+            originalExpander = new Expander { Content = originalBox,
+                HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            content.Children.Add(originalExpander);
+            truncatedDocument = document.Truncated; emptyDocument = document.Blocks.Count == 0;
             DisplayedId = document.Id; OmittedMedia = document.OmittedMedia;
             Visibility = Visibility.Visible;
+            RenderChrome();
         }
         catch { Clear(); throw; }
+    }
+    internal void ApplyLanguage() => RenderChrome();
+    // A rendered document is never rebuilt by a language switch; only the chrome around it is re-derived.
+    private void RenderChrome()
+    {
+        var text = PreviewStrings.Current;
+        AutomationProperties.SetName(this, text.DocumentName);
+        if (originalBox is not null) AutomationProperties.SetName(originalBox, text.DocumentOriginalName);
+        if (originalExpander is not null) originalExpander.Header = text.OriginalTextHeader;
+        if (noteBlock is null) return;
+        string note = text.DocumentNote;
+        if (OmittedMedia) note += "\n" + text.DocumentOmittedMedia;
+        if (truncatedDocument) note += "\n" + text.DocumentTruncated;
+        if (emptyDocument) note += "\n" + text.DocumentEmpty;
+        noteBlock.Text = note;
     }
     private RichTextBlock Text(IReadOnlyList<DocumentTextRun> runs, int heading)
     {

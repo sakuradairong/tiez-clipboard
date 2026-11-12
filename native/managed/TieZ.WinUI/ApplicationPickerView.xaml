@@ -6,27 +6,29 @@
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBox x:Name="SearchText" PlaceholderText="搜索名称、程序路径或应用标识" AutomationProperties.Name="搜索打开应用"/>
-            <Button x:Name="RefreshButton" Grid.Column="1" Content="刷新列表"/>
+            <TextBox x:Name="SearchText"/>
+            <Button x:Name="RefreshButton" Grid.Column="1"/>
         </Grid>
         <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <ComboBox x:Name="Category" SelectedIndex="0" AutomationProperties.Name="应用列表分类">
-                <ComboBoxItem Content="全部"/><ComboBoxItem Content="推荐"/><ComboBoxItem Content="其他应用"/><ComboBoxItem Content="无法使用"/>
+            <ComboBox x:Name="Category" SelectedIndex="0">
+                <ComboBoxItem x:Name="CategoryAll"/><ComboBoxItem x:Name="CategoryRecommended"/>
+                <ComboBoxItem x:Name="CategoryOther"/><ComboBoxItem x:Name="CategoryUnavailable"/>
             </ComboBox>
             <TextBlock x:Name="DefaultText" Grid.Column="1" TextWrapping="Wrap" VerticalAlignment="Center" FontSize="12"
                 Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
         </Grid>
-        <ListView x:Name="Choices" Grid.Row="2" Height="220" SelectionMode="Single" HorizontalContentAlignment="Stretch"
-            AutomationProperties.Name="打开应用选项">
+        <ListView x:Name="Choices" Grid.Row="2" Height="220" SelectionMode="Single" HorizontalContentAlignment="Stretch">
             <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
             <ListView.ItemTemplate><DataTemplate x:DataType="local:ApplicationChoice">
-                <Grid ColumnSpacing="10" Margin="4" AutomationProperties.Name="{x:Bind AccessibilityLabel}">
+                <Grid ColumnSpacing="10" Margin="4" AutomationProperties.Name="{x:Bind AccessibilityLabel, Mode=OneWay}">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <local:ApplicationIconView VerticalAlignment="Top"/>
                     <StackPanel Grid.Column="1" Spacing="3">
-                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                    <TextBlock Text="{x:Bind GroupLabel}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBlock Text="{x:Bind Details}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
+                    <TextBlock Text="{x:Bind Name, Mode=OneWay}" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2"
+                        TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Text="{x:Bind GroupLabel, Mode=OneWay}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
+                        TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock Text="{x:Bind Details, Mode=OneWay}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
                         FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     </StackPanel>
                 </Grid>
@@ -39,7 +41,7 @@
             <TextBlock x:Name="SelectionText" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" FontSize="12"/>
         </StackPanel>
         <InfoBar x:Name="Feedback" Grid.Row="4" IsOpen="False" IsClosable="False"/>
-        <TextBlock Grid.Row="5" Text="推荐不保证应用支持所有格式。此处只选择草稿，返回后仍需保存设置。.bat/.cmd 和 DOS 程序暂不支持，可选择原生程序或默认规则。"
-            TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <TextBlock x:Name="Footer" Grid.Row="5" TextWrapping="Wrap" FontSize="12"
+            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
     </Grid>
 </UserControl>

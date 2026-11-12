@@ -13,15 +13,21 @@ public sealed class AdvancedSettingsWindow : Window
     private readonly NativeCore core;
     private readonly Border surface = new();
     private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
-    private readonly TextBox kinds = new() { Header = "敏感匹配类别（逗号分隔）", PlaceholderText = "phone,idcard,email,secret" };
-    private readonly TextBox privacy = new() { Header = "自定义敏感正则（每行一条）", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
+    private readonly TextBlock heading = new() { FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+    private readonly TextBlock intro = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox kinds = new();
+    private readonly TextBox privacy = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
+    private readonly TextBlock privacyHint = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
     private readonly CleanupRuleEditor cleanup = new();
+    private readonly TextBlock rulesHint = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
     private readonly AppPolicyEditor policies = new();
     private readonly CleanupPreviewView cleanupPreview;
-    private readonly Button save = new() { Content = "保存高级设置", IsEnabled = false };
-    private readonly Button reload = new() { Content = "放弃草稿并重新载入" };
+    private readonly Button save = new() { IsEnabled = false };
+    private readonly Button reload = new();
     private readonly InfoBar feedback = new() { IsOpen = false, IsClosable = true };
     private readonly TextBlock revision = new() { Opacity = 0.6 };
+    private Func<AdvancedStrings, string>? feedbackText;
+    private ulong revisionValue;
     private SettingsSnapshot? loaded;
     private bool loading, dirty, closed;
     internal ulong DisplayedRevision => loaded?.Revision ?? 0;
@@ -42,16 +48,12 @@ public sealed class AdvancedSettingsWindow : Window
         this.core = core;
         cleanupPreview = new CleanupPreviewView(() => cleanup.Text);
         cleanupPreview.Initialize(core); policies.Initialize(core);
-        Title = "TieZ · 高级设置";
+        LanguageService.Changed += ApplyLanguage;
         AppWindow.Resize(new SizeInt32(640, 800));
-        panel.Children.Add(new TextBlock { Text = "高级设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = "规则在保存时由核心校验。关闭此窗口不影响剪贴板采集。", TextWrapping = TextWrapping.Wrap });
-        panel.Children.Add(kinds); panel.Children.Add(privacy);
-        panel.Children.Add(new TextBlock { Text = "敏感规则使用正则表达式，一行一条；留空表示不添加自定义规则。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
-        panel.Children.Add(cleanup);
-        panel.Children.Add(new TextBlock { Text = "例如：foo => bar。空行和以 # 开头的注释行会忽略。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
-        panel.Children.Add(cleanupPreview);
-        panel.Children.Add(policies);
+        panel.Children.Add(heading); panel.Children.Add(intro);
+        panel.Children.Add(kinds); panel.Children.Add(privacy); panel.Children.Add(privacyHint);
+        panel.Children.Add(cleanup); panel.Children.Add(rulesHint);
+        panel.Children.Add(cleanupPreview); panel.Children.Add(policies);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         actions.Children.Add(save); actions.Children.Add(reload);
         panel.Children.Add(actions); panel.Children.Add(revision); panel.Children.Add(feedback);
@@ -68,7 +70,8 @@ public sealed class AdvancedSettingsWindow : Window
         core.Changed += OnChanged;
         Closed += (_, _) =>
         {
-            closed = true; core.Changed -= OnChanged; policies.Changed -= MarkDirty; loaded = null;
+            closed = true; LanguageService.Changed -= ApplyLanguage;
+            core.Changed -= OnChanged; policies.Changed -= MarkDirty; loaded = null;
             loading = true; kinds.Text = privacy.Text = "";
             cleanup.Changed -= MarkDirty; cleanup.Changed -= cleanupPreview.Invalidate; cleanup.Clear();
             cleanupPreview.Dispose(); policies.Clear();
@@ -106,7 +109,8 @@ public sealed class AdvancedSettingsWindow : Window
             cleanup.Text = snapshot.Values["app.cleanup_rules"];
             policies.Load(snapshot.Values["app.app_cleanup_policies"]);
             surface.RequestedTheme = ViewTheme.From(snapshot);
-            revision.Text = $"已保存配置版本 {snapshot.Revision}";
+            revisionValue = snapshot.Revision;
+            ApplyLanguage();
             dirty = false; save.IsEnabled = false;
         }
         finally { loading = false; }
@@ -118,7 +122,7 @@ public sealed class AdvancedSettingsWindow : Window
         surface.RequestedTheme = ViewTheme.From(snapshot);
         if (dirty && snapshot.Revision != DisplayedRevision)
         {
-            ShowError("配置已在其他窗口变化。当前草稿已保留，请重新载入后再修改。");
+            ShowStatus(InfoBarSeverity.Error, text => text.Conflict);
             return;
         }
         Load(snapshot);
@@ -131,16 +135,14 @@ public sealed class AdvancedSettingsWindow : Window
         {
             core.Update(Values(), loaded.Revision);
             Load(core.Snapshot);
-            feedback.Severity = core.LastSideEffectError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
-            feedback.Message = core.LastSideEffectError is null ? "高级设置已保存并应用于采集。"
-                : $"高级设置已保存，但运行时应用未完整完成：{core.LastSideEffectError}";
-            feedback.IsOpen = true;
+            if (core.LastSideEffectError is { } sideEffect) ShowStatus(InfoBarSeverity.Warning, text => string.Format(text.SavedWarningFormat, sideEffect));
+            else ShowStatus(InfoBarSeverity.Success, text => text.Saved);
         }
         catch (Exception error)
         {
             save.IsEnabled = dirty;
-            ShowError(error is CoreException { Code: "revision_conflict" }
-                ? "配置已在其他窗口变化，未保存。当前草稿已保留，请重新载入后再修改。" : error.Message);
+            if (error is CoreException { Code: "revision_conflict" }) ShowStatus(InfoBarSeverity.Error, text => text.SaveConflict);
+            else ShowError(error.Message);
         }
     }
     private void Reload()
@@ -149,8 +151,40 @@ public sealed class AdvancedSettingsWindow : Window
         try { Load(core.Refresh()); feedback.IsOpen = false; }
         catch (Exception error) { ShowError(error.Message); }
     }
+    private void ShowStatus(InfoBarSeverity severity, Func<AdvancedStrings, string> message)
+    {
+        feedbackText = message;
+        feedback.Severity = severity;
+        feedback.Message = message(AdvancedStrings.Current);
+        feedback.IsOpen = true;
+    }
     private void ShowError(string message)
-    { feedback.Severity = InfoBarSeverity.Error; feedback.Message = message; feedback.IsOpen = true; }
+    {
+        // Retained core error text is data and is never translated.
+        feedbackText = null;
+        feedback.Severity = InfoBarSeverity.Error; feedback.Message = message; feedback.IsOpen = true;
+    }
+    // Re-derives this window and its three editors; drafts, revision and the open message severity stay put.
+    internal void ApplyLanguage()
+    {
+        // Windows' own template parts follow the same accepted language.
+        FrameworkChrome.ApplyDeferred(this);
+        if (closed) return;
+        var text = AdvancedStrings.Current;
+        Title = text.WindowTitle;
+        heading.Text = text.Heading;
+        intro.Text = text.Intro;
+        kinds.Header = text.KindsHeader;
+        kinds.PlaceholderText = text.KindsPlaceholder;
+        privacy.Header = text.PrivacyHeader;
+        privacyHint.Text = text.PrivacyHint;
+        rulesHint.Text = text.RulesExampleHint;
+        save.Content = text.Save;
+        reload.Content = text.Reload;
+        revision.Text = string.Format(text.RevisionFormat, revisionValue);
+        if (feedback.IsOpen && feedbackText is { } message) feedback.Message = message(text);
+        cleanup.ApplyLanguage(); cleanupPreview.ApplyLanguage(); policies.ApplyLanguage();
+    }
     internal void SetRules(string kindValue, string privacyValue, string cleanupValue, string policyValue)
     { kinds.Text = kindValue; privacy.Text = privacyValue; cleanup.Text = cleanupValue; policies.Text = policyValue; }
     internal void InvokeSave() => Invoke(save);

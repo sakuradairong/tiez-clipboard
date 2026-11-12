@@ -10,14 +10,16 @@ namespace TieZ.Native;
 internal sealed class CleanupPreviewView : UserControl, IDisposable
 {
     private readonly Func<string> getRules;
-    private readonly Expander expander = new() { Header = "规则测试预览", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Expander expander = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     internal bool IsContentReady => sample.IsLoaded;
     internal void Expand() => expander.IsExpanded = true;
-    private readonly TextBox sample = new() { Header = "测试文本（最多 4096 字符）", MaxLength = 4096,
+    private readonly TextBlock intro = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBox sample = new() { MaxLength = 4096,
         AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 70 };
-    private readonly TextBox output = new() { Header = "处理结果", IsReadOnly = true, AcceptsReturn = true,
+    private readonly TextBox output = new() { IsReadOnly = true, AcceptsReturn = true,
         TextWrapping = TextWrapping.Wrap, MinHeight = 70, MaxHeight = 220, Visibility = Visibility.Collapsed };
-    private readonly Button run = new() { Content = "测试当前规则", IsEnabled = false };
+    private readonly Button run = new() { IsEnabled = false };
+    private Func<AdvancedStrings, string>? statusText;
     private readonly InfoBar status = new() { IsOpen = false, IsClosable = true };
     private NativeCore? core;
     private CancellationTokenSource? pending;
@@ -35,11 +37,12 @@ internal sealed class CleanupPreviewView : UserControl, IDisposable
     {
         this.getRules = getRules;
         var panel = new StackPanel { Spacing = 10 };
-        panel.Children.Add(new TextBlock { Text = "仅测试这一组文字清理规则，不包含应用匹配、策略忽略动作、其他规则组或敏感检测。测试不会保存配置或操作剪贴板。最多 32 条规则、4096 次匹配、64 KiB 输出。", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(intro);
         panel.Children.Add(sample); panel.Children.Add(run); panel.Children.Add(output); panel.Children.Add(status);
         expander.Content = panel; Content = expander;
         sample.TextChanging += (_, _) => Invalidate();
         run.Click += async (_, _) => await RunAsync();
+        ApplyLanguage();
     }
     internal void Initialize(NativeCore sharedCore)
     { if (!disposed) { core = sharedCore; run.IsEnabled = true; } }
@@ -64,26 +67,39 @@ internal sealed class CleanupPreviewView : UserControl, IDisposable
             var result = await core.PreviewCleanupAsync(getRules(), sample.Text, cancellation.Token);
             if (disposed || current != generation || cancellation.IsCancellationRequested) return;
             output.Text = result.Text; output.Visibility = Visibility.Visible; Ignored = result.Ignored;
-            status.Severity = result.Ignored ? InfoBarSeverity.Warning : InfoBarSeverity.Success;
-            status.Message = $"已执行 {result.Rules} 条规则，匹配 {result.Matches} 处。"
-                + (result.Ignored ? "此规则组会忽略这条采集。" : "测试完成，配置尚未因此保存。");
-            status.IsOpen = true;
+            ShowStatus(result.Ignored ? InfoBarSeverity.Warning : InfoBarSeverity.Success, text => string.Format(text.RunResultFormat, result.Rules, result.Matches)
+                + (result.Ignored ? text.IgnoredSuffix : text.DoneSuffix));
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
             if (disposed || current != generation) return;
-            status.Severity = InfoBarSeverity.Error;
-            status.Message = error is CoreException { Code: "invalid_rule" } ? "规则含无效正则或缺少 =>，请修正后重试。"
-                : error is CoreException { Code: "preview_limit" } ? "测试超过样本、规则、匹配或输出上限，请缩小样本或规则范围。"
-                : $"测试未完成：{error.Message}";
-            status.IsOpen = true;
+            if (error is CoreException { Code: "invalid_rule" }) ShowStatus(InfoBarSeverity.Error, text => text.InvalidRule);
+            else if (error is CoreException { Code: "preview_limit" }) ShowStatus(InfoBarSeverity.Error, text => text.LimitError);
+            else ShowStatus(InfoBarSeverity.Error, text => string.Format(text.FailureFormat, error.Message));
         }
         finally
         {
             if (ReferenceEquals(pending, cancellation)) { pending = null; cancellation.Dispose(); }
             if (!disposed && current == generation) run.IsEnabled = core is not null;
         }
+    }
+    private void ShowStatus(InfoBarSeverity severity, Func<AdvancedStrings, string> message)
+    {
+        statusText = message; status.Severity = severity;
+        status.Message = message(AdvancedStrings.Current); status.IsOpen = true;
+    }
+    // Only chrome is re-derived; the sample draft, the result text and any pending request stay untouched.
+    internal void ApplyLanguage()
+    {
+        if (disposed) return;
+        var text = AdvancedStrings.Current;
+        expander.Header = text.PreviewHeader;
+        intro.Text = text.PreviewIntro;
+        sample.Header = text.SampleHeader;
+        output.Header = text.OutputHeader;
+        run.Content = text.Run;
+        if (status.IsOpen && statusText is { } message) status.Message = message(text);
     }
     internal void InvokeRun()
     {

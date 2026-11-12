@@ -13,30 +13,86 @@ public sealed class SettingsWindow : Window
     private static readonly string[] Themes = ["system", "light", "dark"];
     private readonly NativeCore core;
     private readonly Border surface = new();
-    private readonly StackPanel panel = new() { Spacing = 18, Padding = new Thickness(28) };
-    private readonly ComboBox language = new() { Header = "语言（配置值）", ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly ComboBox theme = new() { Header = "外观", ItemsSource = new[] { "跟随系统", "浅色", "深色" }, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox hotkey = new() { Header = "主窗口快捷键（留空禁用）", PlaceholderText = "Ctrl+Alt+V" };
-    private readonly ToggleSwitch deduplicate = new() { Header = "自动去重" };
-    private readonly ToggleSwitch showSearch = new() { Header = "显示主窗口搜索框" };
-    private readonly ToggleSwitch compact = new() { Header = "紧凑列表（鼠标悬停 1 秒显示预览）" };
-    private readonly ToggleSwitch persistent = new() { Header = "保存采集历史到磁盘", OffContent = "仅保留本次会话", OnContent = "持久化保存" };
-    private readonly ToggleSwitch captureFiles = new() { Header = "采集文件路径" };
-    private readonly ToggleSwitch captureRichText = new() { Header = "采集富文本和表格原始格式" };
-    private readonly ToggleSwitch privacy = new() { Header = "自动标记敏感内容" };
-    private readonly ToggleSwitch limitEnabled = new() { Header = "限制磁盘历史数量（置顶和有标签条目不计入）" };
-    private readonly TextBox limit = new() { Header = "最多保留普通历史条数（0–1000000）" };
-    private readonly Button advanced = new() { Content = "高级设置 · 隐私与清理规则" };
+    private readonly StackPanel panel = new() { Spacing = 12, Padding = new Thickness(20, 16, 20, 20) };
+    private readonly TextBlock appearanceHeading = new(), captureHeading = new(), storageHeading = new();
+    private ulong revisionValue;
+    private TextBlock headingText = new();
+    private TextBlock intro = new();
+
+    private void ApplyLanguage()
+    {
+        // Windows' own template parts follow the same accepted language.
+        FrameworkChrome.ApplyDeferred(this);
+        var text = SettingsStrings.Current;
+        Title = text.WindowTitle;
+        headingText.Text = text.Heading;
+        intro.Text = WorkspaceStrings.Current.SettingsHint;
+        appearanceHeading.Text = WorkspaceStrings.Current.Appearance;
+        captureHeading.Text = WorkspaceStrings.Current.Capture;
+        storageHeading.Text = WorkspaceStrings.Current.Storage;
+        language.Header = text.LanguageHeader;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(language, text.LanguageHeader);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(language, "InterfaceLanguageAutonyms");
+        ToolTipService.SetToolTip(language, text.LanguageHint);
+        var themeIndex = theme.SelectedIndex;
+        theme.Header = text.ThemeHeader;
+        // Replacing the item source clears the selection and raises SelectionChanged, which must not be read as a
+        // user edit while the window is only re-labelling itself.
+        applying = true;
+        try
+        {
+            theme.ItemsSource = new[] { text.ThemeSystem, text.ThemeLight, text.ThemeDark };
+            theme.SelectedIndex = Math.Max(0, themeIndex);
+        }
+        finally { applying = false; }
+        hotkey.Header = text.HotkeyHeader;
+        ToolTipService.SetToolTip(hotkey, text.HotkeyHint);
+        deduplicate.Header = text.Deduplicate;
+        showSearch.Header = text.ShowSearch;
+        compact.Header = text.Compact;
+        persistent.Header = text.PersistentHeader;
+        persistent.OffContent = text.PersistentOff;
+        persistent.OnContent = text.PersistentOn;
+        captureFiles.Header = text.CaptureFiles;
+        captureRichText.Header = text.CaptureRichText;
+        privacy.Header = text.Privacy;
+        limitEnabled.Header = text.LimitEnabled;
+        // A toggle switch renders Windows' own on/off words until the app supplies its own.
+        foreach (var toggle in new[] { deduplicate, showSearch, compact, captureFiles, captureRichText, privacy, limitEnabled })
+        {
+            toggle.OnContent = CommonStrings.Current.On;
+            toggle.OffContent = CommonStrings.Current.Off;
+        }        limit.Header = text.LimitHeader;
+        advanced.Content = text.Advanced;
+        openerSection.Header = text.Openers;
+        openers.ApplyLanguage();
+        reload.Content = text.Reload;
+        save.Content = text.Save;
+        revision.Text = string.Format(text.RevisionFormat, revisionValue);
+    }
+    private readonly ComboBox language = new() { ItemsSource = new[] { "简体中文", "English", "繁體中文" }, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox theme = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBox hotkey = new() { PlaceholderText = "Ctrl+Alt+V" };
+    private readonly ToggleSwitch deduplicate = new();
+    private readonly ToggleSwitch showSearch = new();
+    private readonly ToggleSwitch compact = new();
+    private readonly ToggleSwitch persistent = new();
+    private readonly ToggleSwitch captureFiles = new();
+    private readonly ToggleSwitch captureRichText = new();
+    private readonly ToggleSwitch privacy = new();
+    private readonly ToggleSwitch limitEnabled = new();
+    private readonly TextBox limit = new();
+    private readonly Button advanced = new();
     internal event Action? AdvancedRequested;
     private readonly OpenerSettingsEditor openers;
-    private readonly Expander openerSection = new() { Header = "打开记录使用的应用", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
-    private readonly Button reload = new() { Content = "重新载入" };
+    private readonly Expander openerSection = new() { HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    private readonly Button reload = new();
     internal OpenerSettingsEditor Openers => openers;
-    private readonly Button save = new() { Content = "保存设置", IsEnabled = false };
+    private readonly Button save = new() { IsEnabled = false };
     private readonly InfoBar message = new() { IsOpen = false, IsClosable = true };
     private readonly TextBlock revision = new() { TextWrapping = TextWrapping.Wrap };
     private bool loading;
-    private bool dirty;
+    private bool dirty, applying;
     private ulong expectedRevision;
     private SettingsSnapshot? loadedSnapshot;
     internal ulong DisplayedRevision => expectedRevision;
@@ -45,25 +101,36 @@ public sealed class SettingsWindow : Window
     {
         this.core = core;
         openers = new OpenerSettingsEditor(() => WinRT.Interop.WindowNative.GetWindowHandle(this), core.GetApplicationCatalogAsync) { IconReader = core.GetApplicationIconAsync };
-        Title = "TieZ · 设置";
-        AppWindow.Resize(new SizeInt32(520, 740));
-        panel.Children.Add(new TextBlock { Text = "设置", FontSize = 28, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        var intro = new TextBlock { Text = "原生窗口 · 与主窗口共享同一配置核心", TextWrapping = TextWrapping.Wrap };
+        Title = SettingsStrings.Current.WindowTitle;
+        LanguageService.Changed += ApplyLanguage;
+        Closed += (_, _) => LanguageService.Changed -= ApplyLanguage;
+        AppWindow.Resize(new SizeInt32(620, 820));
+        panel.Children.Add(headingText = new TextBlock { FontSize = 26, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        intro = new TextBlock { TextWrapping = TextWrapping.Wrap };
         intro.Style = revision.Style = (Style)Application.Current.Resources["NativeCaptionStyle"];
         panel.Children.Add(intro);
-        panel.Children.Add(language); panel.Children.Add(theme); panel.Children.Add(hotkey);
-        ToolTipService.SetToolTip(hotkey, "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。");
-        panel.Children.Add(deduplicate); panel.Children.Add(showSearch); panel.Children.Add(compact);
-        panel.Children.Add(persistent); panel.Children.Add(captureFiles); panel.Children.Add(captureRichText);
-        panel.Children.Add(privacy); panel.Children.Add(limitEnabled); panel.Children.Add(limit);
+        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, ToggleRow(showSearch), ToggleRow(compact)));
+        ToolTipService.SetToolTip(hotkey, SettingsStrings.Current.HotkeyHint);
+        panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(privacy)));
+        panel.Children.Add(SettingsCard(storageHeading, ToggleRow(persistent), ToggleRow(limitEnabled), limit));
         openerSection.Content = openers; panel.Children.Add(openerSection);
         openers.Changed += MarkDirty; openers.Error += ShowError;
         panel.Children.Add(advanced);
         advanced.Click += (_, _) => AdvancedRequested?.Invoke();
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        actions.Children.Add(save); actions.Children.Add(reload);
-        panel.Children.Add(actions); panel.Children.Add(revision); panel.Children.Add(message);
-        surface.Child = new ScrollViewer { Content = panel };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        save.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+        save.MinWidth = 100;
+        actions.Children.Add(reload); actions.Children.Add(save);
+        var footer = new StackPanel { Spacing = 8, Padding = new Thickness(20, 12, 20, 16) };
+        footer.Children.Add(message); footer.Children.Add(actions);
+        // Keep save/reload and validation feedback reachable while the settings themselves scroll.
+        ToolTipService.SetToolTip(actions, revision);
+        var layout = new Grid();
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.Children.Add(new ScrollViewer { Content = panel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        Grid.SetRow(footer, 1); layout.Children.Add(footer);
+        surface.Child = layout;
         surface.Style = (Style)Application.Current.Resources["NativeSettingsSurfaceStyle"];
         Content = surface;
         language.SelectionChanged += (_, _) => MarkDirty();
@@ -91,12 +158,39 @@ public sealed class SettingsWindow : Window
         Load(core.Snapshot);
     }
 
+    private static Border SettingsCard(TextBlock heading, params UIElement[] controls)
+    {
+        heading.FontSize = 16;
+        heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        var content = new StackPanel { Spacing = 16 };
+        content.Children.Add(heading);
+        foreach (var control in controls) content.Children.Add(control);
+        return new Border { Style = (Style)Application.Current.Resources["NativeSurfaceStyle"], Child = content };
+    }
+
+    private static Grid ToggleRow(ToggleSwitch toggle)
+    {
+        var row = new Grid { ColumnSpacing = 16, MinHeight = 40 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var label = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        label.SetBinding(TextBlock.TextProperty, new Microsoft.UI.Xaml.Data.Binding
+        {
+            Source = toggle, Path = new PropertyPath("Header"), Mode = Microsoft.UI.Xaml.Data.BindingMode.OneWay
+        });
+        toggle.HeaderTemplate = (DataTemplate)Application.Current.Resources["NativeHiddenSettingHeader"];
+        toggle.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(toggle, 1);
+        row.Children.Add(label); row.Children.Add(toggle);
+        return row;
+    }
+
     private void MarkDirty()
     {
-        if (loading || loadedSnapshot is null) return;
+        if (loading || applying || loadedSnapshot is null) return;
         dirty = CurrentValues().Any(pair => loadedSnapshot.Values[pair.Key] != pair.Value);
         save.IsEnabled = dirty && !openers.IsPicking;
-        if (dirty && core.Snapshot.Revision != expectedRevision) ShowError("配置已变化。请重新载入后再修改；当前草稿尚未保存。");
+        if (dirty && core.Snapshot.Revision != expectedRevision) ShowError(SettingsStrings.Current.Conflict);
         else message.IsOpen = false;
     }
 
@@ -121,7 +215,9 @@ public sealed class SettingsWindow : Window
             limitEnabled.IsOn = snapshot.Values["app.persistent_limit_enabled"] == "true";
             limit.Text = snapshot.Values["app.persistent_limit"];
             panel.RequestedTheme = surface.RequestedTheme = ViewTheme.From(snapshot);
-            revision.Text = $"已保存配置版本 {snapshot.Revision}";
+            revisionValue = snapshot.Revision;
+        revision.Text = string.Format(SettingsStrings.Current.RevisionFormat, revisionValue);
+        ApplyLanguage();
             dirty = false; save.IsEnabled = false;
         }
         finally { loading = false; }
@@ -133,7 +229,7 @@ public sealed class SettingsWindow : Window
         if (dirty && snapshot.Revision != expectedRevision)
         {
             openers.InvalidatePickerChoice();
-            ShowError("配置已变化。请重新载入后再修改；当前草稿尚未保存。");
+            ShowError(SettingsStrings.Current.Conflict);
             return;
         }
         Load(snapshot);
@@ -144,8 +240,8 @@ public sealed class SettingsWindow : Window
         var values = new Dictionary<string, string>
         {
             ["app.hotkey"] = hotkey.Text,
-            ["app.language"] = Languages[language.SelectedIndex],
-            ["app.color_mode"] = Themes[theme.SelectedIndex],
+            ["app.language"] = Languages[Math.Clamp(language.SelectedIndex, 0, Languages.Length - 1)],
+            ["app.color_mode"] = Themes[Math.Clamp(theme.SelectedIndex, 0, Themes.Length - 1)],
             ["app.deduplicate"] = deduplicate.IsOn ? "true" : "false",
             ["app.show_search_box"] = showSearch.IsOn ? "true" : "false",
             ["app.compact_mode"] = compact.IsOn ? "true" : "false",
@@ -169,15 +265,15 @@ public sealed class SettingsWindow : Window
             core.Update(CurrentValues(), expectedRevision);
             Load(core.Snapshot);
             message.Severity = core.LastSideEffectError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
-            message.Message = core.LastSideEffectError is null ? "设置已保存，主窗口已同步。"
-                : $"设置已保存，但快捷键未完整应用：{core.LastSideEffectError}。可退出并重新打开应用恢复。";
+            message.Message = core.LastSideEffectError is null ? SettingsStrings.Current.Saved
+                : string.Format(SettingsStrings.Current.SavedWarningFormat, core.LastSideEffectError);
             message.IsOpen = true;
         }
         catch (Exception e)
         {
             save.IsEnabled = true;
             ShowError(e is CoreException { Code: "hotkey_conflict" }
-                ? "快捷键已被系统或其他应用占用。原配置和绑定保持，当前草稿已保留。" : e.Message);
+                ? SettingsStrings.Current.HotkeyConflict : e.Message);
         }
     }
 

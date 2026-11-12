@@ -81,7 +81,7 @@ internal sealed class NativeOpenWindowSmoke(MainWindow main, NativeCore core, st
         var result = view.LastOpenResult!;
         var observed = await Receive();
         Check(result.Id == id && result.Route == "desktop" && observed.Body.SequenceEqual(expected), "Native open lost ID, route or exact bytes");
-        if (result.Exported) { exports.Add(observed.Path); Check(view.OpenFeedback.Contains("修改不会回写历史"), "Temporary-copy limitation was not disclosed"); }
+        if (result.Exported) { exports.Add(observed.Path); Check(view.OpenFeedback.Contains(HistoryStrings.Zh.OpenExportedNoWriteback), "Temporary-copy limitation was not disclosed"); }
         Check(core.Refresh().Revision == settingsRevision, "Opening saved settings");
         Check(!view.ContentOpenPending && !view.HasError, "Accepted launch was presented as failure");
         return result;
@@ -108,7 +108,7 @@ internal sealed class NativeOpenWindowSmoke(MainWindow main, NativeCore core, st
             Check(!view.CanOpen && !view.CardCanOpen(id), "Duplicate open was not disabled");
             invalidate();
             await WaitUntil(() => !view.ContentOpenPending, "Invalidation did not cancel queued open");
-            Check(view.LastOpenResult is null && view.OpenFeedback.Contains("取消"), "Queued cancellation claimed success");
+            Check(view.LastOpenResult is null && view.OpenFeedback.Contains(HistoryStrings.Zh.OpenCancelled), "Queued cancellation claimed success");
         }
         finally { ReleaseGate(); }
         Check((await core.GetEntryAsync(id)).UseCount == before && (await core.PollOpenContentAsync()).ActiveExports == activeExports,
@@ -176,8 +176,8 @@ internal sealed class NativeOpenWindowSmoke(MainWindow main, NativeCore core, st
             Inject("CREATE TRIGGER ui_usage_failure BEFORE UPDATE OF use_count ON clipboard_history BEGIN SELECT RAISE(ABORT,'private owned fixture'); END;");
             int beforeCount = (await core.GetEntryAsync(publicId)).UseCount;
             opened = await Open(publicId, Encoding.UTF8.GetBytes(body));
-            Check(!opened.UsageUpdated && opened.UsageError is not null && view.OpenFeedbackTitle.Contains("已打开，使用次数未更新")
-                && view.OpenFeedback.Contains("请勿") && !view.OpenFeedback.Contains("private"), "Real accounting failure was hidden or misreported as launch failure");
+            Check(!opened.UsageUpdated && opened.UsageError is not null && view.OpenFeedbackTitle.Contains(HistoryStrings.Zh.OpenUsageTitle)
+                && view.OpenFeedback.Contains(HistoryStrings.Zh.OpenUsageWarning) && !view.OpenFeedback.Contains("private"), "Real accounting failure was hidden or misreported as launch failure");
             Check((await core.GetEntryAsync(publicId)).UseCount == beforeCount, "Failed accounting changed count");
             Inject("DROP TRIGGER ui_usage_failure;");
             await CancelQueued(publicId, main.HideToTray); main.ShowMain();
@@ -202,7 +202,7 @@ internal sealed class NativeOpenWindowSmoke(MainWindow main, NativeCore core, st
             }
             finally { ReleaseGate(); }
             await WaitUntil(() => !view.ContentOpenPending && view.HasError, "Real stale request was not rejected");
-            actualRevisionConflict = view.OpenFeedback.Contains("记录已变化") && view.LastOpenResult is null;
+            actualRevisionConflict = view.OpenFeedback.Contains(HistoryStrings.Zh.OpenConflict) && view.LastOpenResult is null;
             Check(actualRevisionConflict && (await core.GetEntryAsync(otherId)).UseCount == 0
                 && !File.Exists(Path.Combine(fixture, "open-observed.json")), "Conflict launched or counted stale content");
             string missingHandler = Path.Combine(directory, "missing-owned-handler.exe");
@@ -235,7 +235,7 @@ internal sealed class NativeOpenWindowSmoke(MainWindow main, NativeCore core, st
             main.HideToTray(); Check(submittedToken.IsCancellationRequested, "Hide did not request cancellation");
             release.TrySetResult(true);
             await WaitUntil(() => !view.ContentOpenPending && ReferenceEquals(view.LastOpenResult, acceptedResult), "Submitted success was discarded after cancellation");
-            Check(view.OpenFeedbackTitle == "已打开" && !view.HasError && acceptedExport.Body.SequenceEqual(Encoding.UTF8.GetBytes(body)), "Submitted cancellation became false failure");
+            Check(view.OpenFeedbackTitle == HistoryStrings.Zh.OpenSuccessTitle && !view.HasError && acceptedExport.Body.SequenceEqual(Encoding.UTF8.GetBytes(body)), "Submitted cancellation became false failure");
             main.ShowMain(); view.ContentOpener = null;
             await Show(publicId); await WaitUntil(() => view.CardCanOpen(publicId), "Exit fixture did not become ready");
             HoldGate(); view.InvokeCardOpen(publicId);

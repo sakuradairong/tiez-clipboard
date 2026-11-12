@@ -36,11 +36,13 @@ public sealed partial class HistoryView
     }
     private void OnCardCopyLoaded(object sender, RoutedEventArgs args)
     {
-        if (sender is Button button) button.IsEnabled = CanCopyCard(button);
+        if (sender is not Button button) return;
+        ApplyCardButtonText(button); button.IsEnabled = CanCopyCard(button);
     }
     private void OnCardCopyContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
     {
-        if (sender is Button button) button.IsEnabled = CanCopyCard(button);
+        if (sender is not Button button) return;
+        ApplyCardButtonText(button); button.IsEnabled = CanCopyCard(button);
     }
     private void OnCardCopyUnloaded(object sender, RoutedEventArgs args)
     {
@@ -62,7 +64,7 @@ public sealed partial class HistoryView
             // Once Rust accepts a write, later cancellation cannot turn its result into 'cancelled'.
             if (!disposed) ShowCopySuccess(request.PlainText);
         }
-        catch (OperationCanceledException) { if (!disposed) ShowError("复制请求已取消。"); }
+        catch (OperationCanceledException) { if (!disposed) ShowError(text => text.CopyCancelled); }
         catch (ObjectDisposedException) when (disposed) { }
         catch (Exception error) { if (!disposed) ShowCopyError(error); }
         finally
@@ -72,14 +74,17 @@ public sealed partial class HistoryView
         }
     }
     private void CancelCardCopy() => cardCopyCancellation?.Cancel();
-    private void ShowCopySuccess(bool plainText)
+    private void ShowCopySuccess(bool plainText) => PresentFeedback(InfoBarSeverity.Success, () =>
     {
-        Feedback.Title = "已复制";
-        Feedback.Message = plainText ? "已复制为纯文本。" : "已按原始格式复制到剪贴板。";
-        Feedback.Severity = InfoBarSeverity.Success; Feedback.IsOpen = true;
+        var text = HistoryStrings.Current;
+        Feedback.Title = text.CopySuccessTitle;
+        Feedback.Message = plainText ? text.CopySuccessPlain : text.CopySuccessOriginal;
+    });
+    private void ShowCopyError(Exception error)
+    {
+        if (error is CoreException { Code: "history_conflict" }) ShowError(text => text.CopyConflict);
+        else ShowError(error.Message);
     }
-    private void ShowCopyError(Exception error) => ShowError(error is CoreException { Code: "history_conflict" }
-        ? "记录已变化，本次未复制。请刷新后重试。" : error.Message);
     private void ReleaseCardCopies()
     {
         HistoryCards.LayoutUpdated -= OnCardCopyLayoutUpdated; CancelCardCopy(); CardCopyWriter = null;

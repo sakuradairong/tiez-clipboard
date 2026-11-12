@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
@@ -21,6 +22,8 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     private NativeCore? core;
     private TagRow? selected;
     private ContentDialog? activeDialog;
+    private Func<TagStrings, string>? feedbackRender;
+    private Action<TagStrings>? dialogChrome;
     private bool renameDirty;
     private ulong? revision;
     private string? after, acceptedColor, draftColor;
@@ -65,7 +68,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (HasDraft && !ReferenceEquals(selected, TagList.SelectedItem))
             {
                 binding = true; TagList.SelectedItem = selected; binding = false;
-                Message("请先保存当前修改，或刷新以放弃草稿。", InfoBarSeverity.Warning); return;
+                Message(text => text.DraftBlocked, InfoBarSeverity.Warning); return;
             }
             LoadSelected(TagList.SelectedItem as TagRow);
         };
@@ -82,12 +85,12 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         NewTagName.BeforeTextChanging += (_, args) =>
         {
             if (!binding && args.NewText.IndexOfAny(['\r', '\n']) >= 0)
-            { args.Cancel = true; Message("标签名称请保持在一行。", InfoBarSeverity.Warning); }
+            { args.Cancel = true; Message(text => text.SingleLineName, InfoBarSeverity.Warning); }
         };
         RenameName.BeforeTextChanging += (_, args) =>
         {
             if (!binding && args.NewText.IndexOfAny(['\r', '\n']) >= 0)
-            { args.Cancel = true; Message("标签名称请保持在一行。", InfoBarSeverity.Warning); }
+            { args.Cancel = true; Message(text => text.SingleLineName, InfoBarSeverity.Warning); }
         };
         RenameName.TextChanging += (_, _) =>
         {
@@ -112,6 +115,42 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         MoreButton.Click += async (_, _) => await LoadAsync(reset: false);
         FilterButton.Click += (_, _) => { if (!IsBusy && !HasDraft && !stale && selected is not null) FilterRequested?.Invoke(selected.Info.Name); };
         LoadSelected(null); UpdateCommands();
+        LanguageService.Changed += ApplyLanguage; ApplyLanguage();
+    }
+    /// <summary>
+    /// Re-derives every localized string of this surface from the shared language. It never talks to the core:
+    /// selection, paging, search, sort, drafts, an open confirmation and the busy state stay exactly where they were.
+    /// </summary>
+    internal void ApplyLanguage()
+    {
+        if (disposed) return;
+        var text = TagStrings.Current;
+        var common = CommonStrings.Current;
+        TitleText.Text = text.Title;
+        NewTagName.Header = text.NewTagHeader; NewTagName.PlaceholderText = text.NewTagPlaceholder;
+        CreateButton.Content = text.CreateTag; ReloadButton.Content = common.Refresh;
+        TagSearch.PlaceholderText = text.SearchPlaceholder;
+        AutomationProperties.SetName(TagSearch, text.SearchName);
+        SearchButton.Content = common.Search; ClearSearchButton.Content = text.ClearSearch;
+        SortChoice.Header = text.SortHeader;
+        if (SortChoice.Items.Count == 2 && SortChoice.Items[0] is ComboBoxItem countItem && SortChoice.Items[1] is ComboBoxItem nameItem)
+        { countItem.Content = text.SortByCount; nameItem.Content = text.SortByName; }
+        AutomationProperties.SetName(TagList, text.ListName);
+        MoreButton.Content = text.MoreTags;
+        SelectedName.Text = selected?.Label ?? text.NoTagSelected;
+        SelectedCounts.Text = selected?.Details ?? "";
+        FilterButton.Content = text.FilterByTag;
+        DeleteButton.Content = text.DeleteTag; DeleteHint.Text = text.DeleteTagHint;
+        RenameName.Header = text.RenameHeader; RenameButton.Content = text.RenameButton; RenameHint.Text = text.RenameHint;
+        ColorText.Header = text.ColorHeader; ColorText.PlaceholderText = text.ColorPlaceholder;
+        ClearColorButton.Content = text.UseDefaultColor; SaveColorButton.Content = text.SaveColor;
+        EditorHint.Text = text.EditorHint;
+        // Rows and their containers stay; only the labels derived from the table are re-raised.
+        foreach (var row in rows) row.RefreshText();
+        DescribeColor();
+        UpdateCommands();
+        if (Feedback.IsOpen && feedbackRender is not null) Feedback.Message = feedbackRender(text);
+        dialogChrome?.Invoke(text);
     }
     internal void Initialize(NativeCore sharedCore)
     {
@@ -135,7 +174,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         binding = true;
         try
         {
-            SelectedName.Text = row?.Label ?? "选择一个标签"; SelectedCounts.Text = row?.Details ?? "";
+            SelectedName.Text = row?.Label ?? TagStrings.Current.NoTagSelected; SelectedCounts.Text = row?.Details ?? "";
             RenameName.Text = row?.Info.Name ?? ""; ColorText.Text = acceptedColor ?? "";
             BindPicker(acceptedColor);
         }
@@ -161,10 +200,13 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         DescribeColor(); if (!stale) Feedback.IsOpen = false; UpdateCommands();
     }
     private static string? Lines(string? value) => value?.Replace("\r\n", "\n").Replace("\r", "\n");
-    private void DescribeColor() => ColorHint.Text = draftColor is null ? "使用默认颜色。"
-        : NativeTagColor.TryParse(draftColor, out _) ? "支持透明度；使用颜色选择器可直接调整。"
-        : dirty ? "无法解析此颜色。请输入 HEX、RGB、RGBA 或颜色名称后再保存。"
-        : "此颜色格式暂不支持预览；未修改的原值会保留，也可选择新的颜色。";
+    private void DescribeColor()
+    {
+        var text = TagStrings.Current;
+        ColorHint.Text = draftColor is null ? text.ColorDefaultHint
+            : NativeTagColor.TryParse(draftColor, out _) ? text.ColorAlphaHint
+            : dirty ? text.ColorInvalidHint : text.ColorUnsupportedHint;
+    }
     private void UpdateCommands()
     {
         if (disposed) return;
@@ -185,11 +227,16 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         SaveColorButton.IsEnabled = ready && selected is not null && dirty && !renameDirty && !stale && !HasInvalidColor;
         FilterButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
         DeleteButton.IsEnabled = ready && selected is not null && !HasDraft && !stale;
-        Status.Text = loading ? "正在读取标签…" : saving ? "正在保存…" : $"已载入 {rows.Count} 个标签" + (hasMore ? " · 可继续载入" : "")
-            + (searchTerm.Length > 0 ? $" · 搜索“{searchTerm}”" : "");
+        var text = TagStrings.Current;
+        Status.Text = loading ? text.StatusLoading : saving ? text.StatusSaving : string.Format(text.StatusLoaded, rows.Count)
+            + (hasMore ? text.Separator + text.StatusMore : "")
+            + (searchTerm.Length > 0 ? text.Separator + string.Format(text.StatusSearch, searchTerm) : "");
     }
-    private void Message(string message, InfoBarSeverity severity)
-    { if (!disposed) { Feedback.Message = message; Feedback.Severity = severity; Feedback.IsOpen = true; } }
+    private void Message(Func<TagStrings, string> message, InfoBarSeverity severity)
+    {
+        if (disposed) return;
+        feedbackRender = message; Feedback.Message = message(TagStrings.Current); Feedback.Severity = severity; Feedback.IsOpen = true;
+    }
     private async Task ChangeSortAsync()
     {
         if (binding || disposed) return;
@@ -249,7 +296,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (!disposed && current == generation)
             {
                 if (error is CoreException { Code: "history_conflict" }) stale = true;
-                Message($"读取标签失败，当前内容和草稿已保留：{error.Message}", InfoBarSeverity.Error);
+                Message(text => string.Format(text.ReadFailed, error.Message), InfoBarSeverity.Error);
             }
             return false;
         }
@@ -277,8 +324,8 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             refreshOnActivate = true; saving = false;
             bool reloaded = active && await LoadAsync(reset: true, preferred: name);
             if (!reloaded) stale = true; // The old rows cannot authorize another metadata change after a committed save.
-            if (!disposed) Message(reloaded ? (result.Changed ? "标签已保存。" : "内容未变化，无需重复保存。")
-                : "保存已完成；目录尚未刷新，返回标签页后刷新查看。", reloaded ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
+            if (!disposed) Message(text => reloaded ? (result.Changed ? text.TagSaved : text.TagUnchanged) : text.SaveUnrefreshed,
+                reloaded ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -286,7 +333,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (!disposed)
             {
                 if (error is CoreException { Code: "history_conflict" }) stale = true;
-                Message($"未能保存，草稿已保留。请刷新后重试：{error.Message}", InfoBarSeverity.Error);
+                Message(text => string.Format(text.SaveFailed, error.Message), InfoBarSeverity.Error);
             }
         }
         finally { saving = false; if (!disposed) UpdateCommands(); }
@@ -295,10 +342,17 @@ public sealed partial class TagManagementView : UserControl, IDisposable
     {
         if (disposed || core is null || !RenameButton.IsEnabled || selected is null || revision is not { } expected || activeDialog is not null) return;
         string oldName = selected.Info.Name, newName = RenameName.Text.Trim();
-        var dialog = new ContentDialog { Title = "重命名或合并标签？", XamlRoot = XamlRoot,
-            Content = new TextBlock { TextWrapping = TextWrapping.Wrap,
-                Text = $"“{oldName}” → “{newName}”\n将更新此标签的 {selected.Info.Count} 条历史。目标标签已存在时会合并，保留目标标签颜色。\n敏感标签（sensitive、密码、password，不区分英文大小写）会改变相关内容的保护状态；进入敏感状态会清除 OCR。" },
-            PrimaryButtonText = "确认重命名", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
+        long affected = selected.Info.Count;
+        var body = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var dialog = new ContentDialog { XamlRoot = XamlRoot, Content = body, DefaultButton = ContentDialogButton.Close };
+        void Render(TagStrings text)
+        {
+            dialog.Title = text.RenameTitle;
+            body.Text = string.Format(text.RenameBody, oldName, newName, affected);
+            dialog.PrimaryButtonText = text.RenameConfirm;
+            dialog.CloseButtonText = CommonStrings.Current.Cancel;
+        }
+        Render(TagStrings.Current); dialogChrome = Render;
         activeDialog = dialog; UpdateCommands();
         try
         {
@@ -312,7 +366,7 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             refreshOnActivate = true; saving = false;
             bool reloaded = active && await LoadAsync(reset: true, preferred: newName);
             if (!reloaded) stale = true;
-            if (!disposed) Message(reloaded ? "标签已重命名或合并。" : "标签已修改；请刷新目录查看。",
+            if (!disposed) Message(text => reloaded ? text.Renamed : text.RenameUnrefreshed,
                 reloaded ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
         }
         catch (OperationCanceledException) { }
@@ -321,10 +375,15 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (!disposed)
             {
                 if (error is CoreException { Code: "history_conflict" or "not_found" }) stale = true;
-                Message($"重命名失败，名称草稿已保留。请刷新后重试：{error.Message}", InfoBarSeverity.Error);
+                Message(text => string.Format(text.RenameFailed, error.Message), InfoBarSeverity.Error);
             }
         }
-        finally { if (ReferenceEquals(activeDialog, dialog)) activeDialog = null; saving = false; if (!disposed) UpdateCommands(); }
+        finally
+        {
+            if (ReferenceEquals(activeDialog, dialog)) activeDialog = null;
+            if (activeDialog is null) dialogChrome = null;
+            saving = false; if (!disposed) UpdateCommands();
+        }
     }
     private async Task DeleteAsync()
     {
@@ -336,12 +395,19 @@ public sealed partial class TagManagementView : UserControl, IDisposable
         {
             var preview = await core.GetTagDeletePreviewAsync(name, lifetime.Token);
             if (disposed || !active) return;
-            dialog = new ContentDialog { Title = "删除标签及其历史？", XamlRoot = XamlRoot,
-                Content = new TextBlock { TextWrapping = TextWrapping.Wrap,
-                    Text = $"删除标签“{preview.Name}”，并永久删除带此标签的全部 {preview.Count} 条历史：已保存 {preview.StoredCount} 条、本次会话 {preview.SessionCount} 条。\n置顶或同时带其他标签的匹配记录也会整条删除；其关联数据和不再被引用的应用附件将清理。\n此操作无法撤销；仅删除标签标记并保留记录不是此操作的行为。" },
-                PrimaryButtonText = "删除标签及历史", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close };
-            activeDialog = dialog; saving = false; UpdateCommands();
-            var choice = await dialog.ShowAsync(); activeDialog = null;
+            var body = new TextBlock { TextWrapping = TextWrapping.Wrap };
+            var created = new ContentDialog { XamlRoot = XamlRoot, Content = body, DefaultButton = ContentDialogButton.Close };
+            dialog = created;
+            void Render(TagStrings text)
+            {
+                created.Title = text.DeleteTitle;
+                body.Text = string.Format(text.DeleteBody, preview.Name, preview.Count, preview.StoredCount, preview.SessionCount);
+                created.PrimaryButtonText = text.DeleteConfirm;
+                created.CloseButtonText = CommonStrings.Current.Cancel;
+            }
+            Render(TagStrings.Current); dialogChrome = Render;
+            activeDialog = created; saving = false; UpdateCommands();
+            var choice = await created.ShowAsync(); activeDialog = null;
             if (disposed || !active || choice != ContentDialogResult.Primary) return;
             saving = true; UpdateCommands();
             var result = await core.DeleteTagAsync(preview.Name, preview.Revision, lifetime.Token);
@@ -349,9 +415,9 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             revision = result.Revision; refreshOnActivate = true; saving = false;
             bool reloaded = active && await LoadAsync(reset: true);
             if (!reloaded) stale = true;
-            if (!disposed) Message($"标签已删除，同时删除 {result.RemovedCount} 条历史（已保存 {result.StoredCount}、本次会话 {result.SessionCount}）。"
-                + (reloaded ? "" : " 目录尚未刷新，请刷新查看。")
-                + (result.CleanupError is null ? "" : " 附件清理未完成；历史删除已生效。"),
+            if (!disposed) Message(text => string.Format(text.Deleted, result.RemovedCount, result.StoredCount, result.SessionCount)
+                + (reloaded ? "" : text.DeleteUnrefreshed)
+                + (result.CleanupError is null ? "" : text.CleanupIncomplete),
                 reloaded && result.CleanupError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning);
         }
         catch (OperationCanceledException) { }
@@ -360,10 +426,15 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             if (!disposed)
             {
                 if (error is CoreException { Code: "history_conflict" or "not_found" }) stale = true;
-                Message($"未能删除，当前条目和输入已保留。请刷新并重新确认：{error.Message}", InfoBarSeverity.Error);
+                Message(text => string.Format(text.DeleteFailed, error.Message), InfoBarSeverity.Error);
             }
         }
-        finally { if (ReferenceEquals(activeDialog, dialog)) activeDialog = null; saving = false; if (!disposed) UpdateCommands(); }
+        finally
+        {
+            if (ReferenceEquals(activeDialog, dialog)) activeDialog = null;
+            if (activeDialog is null) dialogChrome = null;
+            saving = false; if (!disposed) UpdateCommands();
+        }
     }
     private async void OnPoll(DispatcherQueueTimer sender, object args)
     {
@@ -374,17 +445,18 @@ public sealed partial class TagManagementView : UserControl, IDisposable
             var changes = await core!.GetHistoryChangesAsync(expected, lifetime.Token);
             if (!disposed && active && !IsBusy && revision == expected && changes.Revision != expected)
             {
-                stale = true; Message("标签或历史已有更新。当前草稿已保留；刷新后可继续操作。", InfoBarSeverity.Warning); UpdateCommands();
+                stale = true; Message(text => text.StaleNotice, InfoBarSeverity.Warning); UpdateCommands();
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception error) { if (!disposed && active) Message($"检查更新失败：{error.Message}", InfoBarSeverity.Warning); }
+        catch (Exception error) { if (!disposed && active) Message(text => string.Format(text.PollFailed, error.Message), InfoBarSeverity.Warning); }
         finally { polling = false; }
     }
     public void Dispose()
     {
         if (disposed) return;
         disposed = true; active = false; dirty = renameDirty = stale = hasMore = loading = saving = false; generation++; lifetime.Cancel(); readCancellation?.Cancel();
+        LanguageService.Changed -= ApplyLanguage; feedbackRender = null; dialogChrome = null;
         activeDialog?.Hide(); activeDialog = null;
         poll?.Stop(); if (poll is not null) poll.Tick -= OnPoll;
         readCancellation?.Dispose(); readCancellation = null; lifetime.Dispose();

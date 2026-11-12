@@ -16,6 +16,7 @@ internal sealed class HistoryThumbnailWindowSmoke(MainWindow main, NativeCore co
     private int phase, visibleImages, peak, initialRealized, pagedRealized;
     private bool ticking;
     private long sensitiveId, brokenId, animationId, changedId;
+    private int previewWaits;
     private long[] initial = [];
     private long originalId;
     private string originalImage = "", originalAnimation = "";
@@ -87,8 +88,12 @@ internal sealed class HistoryThumbnailWindowSmoke(MainWindow main, NativeCore co
                         && (await core.GetHistoryAsync(new())).Revision == historyRevision, "Thumbnail reads changed original formats/history.");
                     view.Select(sensitiveId); view.Invoke("reveal"); break;
                 case 3:
+                    // The detail preview decodes off the UI thread; wait for it before judging the reveal.
+                    if (!view.HasImagePreview && ++previewWaits < 25) return;
                     Check(view.HasImagePreview && view.PreviewedImageId == sensitiveId && !view.ThumbnailIds.Contains(sensitiveId),
-                        "Explicit sensitive detail reveal leaked into a card.");
+                        $"Explicit sensitive detail reveal leaked into a card: preview={view.HasImagePreview}, "
+                        + $"previewed={view.PreviewedImageId} expected={sensitiveId}, card={view.ThumbnailIds.Contains(sensitiveId)}, "
+                        + $"detail={view.Detail}");
                     core.Update(new Dictionary<string,string> { ["app.compact_mode"] = "true" }, core.Snapshot.Revision); break;
                 case 4:
                     if (!Ready()) return;

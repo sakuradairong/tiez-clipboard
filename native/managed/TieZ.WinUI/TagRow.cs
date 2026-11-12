@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
 using Microsoft.UI;
@@ -8,12 +9,21 @@ using Colors = Microsoft.UI.Colors;
 
 namespace TieZ.Native;
 
-public sealed class TagRow(TagInfo info)
+public sealed class TagRow(TagInfo info) : INotifyPropertyChanged
 {
     internal TagInfo Info => info;
-    public string Label => info.Name.Length == 0 ? "（未命名标签）" : info.Name;
-    public string Details => $"{info.Count} 条 · 已保存 {info.StoredCount} · 本次会话 {info.SessionCount}" + (info.IsSensitive ? " · 敏感内容" : "");
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public string Label => info.Name.Length == 0 ? TagStrings.Current.UnnamedTag : info.Name;
+    public string Details => string.Format(TagStrings.Current.TagDetails, info.Count, info.StoredCount, info.SessionCount)
+        + (info.IsSensitive ? TagStrings.Current.SensitiveSuffix : "");
     public SolidColorBrush Swatch => new(NativeTagColor.TryParse(info.Color, out var color) ? color : Colors.Transparent);
+
+    /// <summary>Re-derives the localized labels in place so a live language switch keeps every row container.</summary>
+    internal void RefreshText()
+    {
+        PropertyChanged?.Invoke(this, new(nameof(Label)));
+        PropertyChanged?.Invoke(this, new(nameof(Details)));
+    }
 }
 internal static class NativeTagColor
 {

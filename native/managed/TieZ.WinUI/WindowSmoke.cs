@@ -24,6 +24,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private TimeSpan compactRequestedAt;
     private PointInt32 compactMainPosition;
     private bool compactValidated, compactFocusPreserved;
+    private int previewWaits;
     private string compactInvalidation = "none", compactActivation = "none";
     private AdvancedSettingsWindow? advancedWindow;
     private ulong advancedRevision;
@@ -43,6 +44,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private readonly Stopwatch elapsed = Stopwatch.StartNew();
     private const string Original = "  原生测试 %_ \r\n  ";
     private const string Edited = "  修改后中文 %_ \r\n  ";
+    private readonly string largeDraft = new('x', 70_000);
     internal void Start()
     {
         if (rulesOnly)
@@ -53,7 +55,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
             }, core.Snapshot.Revision);
             advancedRevision = core.Snapshot.Revision;
             main.OpenAdvancedSettings(); advancedWindow = main.AdvancedSettings;
-            phase = 126;
+            phase = 129;
         }
         main.History.PreviewInvalidated += OnPreviewInvalidated;
         main.Activated += OnSmokeActivation;
@@ -75,6 +77,13 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
     private void OnSmokeActivation(object sender, WindowActivatedEventArgs args) =>
         compactActivation = $"phase={phase}: {args.WindowActivationState}";
 
+    // A hover or explicit preview request is served on a later dispatcher pass, so a busy host must not turn
+    // scheduling latency into a false failure.
+    private bool AwaitPreview()
+    {
+        if (main.CompactPreview.HasPending || main.CompactPreview.Visible) { previewWaits = 0; return true; }
+        return ++previewWaits < 25;
+    }
     private static void Require(bool value, string message)
     {
         if (!value) throw new InvalidOperationException(message);
@@ -86,7 +95,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
         ticking = true;
         try
         {
-            Require(elapsed.Elapsed < TimeSpan.FromSeconds(90), $"Timed out in phase {phase}.");
+            Require(elapsed.Elapsed < TimeSpan.FromSeconds(120), $"Timed out in phase {phase}.");
             var view = main.History;
             // A dialog reference is set before its popup template/buttons finish loading.
             if (view.IsBusy || (view.HasDialog && !view.IsDialogReady)) return;
@@ -139,166 +148,189 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     view.Invoke("edit");
                     break;
                 case 9:
-                    view.SetDialogText(new string('x', 70_000)); view.ConfirmDialog();
+                    view.SetDialogText(largeDraft); view.ConfirmDialog();
                     break;
                 case 10:
-                    Require(view.HasDialog && view.HasError && view.DialogText.Length == 70_000, "Failed save lost draft or closed dialog.");
-                    view.SetDialogText(Edited); view.ConfirmDialog();
+                    // Payloads beyond the 64 KiB single-request cap use bounded staging and must still commit from the editor.
+                    // The staged commit is accepted before the popup releases its ownership, so re-tick until it closes.
+                    if (view.HasDialog) return;
+                    Require(!view.HasError, $"Staged large edit reported an error: {view.FeedbackText}");
+                    Require((await core.GetEntryAsync(entryId)).Content == largeDraft, "Staged large edit did not persist the exact draft.");
+                    view.Invoke("edit");
                     break;
                 case 11:
-                    Require(!view.HasDialog && Lines(view.Detail) == Lines(Edited), "Edit did not preserve original text.");
-                    view.Invoke("tags");
+                    Require(view.HasDialog && view.DialogText.Length == largeDraft.Length, "Native editor did not reload the staged large payload.");
+                    await core.SetPinnedAsync(entryId, false);
+                    // Wait for the accepted external change and for any refresh it triggered before submitting.
+                    for (int wait = 0; wait < 60 && (!view.ExternalPending || view.IsBusy); wait++) await Task.Delay(100);
+                    Require(view.ExternalPending && !view.IsBusy, "Change feed did not settle on the external update.");
+                    view.SetDialogText(Edited); view.ConfirmDialog();
                     break;
                 case 12:
+                    Require(view.HasDialog && view.HasError && Lines(view.DialogText) == Lines(Edited), $"Blocked save lost the edited draft: dialog={view.HasDialog} error={view.HasError} ({view.FeedbackText}).");
+                    Require((await core.GetEntryAsync(entryId)).Content == largeDraft, "Blocked save wrote history.");
+                    view.CancelDialog();
+                    break;
+                case 13:
+                    if (view.HasDialog) return;
+                    await core.SetPinnedAsync(entryId, true);
+                    await core.EditEntryAsync(entryId, Edited);
+                    await view.ReloadAsync(entryId);
+                    break;
+                case 14:
+                    Require(Lines(view.Detail) == Lines(Edited), "Edit did not preserve original text.");
+                    view.Invoke("tags");
+                    break;
+                case 15:
                     var nativePicker = view.TagPicker ?? throw new InvalidOperationException("No native tag picker.");
                     Require(nativePicker.CanSave, "Native tag picker did not load metadata/catalog.");
                     nativePicker.NameDraft = "password"; nativePicker.Invoke("add");
                     nativePicker.NameDraft = "工作"; nativePicker.Invoke("add");
                     view.ConfirmDialog(); break;
-                case 13:
+                case 16:
                     Require(!view.HasDialog && view.Rows.Single().Summary.IsSensitive && view.Detail == "" && view.CanReveal,
                         "Sensitive content leaked after tagging.");
                     Require(!view.Rows.Single().Preview.Contains("修改后"), "Sensitive row leaked text.");
                     view.Invoke("reveal");
                     break;
-                case 14:
+                case 17:
                     Require(Lines(view.Detail) == Lines(Edited), "Explicit reveal failed.");
                     view.Search("不存在"); view.Search("%_");
                     break;
-                case 15:
+                case 18:
                     Require(view.Rows.Count == 1 && view.Rows[0].Id == entryId, "Debounced literal search returned stale data.");
                     Require(view.Detail == "", "Search kept sensitive text revealed.");
                     for (int index = 0; index < 240; index++) await core.AddManualAsync($"虚拟化记录 {index:D4}");
                     view.Search("");
                     break;
-                case 16:
+                case 19:
                     Require(view.Rows.Count >= 50 && view.Rows.Count < 241, "Initial page did not stay bounded.");
                     view.ScrollToEnd();
                     break;
-                case 17:
+                case 20:
                     if (view.Rows.Count < 200) { view.Invoke("more"); return; }
                     loaded = view.Rows.Count; realized = view.RealizedCount;
                     Require(realized > 0 && realized < loaded / 2, "List virtualization did not constrain realized containers.");
                     view.Select(entryId); view.Invoke("delete");
                     break;
-                case 18:
+                case 21:
                     Require(view.HasDialog, "Delete did not request confirmation."); view.ConfirmDialog();
                     break;
-                case 19:
+                case 22:
                     Require(!view.HasDialog && view.Rows.All(row => row.Id != entryId), "Delete left stale selection/list.");
                     Require((await core.GetHistoryAsync(new(Search: "%_"))).Items.Count == 0, "Delete did not persist.");
                     entryId = (await core.AddManualAsync(Original, tags: ["work"])).Id;
                     await view.ReloadAsync(entryId);
                     break;
-                case 20:
+                case 23:
                     Require(Lines(view.Detail) == Lines(Original), "Original CRLF did not display correctly.");
                     view.Invoke("edit"); break;
-                case 21: view.ConfirmDialog(); break;
-                case 22:
+                case 24: view.ConfirmDialog(); break;
+                case 25:
                     Require((await core.GetEntryAsync(entryId)).Content == Original, "Unchanged editor rewrote original CRLF.");
                     view.Filter(1, "work", false); break;
-                case 23:
+                case 26:
                     Require(view.Rows.Count == 1 && view.Rows[0].Id == entryId, "Native type/tag filter failed.");
                     view.Filter(4, "work", false); break;
-                case 24:
+                case 27:
                     Require(view.Rows.Count == 0, "Empty native filtered list retained stale items.");
                     view.Filter(0, "", false); break;
-                case 25: view.Select(entryId); break;
-                case 26:
+                case 28: view.Select(entryId); break;
+                case 29:
                     Require(Lines(view.Detail) == Lines(Original), "Selection lost original text.");
                     await core.AddManualAsync("变更流新增"); break;
-                case 27:
+                case 30:
                     if (!view.ExternalPending) return;
                     Require(Lines(view.Detail) == Lines(Original), "Unrelated change reset active detail.");
                     await core.SetTagsAsync(entryId, ["password"]); break;
-                case 28:
+                case 31:
                     if (!view.Rows.First(row => row.Id == entryId).IsStale) return;
                     Require(view.Detail == "",
                         "Change feed left a stale plaintext detail/preview visible.");
                     await view.ReloadAsync(entryId); break;
-                case 29:
+                case 32:
                     Require(view.Detail == "" && view.CanReveal, "Refresh did not enforce new sensitive tag.");
                     view.Invoke("capture");
                     break;
-                case 30:
+                case 33:
                     Require(view.CaptureRunning && view.CaptureStarts == 1, "Capture control did not start native service.");
                     main.OpenSettings();
                     captureSettingsRevision = core.Snapshot.Revision;
                     break;
-                case 31:
+                case 34:
                     Require(main.Settings!.CaptureOptionsLoaded, "Capture options lost after reopening.");
                     main.Settings.SetSmokeLimit("-1");
                     break;
-                case 32: main.Settings!.InvokeSettingsSave(); break;
-                case 33:
+                case 35: main.Settings!.InvokeSettingsSave(); break;
+                case 36:
                     Require(main.Settings!.HasError && main.Settings.DraftLimit == "-1", "Rejected capture policy lost its draft.");
                     Require(core.Snapshot.Revision == captureSettingsRevision && core.Snapshot.Values["app.persistent_limit"] == "500", "Invalid capture policy changed accepted state.");
                     main.Settings.SetSmokeLimit("501");
                     break;
-                case 34: main.Settings!.InvokeSettingsSave(); break;
-                case 35:
+                case 37: main.Settings!.InvokeSettingsSave(); break;
+                case 38:
                     Require(!main.Settings!.HasError && main.Settings.DraftLimit == "501" && core.Snapshot.Values["app.persistent_limit"] == "501"
                         && core.Snapshot.Revision == captureSettingsRevision + 1, "Capture policy correction did not save.");
                     main.CloseSettings();
                     break;
-                case 36:
+                case 39:
                     Require(view.CaptureRunning && view.CaptureStarts == 1, "Settings lifetime restarted or stopped capture.");
                     Require((await core.GetCaptureStatusAsync()).PolicyRevision == core.Snapshot.Revision, "Worker policy revision not acknowledged.");
                     view.Invoke("capture");
                     break;
-                case 37:
+                case 40:
                     Require(!view.CaptureRunning, "Pause did not stop and join native capture.");
                     view.Invoke("capture");
                     break;
-                case 38:
+                case 41:
                     Require(view.CaptureRunning && view.CaptureStarts == 2, "Capture restart failed.");
                     captureStarts = view.CaptureStarts;
                     invalidImageId = (await core.AddManualAsync("data:image/png;base64,bad!", contentType: "image")).Id;
                     await view.ReloadAsync(invalidImageId);
                     break;
-                case 39:
-                    Require(view.CanCopy && !view.HasImagePreview && view.Detail == "图片预览不可用，原始内容未修改。", "Copy command did not bind to loaded detail.");
+                case 42:
+                    Require(view.CanCopy && !view.HasImagePreview && view.Detail == HistoryStrings.Tw.ImageUnavailable, "Copy command did not bind to loaded detail.");
                     view.Invoke("copy");
                     break;
-                case 40:
-                    Require(view.HasError && view.CanCopy && !view.HasImagePreview && view.Detail == "图片预览不可用，原始内容未修改。", "Failed payload preparation lost selection or hid error.");
+                case 43:
+                    Require(view.HasError && view.CanCopy && !view.HasImagePreview && view.Detail == HistoryStrings.Tw.ImageUnavailable, "Failed payload preparation lost selection or hid error.");
                     await core.DeleteEntryAsync(invalidImageId);
                     await view.ReloadAsync();
                     break;
-                case 41:
+                case 44:
                     Require(!view.CanCopy && !view.CanPaste, "Clipboard commands were enabled without loaded detail.");
                     await core.StopTargetTrackingAsync();
                     pasteGuardId = (await core.AddManualAsync("paste guard fixture")).Id;
                     await view.ReloadAsync(pasteGuardId);
                     break;
-                case 42:
+                case 45:
                     if (view.TargetTrackingRunning) return; // Allow the real polling path to observe stop.
                     Require(view.CanCopy && !view.CanPaste, "Stopped target tracking left paste enabled for a loaded entry.");
                     await core.DeleteEntryAsync(pasteGuardId);
                     await view.ReloadAsync();
                     view.Invoke("target-start");
                     break;
-                case 43:
+                case 46:
                     if (!view.TargetTrackingRunning) return;
                     Require((await core.GetTargetStatusAsync()).Starts == 2 && !view.CanPaste, "Target restart or empty-selection paste guard failed.");
                     // SC_CLOSE follows the same native close path as the title-bar button.
                     if (!PostMessageW(WinRT.Interop.WindowNative.GetWindowHandle(main), 0x112, 0xF060, 0))
                         throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
                     break;
-                case 44:
+                case 47:
                     Require(!main.AppWindow.IsVisible && main.ResidentMode && view.CaptureRunning, "Native close did not preserve background capture.");
                     Require((await core.PollShellAsync()).Status is { Running: true, Starts: 1, TrayVisible: true }, "Close-to-tray stopped native shell.");
                     main.OpenSettings();
                     break;
-                case 45:
+                case 48:
                     Require(main.Settings is not null && main.Settings.DisplayedRevision == core.Snapshot.Revision, "Settings did not open independently while main was hidden.");
                     main.CloseSettings(); main.ShowMain();
                     break;
-                case 46:
+                case 49:
                     Require(main.AppWindow.IsVisible && main.ResidentMode && core.Refresh().Revision == 3, "Show from resident mode failed or wrote settings.");
                     main.OpenSettings();
                     break;
-                case 47:
+                case 50:
                     if (!main.Settings!.IsContentReady) return;
                     main.Settings.SetSmokeHotkey("Ctrl+");
                     Require(main.Settings.HasDraft, "Text edit did not immediately enable Save.");
@@ -308,31 +340,31 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(main.Settings.HasDraft, "Second text edit did not immediately enable Save.");
                     main.Settings.InvokeSettingsSave();
                     break;
-                case 48:
+                case 51:
                     Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+" && core.Snapshot.Revision == 3, "Invalid shortcut did not preserve draft/revision.");
                     hotkeyProbe = new HotkeyProbe();
                     main.Settings.SetSmokeHotkey("Ctrl+Alt+Shift+F24"); Require(main.Settings.HasDraft, "Text edit did not immediately enable Save."); main.Settings.InvokeSettingsSave();
                     break;
-                case 49:
+                case 52:
                     Require(main.Settings!.HasError && main.Settings.DraftHotkey == "Ctrl+Alt+Shift+F24" && core.Snapshot.Revision == 3, "Conflicting shortcut changed state or lost draft.");
                     hotkeyProbe!.Dispose(); hotkeyProbe = null;
                     main.Settings.InvokeSettingsSave();
                     break;
-                case 50:
+                case 53:
                     Require(core.Snapshot.Revision == 4 && core.Snapshot.Values["app.hotkey"] == "Ctrl+Alt+Shift+F24"
                         && (await core.PollShellAsync()).Status.MainHotkeyActive, "Accepted shortcut did not register and persist.");
                     main.CloseSettings(); main.HideToTray(); PostOwnedHotkey();
                     break;
-                case 51:
+                case 54:
                     if (!main.AppWindow.IsVisible && elapsed.Elapsed.TotalSeconds < 55) return;
                     Require(main.AppWindow.IsVisible && view.CaptureRunning, "Native hotkey event did not show resident main window.");
                     main.OpenSettings();
                     break;
-                case 52:
+                case 55:
                     if (!main.Settings!.IsContentReady) return;
                     main.Settings.SetSmokeHotkey(""); Require(main.Settings.HasDraft, "Text edit did not immediately enable Save."); main.Settings.InvokeSettingsSave();
                     break;
-                case 53:
+                case 56:
                     Require(core.Snapshot.Revision == 5 && core.Snapshot.Values["app.hotkey"] == ""
                         && !(await core.PollShellAsync()).Status.MainHotkeyActive, "Disabled shortcut remained registered.");
                     using (var released = new HotkeyProbe()) { }
@@ -347,20 +379,20 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Multiple selection exposed single-entry content/actions.");
                     view.Invoke("delete");
                     break;
-                case 54:
+                case 57:
                     Require(view.HasDialog, "Batch delete skipped confirmation.");
                     view.CancelDialog();
                     break;
-                case 55:
+                case 58:
                     Require(!view.HasDialog && (await core.GetHistoryAsync(new())).Revision == batchRevision,
                         "Cancelling batch changed history.");
                     Require((await core.GetEntryAsync(batchFirst)).Content == "多选删除一", "Cancelled batch removed an entry.");
                     view.Invoke("delete");
                     break;
-                case 56:
+                case 59:
                     Require(view.HasDialog, "Second batch confirmation missing."); view.ConfirmDialog();
                     break;
-                case 57:
+                case 60:
                     Require(!view.HasDialog && view.Rows.All(row => row.Id != batchFirst && row.Id != batchSecond)
                         && !view.CanDelete, "Accepted batch left stale rows or selection.");
                     var batchChanges = await core.GetHistoryChangesAsync(batchRevision);
@@ -371,12 +403,12 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     batchFirst = (await core.AddManualAsync("过期选择")).Id;
                     await view.ReloadAsync(); view.SelectMany(batchFirst, batchKept); view.Invoke("delete");
                     break;
-                case 58:
+                case 61:
                     Require(view.HasDialog, "Stale-selection confirmation missing.");
                     await core.EditEntryAsync(batchKept, "外部更新保留");
                     view.ConfirmDialog();
                     break;
-                case 59:
+                case 62:
                     Require(!view.HasDialog && view.HasError, "Changed history was not rejected during confirmation.");
                     Require((await core.GetEntryAsync(batchFirst)).Content == "过期选择"
                         && (await core.GetEntryAsync(batchKept)).Content == "外部更新保留", "Rejected batch partially deleted history.");
@@ -384,7 +416,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     view.Search("多选保留");
                     Require(!view.CanDelete && !view.CanCopy && view.Detail == "", "Filter change kept multi-selection actions/content.");
                     break;
-                case 60:
+                case 63:
                     clearPinned = (await core.AddManualAsync("清空保留置顶")).Id;
                     await core.SetPinnedAsync(clearPinned, true);
                     clearTagged = (await core.AddManualAsync("清空保留标签", tags: ["保留"])).Id;
@@ -396,32 +428,32 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(clearPreview.EligibleCount > 0, "Clear preview incorrectly followed the UI filter.");
                     view.Invoke("clear");
                     break;
-                case 61:
+                case 64:
                     Require(view.HasDialog, "Clear skipped confirmation."); view.CancelDialog();
                     break;
-                case 62:
+                case 65:
                     Require(!view.HasDialog && (await core.GetHistoryAsync(new())).Revision == clearRevision,
                         "Cancelling clear changed history.");
                     Require((await core.GetEntryAsync(clearOrdinary)).Content == "筛选范围外的普通历史", "Cancel removed history.");
                     view.Invoke("clear");
                     break;
-                case 63:
+                case 66:
                     Require(view.HasDialog, "Clear preview confirmation missing.");
                     clearLate = (await core.AddManualAsync("清空预览期间新增")).Id;
                     view.ConfirmDialog();
                     break;
-                case 64:
+                case 67:
                     Require(!view.HasDialog && view.HasError, "Changed preview was not rejected.");
                     Require((await core.GetEntryAsync(clearOrdinary)).Content == "筛选范围外的普通历史"
                         && (await core.GetEntryAsync(clearLate)).Content == "清空预览期间新增", "Rejected clear removed history.");
                     await view.ReloadAsync(); view.Invoke("clear");
                     break;
-                case 65:
+                case 68:
                     Require(view.HasDialog, "Corrected clear confirmation missing.");
                     clearRevision = (await core.GetClearHistoryPreviewAsync()).Revision;
                     view.ConfirmDialog();
                     break;
-                case 66:
+                case 69:
                     Require(!view.HasDialog && (await core.GetClearHistoryPreviewAsync()).EligibleCount == 0,
                         "Accepted clear left unprotected history.");
                     Require((await core.GetEntryAsync(clearPinned)).IsPinned
@@ -432,14 +464,14 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     clearRevision = clearedChanges.Revision;
                     view.Invoke("clear");
                     break;
-                case 67:
+                case 70:
                     Require(!view.HasDialog && !view.HasError && (await core.GetHistoryAsync(new())).Revision == clearRevision,
                         "Empty clear showed a confirmation/error or advanced history revision.");
                     imageFirst = (await core.AddManualAsync(PreviewPng, "image")).Id;
                     imageSecond = (await core.AddManualAsync(SecondPreviewPng, "image")).Id;
                     view.Search(""); await view.ReloadAsync(imageFirst);
                     break;
-                case 68:
+                case 71:
                     if (!view.HasImagePreview) return;
                     Require(view.PreviewedImageId == imageFirst && view.ImagePixelWidth == 2 && view.CanCopy,
                         "WinUI did not decode/render the selected native PNG.");
@@ -447,37 +479,37 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!view.HasImagePreview && !view.CanCopy, "Multiple selection retained image preview.");
                     view.Select(imageSecond);
                     break;
-                case 69:
+                case 72:
                     if (!view.HasImagePreview) return;
                     Require(view.PreviewedImageId == imageSecond && view.ImagePixelWidth == 4, "Previous image decode replaced the new selection.");
                     await core.SetTagsAsync(imageSecond, ["sensitive"]);
                     break;
-                case 70:
+                case 73:
                     if (!view.ExternalPending) return;
                     Require(!view.HasImagePreview && !view.CanCopy, "External sensitive transition kept decoded image visible.");
                     await view.ReloadAsync(imageSecond);
                     break;
-                case 71:
+                case 74:
                     Require(view.CanReveal && !view.HasImagePreview, "Sensitive image was rendered before reveal.");
                     view.Invoke("reveal");
                     break;
-                case 72:
+                case 75:
                     if (!view.HasImagePreview) return;
                     Require(view.PreviewedImageId == imageSecond && view.ImagePixelWidth == 4, "Sensitive reveal did not decode native image.");
                     view.Search("不存在的图片");
                     Require(!view.HasImagePreview && !view.CanCopy, "Search retained revealed image.");
                     break;
-                case 73:
+                case 76:
                     view.Search(""); await view.ReloadAsync();
                     // Start two native detail loads back-to-back; only the final selection may publish.
                     view.Select(imageFirst); view.Select(imageSecond);
                     break;
-                case 74:
+                case 77:
                     Require(view.CanReveal && !view.HasImagePreview && !view.CanCopy, "Stale decode bypassed final sensitive selection.");
                     documentId = (await core.AddManualAsync("原始文档\r\n文本", "rich_text", DocumentHtml)).Id;
                     await view.ReloadAsync(documentId);
                     break;
-                case 75:
+                case 78:
                     if (!view.HasDocumentPreview) return;
                     Require(view.PreviewedDocumentId == documentId && view.DocumentCells == 4 && view.DocumentMergedCells == 2
                         && view.DocumentEmphasis >= 3 && view.DocumentLinks == 1 && view.DocumentOmittedMedia
@@ -488,35 +520,35 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!view.HasDocumentPreview && !view.HasImagePreview && !view.CanCopy, "Multi-selection kept native document visible.");
                     view.Select(documentId);
                     break;
-                case 76:
+                case 79:
                     if (!view.HasDocumentPreview) return;
                     await core.SetTagsAsync(documentId, ["sensitive"]);
                     break;
-                case 77:
+                case 80:
                     if (!view.ExternalPending) return;
                     Require(!view.HasDocumentPreview && !view.CanCopy, "Sensitive transition retained native document.");
                     await view.ReloadAsync(documentId);
                     break;
-                case 78:
+                case 81:
                     Require(view.CanReveal && !view.HasDocumentPreview, "Sensitive document rendered before reveal.");
                     view.Invoke("reveal");
                     break;
-                case 79:
+                case 82:
                     if (!view.HasDocumentPreview) return;
                     Require(view.PreviewedDocumentId == documentId && view.DocumentCells == 4, "Sensitive document reveal failed.");
                     view.Search("不存在的文档");
                     Require(!view.HasDocumentPreview && !view.CanCopy, "Search retained native document.");
                     break;
-                case 80:
+                case 83:
                     view.Search(""); await view.ReloadAsync(documentId);
                     view.Invoke("reveal"); view.Select(imageFirst);
                     break;
-                case 81:
+                case 84:
                     if (!view.HasImagePreview) return;
                     Require(!view.HasDocumentPreview && view.PreviewedImageId == imageFirst, "Stale document replaced final image selection.");
                     view.Select(documentId);
                     break;
-                case 82:
+                case 85:
                     Require(view.CanReveal && !view.HasDocumentPreview && !view.HasImagePreview && !view.CanCopy,
                         "Stale native preview bypassed sensitive final selection.");
                     CheckCompactPlacement();
@@ -526,7 +558,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!view.CompactMode && main.CompactPreview.WindowsCreated == 0, "Compact mode must default off without a hidden window.");
                     main.OpenSettings();
                     break;
-                case 83:
+                case 86:
                     Require(!main.Settings!.CompactMode && !main.Settings.HasDraft, "Opening compact settings wrote a draft.");
                     main.Settings.SetCompactMode(true);
                     Require(main.Settings.HasDraft && !view.CompactMode, "Compact draft applied before saving.");
@@ -534,7 +566,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(view.CompactMode && core.Snapshot.Values["app.compact_mode"] == "true", "Compact save did not synchronize main.");
                     main.CloseSettings(); main.ShowMain();
                     break;
-                case 84:
+                case 87:
                     compactRequestedAt = elapsed.Elapsed;
                     view.Invoke("preview");
                     Require(main.CompactPreview.HasPending && !main.CompactPreview.Visible, "Preview bypassed the hover delay.");
@@ -542,8 +574,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!main.CompactPreview.HasPending && main.CompactPreview.DisplayedId is null, "Cancellation retained a delayed request.");
                     view.Invoke("preview");
                     break;
-                case 85:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Native text preview stopped before display.");
+                case 88:
+                    Require(AwaitPreview(), "Native text preview stopped before display.");
                     if (!main.CompactPreview.Visible) return;
                     Require(elapsed.Elapsed - compactRequestedAt >= TimeSpan.FromMilliseconds(900), "Compact preview did not wait one second.");
                     Require(main.CompactPreview.DisplayedId == compactTextId,
@@ -561,8 +593,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!main.CompactPreview.Visible && main.CompactPreview.DisplayedId is null && main.CompactPreview.Text == "",
                         "Changing hover retained old text.");
                     break;
-                case 86:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Image hover failed.");
+                case 89:
+                    Require(AwaitPreview(), "Image hover failed.");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.HasImage && main.CompactPreview.DisplayedId == imageFirst
                         && main.CompactPreview.WindowsCreated == 1, "Native image preview was not reused.");
@@ -570,7 +602,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!main.CompactPreview.Visible && !main.CompactPreview.HasImage && main.CompactPreview.DisplayedId is null,
                         "Search retained native compact image.");
                     break;
-                case 87:
+                case 90:
                     view.Search(""); await view.ReloadAsync(compactDocumentId);
                     // Model an old row exit arriving after the actual explicit preview button.
                     // This is a controlled routed-event boundary, not physical pointer acceptance.
@@ -583,37 +615,37 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     typeof(HistoryView).GetMethod("EndHover", hiddenInstance)!.Invoke(view, [oldHover]);
                     Require(main.CompactPreview.HasPending, "Old pointer-exit cancelled an explicit preview request.");
                     break;
-                case 88:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, $"Document hover failed: {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
+                case 91:
+                    Require(AwaitPreview(), $"Document hover failed: {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1,
                         $"Compact table preview did not reuse the native window: expected={compactDocumentId}, {main.CompactPreview.StateDiagnostic}; invalidation={compactInvalidation}; activation={compactActivation}.");
                     await core.SetTagsAsync(compactDocumentId, ["sensitive"]);
                     break;
-                case 89:
+                case 92:
                     if (!view.ExternalPending) return;
                     Require(!main.CompactPreview.Visible && !main.CompactPreview.HasDocument && main.CompactPreview.DisplayedId is null,
                         "External sensitive transition retained compact document.");
                     await view.ReloadAsync(compactDocumentId);
                     break;
-                case 90:
+                case 93:
                     view.PreviewRow(compactDocumentId);
                     Require(view.CanReveal && !main.CompactPreview.HasPending && !main.CompactPreview.Visible,
                         "Unrevealed sensitive row requested a hover preview.");
                     view.Invoke("reveal");
                     break;
-                case 91:
+                case 94:
                     if (!view.HasDocumentPreview) return;
                     view.Invoke("preview");
                     break;
-                case 92:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Revealed hover failed.");
+                case 95:
+                    Require(AwaitPreview(), "Revealed hover failed.");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.DisplayedId == compactDocumentId && main.CompactPreview.HasDocument,
                         "Revealed sensitive document did not display.");
                     core.Update(new Dictionary<string, string> { ["app.color_mode"] = "dark" }, core.Snapshot.Revision);
                     break;
-                case 93:
+                case 96:
                     Require(main.CompactPreview.Visible && main.CompactPreview.CurrentTheme == ElementTheme.Dark,
                         "Compact preview did not apply shared theme.");
                     main.HideToTray();
@@ -622,7 +654,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     main.ShowMain(); await view.ReloadAsync(compactTextId);
                     view.Invoke("preview");
                     break;
-                case 94:
+                case 97:
                     view.CancelPreview();
                     Require(!main.CompactPreview.HasPending && !main.CompactPreview.Visible, "Pending image survived cancellation.");
                     main.OpenSettings();
@@ -630,7 +662,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     main.Settings.SetCompactMode(false); main.Settings.InvokeSettingsSave();
                     main.CloseSettings(); main.ShowMain();
                     break;
-                case 95:
+                case 98:
                     Require(!view.CompactMode && !main.CompactPreview.HasPending && !main.CompactPreview.Visible,
                         "Disabling compact mode retained hover.");
                     view.PreviewRow(compactTextId);
@@ -638,37 +670,37 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     core.Update(new Dictionary<string, string> { ["app.compact_mode"] = "true" }, core.Snapshot.Revision);
                     await view.ReloadAsync(compactTextId);
                     break;
-                case 96:
+                case 99:
                     view.Invoke("preview");
                     break;
-                case 97:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Reenabled preview failed.");
+                case 100:
+                    Require(AwaitPreview(), "Reenabled preview failed.");
                     if (!main.CompactPreview.Visible) return;
                     compactMainPosition = main.AppWindow.Position;
                     main.AppWindow.Move(new PointInt32(compactMainPosition.X + 10, compactMainPosition.Y));
                     break;
-                case 98:
+                case 101:
                     Require(!main.CompactPreview.Visible && main.CompactPreview.Text == "", "Owner movement retained detached preview.");
                     main.AppWindow.Move(compactMainPosition);
                     break;
-                case 99:
+                case 102:
                     view.PreviewRow(imageFirst); view.PreviewRow(compactTextId);
                     break;
-                case 100:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Last hover request was lost.");
+                case 103:
+                    Require(AwaitPreview(), "Last hover request was lost.");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.DisplayedId == compactTextId && !main.CompactPreview.HasImage
                         && !main.CompactPreview.HasDocument && main.CompactPreview.WindowsCreated == 1,
                         "Old hover replaced final text or leaked another window.");
                     Require(PostMessageW(main.CompactPreview.WindowHandle, 0x0010, 0, 0), "Native preview close message failed.");
                     break;
-                case 101:
+                case 104:
                     Require(main.CompactPreview.WindowHandle == 0 && !main.CompactPreview.Visible, "Closed preview was retained.");
                     view.PreviewRow(compactTextId);
                     Require(main.CompactPreview.HasPending, $"Reopen request was rejected immediately; {compactInvalidation}; {compactActivation}");
                     break;
-                case 102:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, $"Closed preview could not reopen; {compactInvalidation}; {compactActivation}");
+                case 105:
+                    Require(AwaitPreview(), $"Closed preview could not reopen; {compactInvalidation}; {compactActivation}");
                     if (!main.CompactPreview.Visible) return;
                     Require(main.CompactPreview.WindowsCreated == 2 && main.CompactPreview.DisplayedId == compactTextId
                         && (await core.GetCaptureStatusAsync()).Starts == 2 && (await core.GetTargetStatusAsync()).Starts == 2,
@@ -678,7 +710,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     advancedRevision = core.Snapshot.Revision;
                     main.OpenSettings(); main.Settings!.OpenAdvanced();
                     break;
-                case 103:
+                case 106:
                     if (main.Settings?.IsContentReady != true || main.AdvancedSettings?.IsContentReady != true) return;
                     advancedWindow = main.AdvancedSettings;
                     Require(!advancedWindow.HasDraft && advancedWindow.DisplayedRevision == advancedRevision
@@ -698,14 +730,14 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         && core.Snapshot.Revision == advancedRevision && core.Snapshot.Values["app.cleanup_rules"] == OriginalAdvancedRules,
                         "Invalid advanced cleanup was saved or its draft was lost.");
                     break;
-                case 104:
+                case 107:
                     advancedWindow!.SetRules("email", "secret\\d+", "foo => bar", "not JSON");
                     advancedWindow.InvokeSave();
                     Require(advancedWindow.HasError && advancedWindow.HasDraft && advancedWindow.PolicyDraft == "not JSON"
                         && core.Snapshot.Revision == advancedRevision && core.Snapshot.Values["app.cleanup_rules"] == OriginalAdvancedRules,
                         "Invalid policy caused a partial settings save.");
                     break;
-                case 105:
+                case 108:
                     advancedWindow!.SetRules("email", "secret\\d+", "foo => bar", "[]");
                     advancedWindow.InvokeSave();
                     Require(!advancedWindow.HasError && !advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision + 1
@@ -719,7 +751,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(main.Settings.HasError && main.Settings.HasDraft && core.Snapshot.Revision == advancedRevision,
                         "Conflicted ordinary draft overwrote advanced rules.");
                     break;
-                case 106:
+                case 109:
                     advancedWindow!.SetRules("phone", advancedWindow.PrivacyDraft, advancedWindow.CleanupDraft, advancedWindow.PolicyDraft);
                     core.Update(new Dictionary<string, string> { ["app.color_mode"] = "light" }, core.Snapshot.Revision);
                     advancedRevision = core.Snapshot.Revision;
@@ -735,7 +767,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(advancedWindow.HasDraft && advancedWindow.HasError && core.Snapshot.Revision == advancedRevision
                         && core.Snapshot.Values["app.privacy_protection_kinds"] == "email", "Stale advanced draft was saved.");
                     break;
-                case 107:
+                case 110:
                     advancedWindow!.InvokeReload();
                     Require(!advancedWindow.HasDraft && !advancedWindow.HasError && advancedWindow.KindsDraft == "email"
                         && advancedWindow.DisplayedRevision == advancedRevision, "Advanced reload did not discard conflicted draft explicitly.");
@@ -744,7 +776,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Closing advanced settings stopped the shared target service.");
                     main.OpenAdvancedSettings();
                     break;
-                case 108:
+                case 111:
                     if (main.AdvancedSettings?.IsContentReady != true) return;
                     Require(!ReferenceEquals(advancedWindow, main.AdvancedSettings) && !main.AdvancedSettings.HasDraft
                         && main.AdvancedSettings.DisplayedRevision == advancedRevision && main.AdvancedSettings.CleanupDraft == "foo => bar"
@@ -754,7 +786,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(ReferenceEquals(advancedWindow, main.AdvancedSettings), "Advanced reopen created duplicate subscribers/windows.");
                     main.OpenSettings();
                     break;
-                case 109:
+                case 112:
                     if (main.Settings?.IsContentReady != true) return;
                     Require(!main.Settings.HasDraft && main.Settings.DisplayedRevision == advancedRevision
                         && !advancedWindow!.HasDraft && core.Snapshot.Revision == advancedRevision,
@@ -762,7 +794,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     main.CloseSettings(); main.ShowMain();
                     await view.ReloadAsync(compactTextId);
                     break;
-                case 110:
+                case 113:
                     advancedWindow!.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
                         advancedWindow.CleanupDraft, PolicyFixture);
                     Require(advancedWindow.PolicyEditor.StructuredAvailable && advancedWindow.PolicyEditor.Count == 2
@@ -772,7 +804,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         && core.Snapshot.Values["app.app_cleanup_policies"] == PolicyFixture,
                         "Loading policies rewrote their original JSON.");
                     break;
-                case 111:
+                case 114:
                     var policyEditor = advancedWindow!.PolicyEditor;
                     policyEditor.Select(1); policyEditor.Select(0);
                     Require(!advancedWindow.HasDraft && advancedWindow.PolicyDraft == PolicyFixture,
@@ -802,7 +834,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Native policy fields did not save through core validation.");
                     advancedRevision = core.Snapshot.Revision;
                     break;
-                case 112:
+                case 115:
                     advancedWindow!.PolicyEditor.Edit("native-policy-renamed", "native-policy-fixture.exe", true, false, "[( => broken");
                     advancedWindow.InvokeSave();
                     Require(advancedWindow.HasError, "Invalid structured regex did not report an error.");
@@ -817,7 +849,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Corrected disabled/ignore policy failed to save.");
                     advancedRevision = core.Snapshot.Revision;
                     break;
-                case 113:
+                case 116:
                     advancedWindow!.PolicyEditor.Invoke("add");
                     Require(advancedWindow.PolicyEditor.Count == 3 && core.Snapshot.Revision == advancedRevision,
                         "Adding a policy persisted before Save.");
@@ -842,7 +874,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         && core.Snapshot.Revision == advancedRevision + 1, "Ordered policies did not save atomically.");
                     advancedRevision = core.Snapshot.Revision;
                     break;
-                case 114:
+                case 117:
                     advancedWindow!.PolicyEditor.Select(1); advancedWindow.PolicyEditor.Invoke("remove");
                     advancedWindow.PolicyEditor.Select(0); advancedWindow.PolicyEditor.Invoke("down");
                     using (var removedPolicy = JsonDocument.Parse(advancedWindow.PolicyDraft))
@@ -863,7 +895,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!advancedWindow.PolicyEditor.HasRetainedData, "Closed policy editor retained draft/snapshot data.");
                     main.OpenAdvancedSettings();
                     break;
-                case 115:
+                case 118:
                     if (main.AdvancedSettings?.IsContentReady != true) return;
                     advancedWindow = main.AdvancedSettings;
                     Require(advancedWindow.PolicyEditor.Count == 2 && !advancedWindow.HasDraft
@@ -879,7 +911,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(advancedWindow.PolicyEditor.Count == 2 && !advancedWindow.HasDraft
                         && advancedWindow.PolicyDraft == acceptedPolicyJson, "Reload failed to restore structured policies.");
                     break;
-                case 116:
+                case 119:
                     advancedWindow!.SetRules(advancedWindow.KindsDraft, advancedWindow.PrivacyDraft,
                         advancedWindow.CleanupDraft, "[{\"enabled\":\"true\"}]");
                     Require(!advancedWindow.PolicyEditor.StructuredAvailable, "Wrong-typed known field was coerced.");
@@ -888,14 +920,14 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Wrong-typed raw configuration reached storage.");
                     advancedWindow.InvokeReload(); main.ShowMain(); await view.ReloadAsync(compactTextId);
                     break;
-                case 117:
+                case 120:
                     if (!advancedWindow!.RulePreview.IsContentReady) { advancedWindow.RulePreview.Expand(); return; }
                     advancedWindow.RulePreview.Sample = "  foo\r\n ";
                     advancedWindow.RulePreview.InvokeRun();
                     Require(!advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
                         "Sample preview created a settings draft or wrote configuration.");
                     break;
-                case 118:
+                case 121:
                     if (advancedWindow!.RulePreview.IsBusy) return;
                     Require(advancedWindow.RulePreview.HasResult && !advancedWindow.RulePreview.HasError
                         && !advancedWindow.RulePreview.Ignored && Lines(advancedWindow.RulePreview.Output) == "  bar\n "
@@ -908,7 +940,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!advancedWindow.RulePreview.HasResult, "Rule edit retained stale sample output.");
                     advancedWindow.RulePreview.Sample = "private sample"; advancedWindow.RulePreview.InvokeRun();
                     break;
-                case 119:
+                case 122:
                     if (advancedWindow!.RulePreview.IsBusy) return;
                     Require(advancedWindow.RulePreview.HasError && !advancedWindow.RulePreview.HasResult
                         && advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision,
@@ -920,7 +952,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!advancedWindow.RulePreview.HasResult && !advancedWindow.RulePreview.IsBusy,
                         "Sample edit did not cancel pending preview.");
                     break;
-                case 120:
+                case 123:
                     Require(!advancedWindow!.RulePreview.HasResult && !advancedWindow.RulePreview.HasError,
                         "Cancelled native sample published late.");
                     advancedWindow.RulePreview.Sample = "foo"; advancedWindow.RulePreview.InvokeRun();
@@ -930,7 +962,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Rule replacement did not cancel pending preview.");
                     advancedWindow.RulePreview.InvokeRun();
                     break;
-                case 121:
+                case 124:
                     if (advancedWindow!.RulePreview.IsBusy) return;
                     Require(advancedWindow.RulePreview.HasResult && advancedWindow.RulePreview.Ignored
                         && advancedWindow.RulePreview.Output == "__IGNORE_CAPTURE__"
@@ -941,12 +973,12 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Restoring saved rules retained a preview/draft.");
                     advancedWindow.PolicyEditor.Select(1); advancedWindow.PolicyEditor.RulePreview.Expand();
                     break;
-                case 122:
+                case 125:
                     if (!advancedWindow!.PolicyEditor.RulePreview.IsContentReady) return;
                     advancedWindow.PolicyEditor.RulePreview.Sample = "foo";
                     advancedWindow.PolicyEditor.RulePreview.InvokeRun();
                     break;
-                case 123:
+                case 126:
                     if (advancedWindow!.PolicyEditor.RulePreview.IsBusy) return;
                     Require(advancedWindow.PolicyEditor.RulePreview.HasResult
                         && advancedWindow.PolicyEditor.RulePreview.Output == "bar" && !advancedWindow.HasDraft
@@ -959,12 +991,12 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!advancedWindow.RulesEditor.HasRetainedData && !advancedWindow.RulePreview.HasRetainedData && !advancedWindow.PolicyEditor.HasRetainedData,
                         "Closing advanced settings retained sample requests/data.");
                     break;
-                case 124:
+                case 127:
                     Require(!advancedWindow!.RulePreview.HasResult && !advancedWindow.PolicyEditor.RulePreview.HasResult,
                         "Closed window accepted late native sample output.");
                     main.OpenAdvancedSettings();
                     break;
-                case 125:
+                case 128:
                     if (main.AdvancedSettings?.IsContentReady != true) return;
                     advancedWindow = main.AdvancedSettings;
                     Require(!advancedWindow.HasDraft && !advancedWindow.RulePreview.HasRetainedData
@@ -972,7 +1004,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Reopened rule samples retained closed-window data or wrote settings.");
                     main.ShowMain(); await view.ReloadAsync(compactTextId);
                     break;
-                case 126:
+                case 129:
                     if (main.AdvancedSettings?.IsContentReady != true) return;
                     var ruleCapture = await core.GetCaptureStatusAsync();
                     Require(rulesOnly ? !ruleCapture.Running && ruleCapture.Starts == 0 : ruleCapture is { Running: true, Starts: 2 },
@@ -1010,16 +1042,16 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(ruleEditor.HasInputWarning && ruleEditor.Text == RuleEditorFixture, "Multiline replacement corrupted the line contract.");
                     ruleEditor.Invoke("down");
                     break;
-                case 127:
+                case 130:
                     Require(advancedWindow!.CleanupDraft.IndexOf("stop =>", StringComparison.Ordinal)
                         < advancedWindow.CleanupDraft.IndexOf("^foo$", StringComparison.Ordinal), "Rule down action did not change execution order.");
                     advancedWindow.RulesEditor.Invoke("up");
                     break;
-                case 128:
+                case 131:
                     Require(advancedWindow!.CleanupDraft == RuleEditorFixture, "Moving rule back lost final newline/comment fidelity.");
                     advancedWindow.RulesEditor.Invoke("remove");
                     break;
-                case 129:
+                case 132:
                     Require(advancedWindow!.RulesEditor.Count == 2 && advancedWindow.CleanupDraft.Contains("# shared\r\n")
                         && !advancedWindow.CleanupDraft.Contains("# label: 规则一"), "Deleting a rule removed unrelated comments or kept its label.");
                     advancedWindow.RulesEditor.SetIgnore(false);
@@ -1029,21 +1061,21 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Ignore rule failed to retain replacement after action changes.");
                     advancedWindow.RulesEditor.Invoke("add");
                     break;
-                case 130:
+                case 133:
                     Require(advancedWindow!.RulesEditor.Count == 3, "Native add-rule button failed.");
                     advancedWindow.RulesEditor.Edit("new", "$0=>\\n", "新增");
                     advancedWindow.RulesEditor.Invoke("up");
                     break;
-                case 131:
+                case 134:
                     Require(advancedWindow!.CleanupDraft.IndexOf("new =>", StringComparison.Ordinal)
                         < advancedWindow.CleanupDraft.IndexOf("last =>", StringComparison.Ordinal), "New rule did not move with its label.");
                     advancedWindow.RulePreview.Expand();
                     break;
-                case 132:
+                case 135:
                     if (!advancedWindow!.RulePreview.IsContentReady) return;
                     advancedWindow.RulePreview.Sample = "last"; advancedWindow.RulePreview.InvokeRun();
                     break;
-                case 133:
+                case 136:
                     if (advancedWindow!.RulePreview.IsBusy) return;
                     Require(advancedWindow.RulePreview.HasResult && advancedWindow.RulePreview.Output == "tail"
                         && core.Snapshot.Revision == advancedRevision, "Structured rule preview used stale rules or wrote settings.");
@@ -1051,13 +1083,13 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     Require(!advancedWindow.RulePreview.HasResult, "Structured edit retained stale sample result.");
                     advancedWindow.InvokeSave();
                     break;
-                case 134:
+                case 137:
                     Require(advancedWindow!.HasError && advancedWindow.HasDraft && core.Snapshot.Revision == advancedRevision
                         && advancedWindow.CleanupDraft.Contains("[ => tail2"), "Invalid structured regex was saved or its draft was discarded.");
                     advancedWindow.RulesEditor.Edit("last", "tail2", ""); savedText = advancedWindow.CleanupDraft;
                     advancedWindow.InvokeSave();
                     break;
-                case 135:
+                case 138:
                     Require(!advancedWindow!.HasDraft && !advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1
                         && core.Snapshot.Values["app.cleanup_rules"] == savedText, "Structured rule save lost bytes or failed.");
                     advancedRevision = core.Snapshot.Revision;
@@ -1071,7 +1103,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     advancedWindow.PolicyEditor.RulesEditor.Edit("foo", "bar", "应用规则");
                     advancedWindow.InvokeSave();
                     break;
-                case 136:
+                case 139:
                     Require(!advancedWindow!.HasDraft && !advancedWindow.HasError && core.Snapshot.Revision == advancedRevision + 1,
                         "Per-app structured rule save failed.");
                     using (var rulesJson = JsonDocument.Parse(core.Snapshot.Values["app.app_cleanup_policies"]))
@@ -1083,7 +1115,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                         "Closing structured rule editors retained draft/model text.");
                     main.OpenAdvancedSettings();
                     break;
-                case 137:
+                case 140:
                     if (main.AdvancedSettings?.IsContentReady != true) return;
                     advancedWindow = main.AdvancedSettings;
                     Require(!advancedWindow.HasDraft && advancedWindow.CleanupDraft == savedText
@@ -1099,8 +1131,8 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
                     }
                     view.Invoke("preview");
                     break;
-                case 138:
-                    Require(main.CompactPreview.HasPending || main.CompactPreview.Visible, "Quit fixture lost the pending preview.");
+                case 141:
+                    Require(AwaitPreview(), "Quit fixture lost the pending preview.");
                     // Close with advanced settings, capture and a pending preview still active.
                     view.Search("关闭时取消");
                     var modules = Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m => m.ModuleName);
@@ -1194,7 +1226,7 @@ internal sealed class WindowSmoke(MainWindow main, NativeCore core, string direc
             Directory.Delete(directory, recursive: true);
         }
         catch (Exception failure) { passed = false; error = failure.ToString(); }
-        File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = rulesOnly ? "rules" : "full", phases = rulesOnly ? phase - 125 : phase + 1,
+        File.WriteAllText(report, JsonSerializer.Serialize(new { passed, error, scope = rulesOnly ? "rules" : "full", phases = rulesOnly ? phase - 128 : phase + 1,
             framework = "WinUI 3", revision, webView2ModuleLoaded, captureStarts, loaded, realized,
             compactWindowsCreated = main.CompactPreview.WindowsCreated, compactFocusPreserved, compactInvalidation, compactActivation,
             elapsedSeconds = elapsed.Elapsed.TotalSeconds }));

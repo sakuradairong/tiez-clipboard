@@ -9,8 +9,21 @@ public partial class App : Application
     private NativeCore? core;
     private MainWindow? main;
     private ShellController? shell;
-    public App() => InitializeComponent();
+    private ClipboardPopupWindow? popup;
+    public App()
+    {
+        InitializeComponent();
+        UnhandledException += (_, args) => WriteCrash(args.Exception);
+    }
 
+    // A smoke run reports a UI-thread crash the same way it reports a failed check, next to the report file.
+    private static void WriteCrash(Exception error)
+    {
+        string[] arguments = Environment.GetCommandLineArgs();
+        int index = Array.IndexOf(arguments, "--smoke");
+        if (index < 0 || index + 1 >= arguments.Length) return;
+        try { File.WriteAllText(arguments[index + 1] + ".crash.txt", error.ToString()); } catch { }
+    }
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         string[] arguments = Environment.GetCommandLineArgs();
@@ -26,9 +39,16 @@ public partial class App : Application
             string? targetError = null;
             try { await core.StartTargetTrackingAsync(); }
             catch (CoreException error) { targetError = error.Message; }
-            main = new MainWindow(core, directory, captureOnStartup: report is null);
+            // The application owns capture even while the management view has never been loaded.
+            main = new MainWindow(core, directory, captureOnStartup: false);
             if (targetError is not null) main.History.SetTargetError(targetError);
-            shell = new ShellController(main, core);
+            bool quickPaste = report is null || arguments.Contains("--quick-paste-only");
+            if (quickPaste)
+            {
+                main.History.ManageCaptureStartup = false;
+                popup = new ClipboardPopupWindow(main, core);
+            }
+            shell = new ShellController(main, core, popup);
             await shell.StartAsync(bindMainHotkey: report is null);
             main.Closed += (_, _) =>
             {
@@ -37,10 +57,17 @@ public partial class App : Application
                 // The window closes only after its shared asynchronous shutdown succeeds.
                 Exit();
             };
-            main.Activate();
+            if (report is null)
+            {
+                try { await core.StartCaptureAsync(); }
+                catch (Exception error) { popup!.SetMessage(error.Message); }
+            }
+            if (popup is not null) await popup.ShowAsync(); else main.Activate();
+            if (!main.ResidentMode) main.ShowMain();
             if (report is not null)
             {
-                if (arguments.Contains("--workspace-ui-only")) new WorkspaceAppearanceWindowSmoke(main, core, directory, report).Start();
+                if (arguments.Contains("--quick-paste-only")) new QuickPasteWindowSmoke(main, popup!, core, directory, report).Start();
+                else if (arguments.Contains("--workspace-ui-only")) new WorkspaceAppearanceWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--large-history-only")) new LargeHistoryWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--app-icons-only")) new ApplicationIconsWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--app-picker-only")) new ApplicationPickerWindowSmoke(main, core, directory, report).Start();
@@ -66,6 +93,7 @@ public partial class App : Application
                         throw new ArgumentException("Exit smoke requires an absolute --fixture-directory for the owned managed smoke binary.");
                     new NativeExitWindowSmoke(main, core, directory, report, arguments[fixtureIndex + 1]).Start();
                 }
+                else if (arguments.Contains("--i18n-only")) new LocalizationWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--card-copy-only")) new HistoryCardCopyWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--thumbnails-only")) new HistoryThumbnailWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--layout-only")) new HistoryLayoutWindowSmoke(main, core, directory, report).Start();
@@ -77,6 +105,7 @@ public partial class App : Application
         catch (Exception e)
         {
             shell?.Dispose();
+            popup?.Dispose();
             if (core is not null) await core.DisposeAsync();
             if (report is not null)
             {

@@ -11,15 +11,15 @@ namespace TieZ.Native;
 // Owns drafts and picker lifetime only. The shared core validates/saves all values.
 internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
 {
-    private static readonly (string Key, string Label, string Default)[] Definitions = [
-        ("app.text", "文本", "使用系统默认应用"),
-        ("app.code", "代码", "跟随文本应用"),
-        ("app.rich_text", "富文本与表格", "使用系统默认应用"),
-        ("app.image", "图片", "使用系统默认应用"),
-        ("app.file", "文件", "使用系统默认应用"),
-        ("app.video", "视频文件", "使用系统默认应用"),
-        ("app.url", "网址", "使用系统默认应用"),
-        ("app.link", "旧链接类型", "使用系统默认应用")
+    private static readonly (string Key, Func<AppPickerStrings, string> Label, Func<AppPickerStrings, string> Fallback)[] Definitions = [
+        ("app.text", text => text.OpenerText, text => text.DefaultApp),
+        ("app.code", text => text.OpenerCode, text => text.FollowTextApp),
+        ("app.rich_text", text => text.OpenerRichText, text => text.DefaultApp),
+        ("app.image", text => text.OpenerImage, text => text.DefaultApp),
+        ("app.file", text => text.OpenerFile, text => text.DefaultApp),
+        ("app.video", text => text.OpenerVideo, text => text.DefaultApp),
+        ("app.url", text => text.OpenerUrl, text => text.DefaultApp),
+        ("app.link", text => text.OpenerLegacyLink, text => text.DefaultApp)
     ];
     private sealed record Row(TextBox Input, Button Browse, Button Default, Button Apps);
     private readonly Dictionary<string, Row> rows = [];
@@ -28,6 +28,9 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
     private CancellationTokenSource? pickerCancellation;
     private ContentDialog? applicationDialog;
     private ApplicationPickerView? applicationPicker;
+    private readonly TextBlock intro = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock hint = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
+    private string? openKey;
     internal ApplicationPickerView? ActiveApplications => applicationPicker;
     internal ContentDialog? ApplicationDialog => applicationDialog;
     internal Func<bool, CancellationToken, Task<ApplicationCatalogResult>>? CatalogReader { get; set; }
@@ -43,18 +46,14 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
     internal OpenerSettingsEditor(Func<nint> owner, Func<bool, CancellationToken, Task<ApplicationCatalogResult>> catalogReader)
     {
         this.owner = owner; CatalogReader = catalogReader; Spacing = 16; ActualThemeChanged += FollowDialogTheme;
-        Children.Add(new TextBlock { Text = "选择的应用在保存后用于打开相应记录。空值使用下方默认规则；代码留空时跟随文本应用。", TextWrapping = TextWrapping.Wrap });
-        Children.Add(new TextBlock { Text = "可从应用列表选择、浏览本地 .exe，或填写已知程序路径/打包应用标识。已有配置会保留，能否处理内容在打开时检查。.bat/.cmd 和 DOS 程序暂不支持，可改选原生程序或默认规则。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
+        Children.Add(intro); Children.Add(hint);
         foreach (var definition in Definitions)
         {
             string key = definition.Key;
-            var input = new TextBox { Header = definition.Label, PlaceholderText = definition.Default, TextWrapping = TextWrapping.Wrap, MaxHeight = 100 };
-            var browse = new Button { Content = "浏览 .exe…" };
-            var reset = new Button { Content = definition.Default };
-            var apps = new Button { Content = "从应用列表选择…" };
-            AutomationProperties.SetName(apps, $"从列表选择{definition.Label}打开应用");
-            AutomationProperties.SetName(browse, $"选择{definition.Label}的打开程序");
-            AutomationProperties.SetName(reset, $"{definition.Label}：{definition.Default}");
+            var input = new TextBox { TextWrapping = TextWrapping.Wrap, MaxHeight = 100 };
+            var browse = new Button();
+            var reset = new Button();
+            var apps = new Button();
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
             actions.Children.Add(apps); actions.Children.Add(browse);
             var group = new StackPanel { Spacing = 6 }; group.Children.Add(input); group.Children.Add(actions); group.Children.Add(reset);
@@ -62,8 +61,39 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
             input.TextChanging += (_, _) => { if (!binding && !disposed) { if (applicationPicker is not null) InvalidatePickerChoice(); Changed?.Invoke(); } };
             reset.Click += (_, _) => { if (!disposed && !IsPicking) input.Text = ""; };
             browse.Click += async (_, _) => await BrowseAsync(key);
-            apps.Click += async (_, _) => await ChooseApplicationAsync(key, definition.Label, definition.Default);
+            apps.Click += async (_, _) => await ChooseApplicationAsync(key);
         }
+        ApplyLanguage();
+    }
+    private static string Label(string? key)
+    {
+        var text = AppPickerStrings.Current;
+        foreach (var definition in Definitions) if (definition.Key == key) return definition.Label(text);
+        return text.OpenerText;
+    }
+    // Re-derives the eight opener rows and the open picker dialog; drafts and the loaded catalog are untouched.
+    internal void ApplyLanguage()
+    {
+        if (disposed) return;
+        var text = AppPickerStrings.Current;
+        intro.Text = text.OpenerIntro; hint.Text = text.OpenerHint;
+        foreach (var definition in Definitions)
+        {
+            if (!rows.TryGetValue(definition.Key, out var row)) continue;
+            string label = definition.Label(text), fallback = definition.Fallback(text);
+            row.Input.Header = label; row.Input.PlaceholderText = fallback;
+            row.Browse.Content = text.Browse; row.Default.Content = fallback; row.Apps.Content = text.Apps;
+            AutomationProperties.SetName(row.Apps, string.Format(text.AppsAutomationFormat, label));
+            AutomationProperties.SetName(row.Browse, string.Format(text.BrowseAutomationFormat, label));
+            AutomationProperties.SetName(row.Default, string.Format(text.ResetAutomationFormat, label, fallback));
+        }
+        if (applicationDialog is { } dialog)
+        {
+            dialog.Title = string.Format(text.DialogTitleFormat, Label(openKey));
+            dialog.PrimaryButtonText = text.DialogPrimary;
+            dialog.CloseButtonText = CommonStrings.Current.Cancel;
+        }
+        applicationPicker?.ApplyLanguage();
     }
     private static string Lines(string value) => value.Replace("\r\n", "\n").Replace("\r", "\n");
     internal Dictionary<string,string> Values() => rows.ToDictionary(pair => pair.Key, pair =>
@@ -104,12 +134,12 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
             string? selected = await task.WaitAsync(cancellation.Token);
             if (!disposed && selected is not null)
             {
-                if (current != generation || Values()[key] != before) error = "配置或当前应用草稿已变化，本次选择未应用，请重新选择。";
+                if (current != generation || Values()[key] != before) error = AppPickerStrings.Current.StaleChoice;
                 else rows[key].Input.Text = selected;
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception) { if (!disposed) error = "无法选择程序，请重试或直接填写已知程序路径。"; }
+        catch (Exception) { if (!disposed) error = AppPickerStrings.Current.BrowseFailed; }
         finally
         {
             if (ReferenceEquals(pickerCancellation, cancellation)) pickerCancellation = null;
@@ -126,15 +156,17 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
     {
         if (applicationDialog is { } dialog) dialog.RequestedTheme = ActualTheme;
     }
-    private async Task ChooseApplicationAsync(string key, string label, string defaultLabel)
+    private async Task ChooseApplicationAsync(string key)
     {
         if (disposed || IsPicking || CatalogReader is null) return;
+        var text = AppPickerStrings.Current;
         var cancellation = new CancellationTokenSource(); pickerCancellation = cancellation;
         int current = ++generation; string before = Values()[key]; string? error = null;
-        var picker = new ApplicationPickerView(key[4..], before, defaultLabel, CatalogReader, cancellation.Token) { IconReader = IconReader };
-        var dialog = new ContentDialog { Title = $"选择{label}打开应用", Content = picker, XamlRoot = XamlRoot,
-            RequestedTheme = ActualTheme, PrimaryButtonText = "使用所选", CloseButtonText = "取消", IsPrimaryButtonEnabled = false };
-        applicationPicker = picker; applicationDialog = dialog;
+        var picker = new ApplicationPickerView(key[4..], before, CatalogReader, cancellation.Token) { IconReader = IconReader };
+        var dialog = new ContentDialog { Title = string.Format(text.DialogTitleFormat, Label(key)), Content = picker, XamlRoot = XamlRoot,
+            RequestedTheme = ActualTheme, PrimaryButtonText = text.DialogPrimary,
+            CloseButtonText = CommonStrings.Current.Cancel, IsPrimaryButtonEnabled = false };
+        applicationPicker = picker; applicationDialog = dialog; openKey = key;
         picker.StateChanged += () => { if (!disposed && ReferenceEquals(applicationDialog, dialog)) dialog.IsPrimaryButtonEnabled = picker.CanChoose; };
         SetPickerButtons(false); Changed?.Invoke();
         try
@@ -150,17 +182,17 @@ internal sealed class OpenerSettingsEditor : StackPanel, IDisposable
             cancellation.Token.ThrowIfCancellationRequested();
             if (!disposed && result == ContentDialogResult.Primary && picker.SelectedValue is { } selected)
             {
-                if (current != generation || Values()[key] != before) error = "配置或当前应用草稿已变化，本次选择未应用，请重新选择。";
+                if (current != generation || Values()[key] != before) error = AppPickerStrings.Current.StaleChoice;
                 else rows[key].Input.Text = selected;
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception) { if (!disposed) error = "无法打开应用选择，请关闭其他对话框后重试。"; }
+        catch (Exception) { if (!disposed) error = AppPickerStrings.Current.DialogFailed; }
         finally
         {
             TryHide(dialog); picker.Dispose(); dialog.Content = null;
             if (ReferenceEquals(applicationPicker, picker)) applicationPicker = null;
-            if (ReferenceEquals(applicationDialog, dialog)) applicationDialog = null;
+            if (ReferenceEquals(applicationDialog, dialog)) { applicationDialog = null; openKey = null; }
             if (ReferenceEquals(pickerCancellation, cancellation)) pickerCancellation = null;
             cancellation.Dispose();
             if (!disposed) { SetPickerButtons(true); Changed?.Invoke(); if (error is not null) Error?.Invoke(error); }

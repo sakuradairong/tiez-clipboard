@@ -359,7 +359,7 @@ impl CaptureService {
     ) -> CoreResult<PreparedCopy> {
         self.prepare_copy_at_revision(id, plain_text, allow_sensitive, None)
     }
-    fn prepare_copy_at_revision(
+    pub(crate) fn prepare_copy_at_revision(
         &self,
         id: i64,
         plain_text: bool,

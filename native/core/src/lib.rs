@@ -229,6 +229,8 @@ enum Request {
         id: i64,
         expected_generation: u64,
         #[serde(default)]
+        expected_revision: Option<u64>,
+        #[serde(default)]
         plain_text: bool,
         #[serde(default)]
         allow_sensitive: bool,
@@ -783,6 +785,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
             handle,
             id,
             expected_generation,
+            expected_revision,
             plain_text,
             allow_sensitive,
         } => {
@@ -792,7 +795,8 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 id,
                 plain_text,
                 allow_sensitive,
-                expected_generation
+                expected_generation,
+                expected_revision
             )?))
         }
         Request::ShellStart {
@@ -1011,6 +1015,21 @@ pub unsafe extern "C" fn tiez_core_free(buffer: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paste_request_preserves_optional_history_revision() {
+        for revision in [None, Some(42_u64)] {
+            let mut request = json!({"op":"clipboard_paste", "handle":1, "id":-7, "expected_generation":9});
+            if let Some(revision) = revision { request["expected_revision"] = json!(revision); }
+            match serde_json::from_value::<Request>(request).unwrap() {
+                Request::ClipboardPaste { expected_revision, expected_generation, plain_text, allow_sensitive, .. } => {
+                    assert_eq!(expected_revision, revision);
+                    assert_eq!(expected_generation, 9);
+                    assert!(!plain_text && !allow_sensitive);
+                }
+                _ => panic!("wrong paste request"),
+            }
+        }
+    }
     fn call(value: Value) -> Value {
         let bytes = serde_json::to_vec(&value).unwrap();
         unsafe {

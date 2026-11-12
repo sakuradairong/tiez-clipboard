@@ -5,33 +5,32 @@
     <Grid RowSpacing="12">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <TextBlock Text="标签" FontSize="28" FontWeight="SemiBold"/>
+        <TextBlock x:Name="TitleText" FontSize="28" FontWeight="SemiBold"/>
         <Grid Grid.Row="1" ColumnSpacing="12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <TextBox x:Name="NewTagName" Header="新标签" PlaceholderText="输入标签名称" AcceptsReturn="True" TextWrapping="Wrap"/>
-            <Button x:Name="CreateButton" Grid.Column="1" Content="添加标签" VerticalAlignment="Bottom"/>
-            <Button x:Name="ReloadButton" Grid.Column="2" Content="刷新" VerticalAlignment="Bottom"/>
+            <TextBox x:Name="NewTagName" AcceptsReturn="True" TextWrapping="Wrap"/>
+            <Button x:Name="CreateButton" Grid.Column="1" VerticalAlignment="Bottom"/>
+            <Button x:Name="ReloadButton" Grid.Column="2" VerticalAlignment="Bottom"/>
         </Grid>
         <StackPanel Grid.Row="2" Spacing="6">
             <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBox x:Name="TagSearch" PlaceholderText="搜索全部标签（不区分大小写）" AutomationProperties.Name="搜索标签目录"/>
-                <Button x:Name="SearchButton" Grid.Column="1" Content="搜索"/>
-                <Button x:Name="ClearSearchButton" Grid.Column="2" Content="清除搜索"/>
+                <TextBox x:Name="TagSearch"/>
+                <Button x:Name="SearchButton" Grid.Column="1"/>
+                <Button x:Name="ClearSearchButton" Grid.Column="2"/>
             </Grid>
-            <ComboBox x:Name="SortChoice" Header="标签排序" SelectedIndex="0" HorizontalAlignment="Left" MinWidth="180">
-                <ComboBoxItem Content="历史数量（多到少）"/>
-                <ComboBoxItem Content="名称"/>
+            <ComboBox x:Name="SortChoice" SelectedIndex="0" HorizontalAlignment="Left" MinWidth="180">
+                <ComboBoxItem/>
+                <ComboBoxItem/>
             </ComboBox>
             <TextBlock x:Name="Status" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             <InfoBar x:Name="Feedback" IsOpen="False" IsClosable="True"/>
         </StackPanel>
         <Grid Grid.Row="3" ColumnSpacing="16">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="220"/><ColumnDefinition Width="340"/></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="220"/><ColumnDefinition Width="Auto" MinWidth="340"/></Grid.ColumnDefinitions>
             <Grid RowSpacing="8">
                 <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                <ListView x:Name="TagList" HorizontalContentAlignment="Stretch" SelectionMode="Single"
-                          AutomationProperties.Name="标签目录">
+                <ListView x:Name="TagList" HorizontalContentAlignment="Stretch" SelectionMode="Single">
                     <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
                     <ListView.ItemTemplate><DataTemplate x:DataType="local:TagRow">
                         <Grid ColumnSpacing="10" Padding="8">
@@ -39,38 +38,34 @@
                             <Border Background="{x:Bind Swatch}" Width="16" Height="16" CornerRadius="4" BorderThickness="1"
                                     BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"/>
                             <StackPanel Grid.Column="1" Spacing="4">
-                                <TextBlock Text="{x:Bind Label}" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Text="{x:Bind Details}" FontSize="12" TextWrapping="Wrap"
+                                <TextBlock Text="{x:Bind Label, Mode=OneWay}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{x:Bind Details, Mode=OneWay}" FontSize="12" TextWrapping="Wrap"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                             </StackPanel>
                         </Grid>
                     </DataTemplate></ListView.ItemTemplate>
                 </ListView>
-                <Button x:Name="MoreButton" Grid.Row="1" Content="载入更多标签"/>
+                <Button x:Name="MoreButton" Grid.Row="1"/>
             </Grid>
-            <Border Grid.Column="1" Style="{StaticResource NativeSurfaceStyle}" Padding="12">
+            <Border Grid.Column="1" Style="{StaticResource NativeSurfaceStyle}" Padding="12" MaxWidth="420">
             <ScrollViewer HorizontalScrollBarVisibility="Disabled">
                 <StackPanel x:Name="Editor" Spacing="12">
-                    <TextBlock x:Name="SelectedName" Text="选择一个标签" FontSize="20" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="SelectedName" FontSize="20" TextWrapping="Wrap"/>
                     <TextBlock x:Name="SelectedCounts" TextWrapping="Wrap"/>
-                    <Button x:Name="FilterButton" Content="查看此标签的历史"/>
-                    <Button x:Name="DeleteButton" Content="删除标签及其历史…"/>
-                    <TextBlock Text="删除标签会同时删除所有带此标签的历史记录，包括置顶和带其他标签的记录。"
-                               TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBox x:Name="RenameName" Header="新名称" AcceptsReturn="True" TextWrapping="Wrap"/>
-                    <Button x:Name="RenameButton" Content="重命名或合并…"/>
-                    <TextBlock Text="名称已存在时会合并，保留目标标签颜色。敏感标签名称会改变内容保护状态。"
-                               TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-                    <TextBox x:Name="ColorText" Header="标签颜色" PlaceholderText="默认颜色；可输入 HEX、RGB、RGBA 或颜色名称"
-                             AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <Button x:Name="FilterButton"/>
+                    <Button x:Name="DeleteButton"/>
+                    <TextBlock x:Name="DeleteHint" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBox x:Name="RenameName" AcceptsReturn="True" TextWrapping="Wrap"/>
+                    <Button x:Name="RenameButton"/>
+                    <TextBlock x:Name="RenameHint" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBox x:Name="ColorText" AcceptsReturn="True" TextWrapping="Wrap"/>
                     <TextBlock x:Name="ColorHint" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     <ColorPicker x:Name="Picker" IsAlphaEnabled="True" IsMoreButtonVisible="False" MaxWidth="320" HorizontalAlignment="Left"/>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <Button x:Name="ClearColorButton" Content="使用默认颜色"/>
-                        <Button x:Name="SaveColorButton" Content="保存颜色"/>
+                        <Button x:Name="ClearColorButton"/>
+                        <Button x:Name="SaveColorButton"/>
                     </StackPanel>
-                    <TextBlock Text="切换页面会保留草稿。颜色与名称请分别保存；刷新会放弃当前标签修改，并保留尚未添加的新标签名称。"
-                               TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <TextBlock x:Name="EditorHint" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                 </StackPanel>
             </ScrollViewer>
             </Border>

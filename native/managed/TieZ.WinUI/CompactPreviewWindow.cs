@@ -18,6 +18,7 @@ internal sealed class CompactPreviewWindow : Window
     private readonly nint hwnd;
     private readonly SubclassProc subclass;
     private bool closed;
+    private ClipboardEntry? shown;
     internal long? DisplayedId { get; private set; }
     internal bool HasImage => image.HasImage;
     internal bool HasDocument => document.HasDocument;
@@ -30,7 +31,7 @@ internal sealed class CompactPreviewWindow : Window
 
     internal CompactPreviewWindow(MainWindow owner)
     {
-        Title = "TieZ · 紧凑预览";
+        LanguageService.Changed += ApplyLanguage;
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         subclass = WindowProc;
         try
@@ -51,9 +52,10 @@ internal sealed class CompactPreviewWindow : Window
             SetLong(-8, WinRT.Interop.WindowNative.GetWindowHandle(owner));
             SetLong(-20, (nint)(GetWindowLongPtrW(hwnd, -20).ToInt64() | 0x08000080));
             if (!SetWindowSubclass(hwnd, subclass, 1, 0)) throw new InvalidOperationException("Could not install native preview hit-test guard.");
-            Closed += (_, _) => { closed = true; Clear(); RemoveWindowSubclass(hwnd, subclass, 1); };
+            Closed += (_, _) => { closed = true; LanguageService.Changed -= ApplyLanguage; Clear(); RemoveWindowSubclass(hwnd, subclass, 1); };
+            ApplyLanguage();
         }
-        catch { Close(); throw; }
+        catch { LanguageService.Changed -= ApplyLanguage; Close(); throw; }
     }
     private void SetLong(int index, nint value)
     {
@@ -64,8 +66,8 @@ internal sealed class CompactPreviewWindow : Window
     internal async Task PrepareAsync(ClipboardEntry entry, NativeCore core, ulong revision, bool allowSensitive, CancellationToken token)
     {
         Clear(); token.ThrowIfCancellationRequested();
-        header.Text = entry.ContentType;
-        metadata.Text = string.Join(" · ", new[] { entry.SourceApp, entry.Id < 0 ? "仅本次会话" : "已保存" }.Where(s => !string.IsNullOrEmpty(s)));
+        header.Text = HistoryRow.TypeLabelFor(entry.ContentType);
+        RenderMetadata(entry);
         if (entry.ContentType == "image")
         {
             var preview = await core.GetImagePreviewAsync(entry.Id, revision, allowSensitive, cancellationToken: token);
@@ -82,7 +84,7 @@ internal sealed class CompactPreviewWindow : Window
         token.ThrowIfCancellationRequested();
         if (closed) throw new OperationCanceledException(token);
         text.Visibility = image.HasImage || document.HasDocument ? Visibility.Collapsed : Visibility.Visible;
-        DisplayedId = entry.Id;
+        DisplayedId = entry.Id; shown = entry;
     }
     internal void ShowAt(RectInt32 bounds)
     {
@@ -99,8 +101,27 @@ internal sealed class CompactPreviewWindow : Window
     }
     private void Clear()
     {
-        DisplayedId = null; header.Text = metadata.Text = text.Text = "";
+        DisplayedId = null; shown = null; header.Text = metadata.Text = text.Text = "";
         image.Clear(); document.Clear(); text.Visibility = Visibility.Visible;
+    }
+    // Live language switch: the shown payload stays, its chrome is re-derived.
+    internal void ApplyLanguage()
+    {
+        // Windows' own template parts follow the same accepted language.
+        FrameworkChrome.ApplyDeferred(this);
+        if (closed) return;
+        Title = PreviewStrings.Current.WindowTitle;
+        image.ApplyLanguage(); document.ApplyLanguage();
+        if (shown is not { } entry) return;
+        header.Text = HistoryRow.TypeLabelFor(entry.ContentType);
+        RenderMetadata(entry);
+    }
+    private void RenderMetadata(ClipboardEntry entry)
+    {
+        var text = PreviewStrings.Current;
+        metadata.Text = string.Join(text.Separator,
+            new[] { entry.SourceApp, entry.Id < 0 ? text.MetadataSessionOnly : text.MetadataSaved }
+                .Where(value => !string.IsNullOrEmpty(value)));
     }
     private nint WindowProc(nint window, uint message, nuint wparam, nint lparam, nuint id, nuint data) =>
         message switch { 0x0084 => -1, 0x0021 => 3, _ => DefSubclassProc(window, message, wparam, lparam) };

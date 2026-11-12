@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Text.Json;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using TieZ.Core;
@@ -11,12 +13,17 @@ public sealed record PickedTagName(string Name)
 {
     public string Label => JsonSerializer.Serialize(Name, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 }
-public sealed class PickerTagRow(TagInfo info)
+public sealed class PickerTagRow(TagInfo info) : INotifyPropertyChanged
 {
+    private readonly TagRow row = new(info);
     internal TagInfo Info => info;
+    public event PropertyChangedEventHandler? PropertyChanged;
     public string Label => new PickedTagName(info.Name).Label;
-    public string Details => new TagRow(info).Details;
-    public SolidColorBrush Swatch => new TagRow(info).Swatch;
+    public string Details => row.Details;
+    public SolidColorBrush Swatch => row.Swatch;
+
+    /// <summary>Re-derives the localized row caption in place so a live language switch keeps the container.</summary>
+    internal void RefreshText() => PropertyChanged?.Invoke(this, new(nameof(Details)));
 }
 
 // Borrows one core. Search, selection and new-name drafts do not write to it.
@@ -31,6 +38,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
     private string? after;
     private string search = "";
     private bool hasMore, busy, binding, stale, disposed;
+    private Func<TagStrings, string>? feedbackRender;
     internal event Action? StateChanged;
     internal bool CanSave => !disposed && !busy && !stale && revision is not null;
     internal bool IsBusy => busy;
@@ -68,9 +76,38 @@ public sealed partial class TagPickerView : UserControl, IDisposable
         NewName.BeforeTextChanging += (_, args) =>
         {
             if (!disposed && args.NewText.IndexOfAny(['\r', '\n']) >= 0)
-            { args.Cancel = true; Message("标签名称请保持在一行。"); }
+            { args.Cancel = true; Message(text => text.SingleLineName); }
         };
         UpdateCommands();
+        LanguageService.Changed += ApplyLanguage; ApplyLanguage();
+    }
+    /// <summary>
+    /// Re-derives the localized chrome of the picker from the shared language. It never talks to the core:
+    /// the search text, the new-name draft, the selection and the busy state stay exactly where they were.
+    /// </summary>
+    internal void ApplyLanguage()
+    {
+        if (disposed) return;
+        var text = TagStrings.Current;
+        var common = CommonStrings.Current;
+        IntroText.Text = text.PickerIntro;
+        SearchText.PlaceholderText = text.SearchPlaceholder;
+        AutomationProperties.SetName(SearchText, text.PickerSearchName);
+        SearchButton.Content = common.Search;
+        AutomationProperties.SetName(Choices, text.PickerChoicesName);
+        MoreButton.Content = text.PickerMore;
+        if (rows.Count > 0 || PageStatus.Text.Length > 0) PageStatus.Text = string.Format(text.StatusLoaded, rows.Count);
+        SelectedNames.Header = text.PickerSelectedHeader;
+        AutomationProperties.SetName(SelectedNames, text.PickerSelectedName);
+        RemoveButton.Content = text.PickerRemove;
+        NewName.PlaceholderText = text.PickerNewNamePlaceholder;
+        AutomationProperties.SetName(NewName, text.PickerNewNamePlaceholder);
+        AddButton.Content = text.PickerAdd;
+        SensitiveHint.Text = text.PickerSensitiveHint;
+        ReloadButton.Content = text.PickerReload;
+        // Row containers stay; only the captions derived from the table are re-raised.
+        foreach (var row in rows) row.RefreshText();
+        if (Feedback.Visibility == Visibility.Visible && feedbackRender is not null) Feedback.Text = feedbackRender(text);
     }
     internal async Task InitializeAsync(NativeCore sharedCore, long id)
     {
@@ -80,16 +117,16 @@ public sealed partial class TagPickerView : UserControl, IDisposable
     internal void ObserveRevision(ulong current)
     {
         if (!disposed && revision is { } accepted && current > accepted && !busy)
-        { stale = true; Message("历史或标签目录已更新。选择已保留，请重新读取后再保存。"); UpdateCommands(); }
+        { stale = true; Message(text => text.PickerStale); UpdateCommands(); }
     }
-    private void Message(string message)
+    private void Message(Func<TagStrings, string> message)
     {
-        Feedback.Text = message; Feedback.Visibility = Visibility.Visible;
+        feedbackRender = message; Feedback.Text = message(TagStrings.Current); Feedback.Visibility = Visibility.Visible;
     }
     private void Failure(Exception error)
     {
         if (error is CoreException { Code: "history_conflict" or "not_found" }) stale = true;
-        Message(error.Message + (stale ? " 选择已保留，请重新读取。" : " 选择已保留，可重试。"));
+        Message(text => error.Message + (stale ? text.PickerStaleSuffix : text.PickerRetrySuffix));
     }
     private void Add(string name)
     {
@@ -105,7 +142,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
         if (disposed || busy || revision is null) return;
         string name = NewName.Text.Trim();
         if (name.Length == 0 || name.IndexOfAny(['\r', '\n']) >= 0)
-        { Message("请输入单行标签名称。"); return; }
+        { Message(text => text.PickerNeedName); return; }
         Add(name); NewName.Text = ""; BindChoices(); UpdateCommands();
     }
     private void BindChoices()
@@ -128,7 +165,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
         }
         finally { binding = false; }
         after = page.NextAfter; hasMore = page.HasMore; BindChoices();
-        PageStatus.Text = $"已载入 {rows.Count} 个标签";
+        PageStatus.Text = string.Format(TagStrings.Current.StatusLoaded, rows.Count);
     }
     private async Task RereadAsync()
     {
@@ -144,7 +181,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
             // Only a complete, same-revision read may discard the draft.
             selected.Clear(); foreach (string name in snapshot.Tags) Add(name);
             revision = snapshot.Revision; stale = false; search = nextSearch; NewName.Text = "";
-            AcceptPage(page, true); Feedback.Text = ""; Feedback.Visibility = Visibility.Collapsed;
+            AcceptPage(page, true); feedbackRender = null; Feedback.Text = ""; Feedback.Visibility = Visibility.Collapsed;
         }
         catch (OperationCanceledException) when (disposed) { }
         catch (Exception error) { if (!disposed) Failure(error); }
@@ -169,7 +206,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
     {
         if (!CanSave || core is null || revision is not { } expected) return false;
         if (NewName.Text.Length > 0)
-        { Message("请先将新名称加入选择，或清空输入后保存。"); return false; }
+        { Message(text => text.PickerAddBeforeSave); return false; }
         var names = Selection; busy = true; UpdateCommands();
         bool requestFailed = false;
         try
@@ -179,7 +216,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
                 try { return await core.SetExactTagsAsync(entryId, names, expected, lifetime.Token); }
                 catch (Exception error) { requestFailed = true; if (!disposed) Failure(error); throw; }
             });
-            if (!saved && !disposed && !requestFailed) Message("保存未完成，选择已保留。请稍后重试或重新读取。");
+            if (!saved && !disposed && !requestFailed) Message(text => text.PickerSaveIncomplete);
             return saved;
         }
         finally { busy = false; if (!disposed) UpdateCommands(); }
@@ -209,7 +246,7 @@ public sealed partial class TagPickerView : UserControl, IDisposable
     internal void SelectForRemoval(string name) => SelectedNames.SelectedItem = selected.Single(value => value.Name == name);
     public void Dispose()
     {
-        if (disposed) return; disposed = true; lifetime.Cancel(); core = null; revision = null;
+        if (disposed) return; disposed = true; lifetime.Cancel(); LanguageService.Changed -= ApplyLanguage; feedbackRender = null; core = null; revision = null;
         after = null; search = ""; entryId = 0; hasMore = false;
         binding = true; rows.Clear(); selected.Clear(); SearchText.Text = NewName.Text = Feedback.Text = PageStatus.Text = "";
         StateChanged = null; lifetime.Dispose();

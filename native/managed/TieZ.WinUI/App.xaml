@@ -7,7 +7,8 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
-            <CornerRadius x:Key="NativePanelCornerRadius">12</CornerRadius>
+            <DataTemplate x:Key="NativeHiddenSettingHeader"><Grid Height="0"/></DataTemplate>
+            <CornerRadius x:Key="NativePanelCornerRadius">8</CornerRadius>
             <Thickness x:Key="NativePanelPadding">16</Thickness>
             <Style x:Key="NativeSurfaceStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>

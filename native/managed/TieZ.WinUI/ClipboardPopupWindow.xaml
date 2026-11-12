@@ -1,0 +1,77 @@
+<Window
+    x:Class="TieZ.Native.ClipboardPopupWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:TieZ.Native">
+    <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" Padding="12,8,12,10" RowSpacing="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid ColumnSpacing="4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <Grid x:Name="DragRegion" MinHeight="36"><TextBlock Text="TieZ" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" Margin="4,0"/></Grid>
+            <ToggleButton x:Name="KeepOpen" Grid.Column="1" Width="36" Height="36" Padding="0"><FontIcon Glyph="&#xE718;" FontSize="15"/></ToggleButton>
+            <Button x:Name="More" Grid.Column="2" Width="36" Height="36" Padding="0"><FontIcon Glyph="&#xE712;" FontSize="16"/></Button>
+            <Button x:Name="Hide" Grid.Column="3" Width="36" Height="36" Padding="0"><FontIcon Glyph="&#xE8BB;" FontSize="14"/></Button>
+        </Grid>
+        <TextBox x:Name="SearchBox" Grid.Row="1" MinHeight="36"/>
+        <Grid Grid.Row="2" ColumnSpacing="6">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <ToggleButton x:Name="AllFilter" IsChecked="True" MinHeight="32" Padding="12,4"/>
+            <ToggleButton x:Name="PinnedFilter" Grid.Column="1" MinHeight="32" Padding="12,4"/>
+            <ComboBox x:Name="TypeFilter" Grid.Column="2" HorizontalAlignment="Stretch" MinHeight="32"/>
+        </Grid>
+        <InfoBar x:Name="Feedback" Grid.Row="3" IsOpen="False" Severity="Warning" IsClosable="True"/>
+        <Grid Grid.Row="4">
+            <ListView x:Name="Items" SelectionMode="Single" Padding="0" IsItemClickEnabled="False"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="Margin" Value="0,0,0,4"/>
+                    </Style>
+                </ListView.ItemContainerStyle>
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:PopupRow">
+                        <Grid ColumnSpacing="2" MinHeight="78">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <Button Style="{StaticResource DefaultButtonStyle}" Background="Transparent" BorderThickness="0" Padding="10,8"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                    Click="PasteClick" RightTapped="OriginalRightTapped" AutomationProperties.Name="{x:Bind ActionName}">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <Image Source="{x:Bind Thumbnail, Mode=OneWay}" Visibility="{x:Bind ThumbnailVisibility, Mode=OneWay}" Width="48" Height="48" Stretch="Uniform"/>
+                                    <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis" FontSize="14"/>
+                                        <TextBlock Text="{x:Bind Metadata}" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Button>
+                            <Button Grid.Column="1" Width="28" Height="32" Padding="0" VerticalAlignment="Center" Background="Transparent" BorderThickness="0"
+                                    Click="PreviewClick" AutomationProperties.Name="{x:Bind PreviewLabel}" ToolTipService.ToolTip="{x:Bind PreviewLabel}">
+                                <FontIcon Glyph="&#xE890;" FontSize="13"/>
+                            </Button>
+                            <Button Grid.Column="2" Width="28" Height="32" Padding="0" VerticalAlignment="Center" Background="Transparent" BorderThickness="0"
+                                    Click="RowMenuClick" AutomationProperties.Name="{x:Bind MoreLabel}" ToolTipService.ToolTip="{x:Bind MoreLabel}">
+                                <FontIcon Glyph="&#xE712;" FontSize="14"/>
+                            </Button>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+                <ListView.Footer><Button x:Name="LoadMore" HorizontalAlignment="Stretch" Margin="0,4" Visibility="Collapsed"/></ListView.Footer>
+            </ListView>
+            <StackPanel x:Name="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="280" Spacing="10" Margin="12">
+                <FontIcon Glyph="&#xE8A5;" FontSize="30" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                <TextBlock x:Name="EmptyTitle" TextAlignment="Center" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                <TextBlock x:Name="EmptyHint" TextAlignment="Center" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+        </Grid>
+        <Grid Grid.Row="5" ColumnSpacing="4">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="Hint" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+            <Button x:Name="Refresh" Grid.Column="1" Padding="8,4" MinHeight="28" FontSize="11"/>
+        </Grid>
+    </Grid>
+</Window>

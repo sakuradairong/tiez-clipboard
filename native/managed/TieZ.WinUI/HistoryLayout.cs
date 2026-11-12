@@ -113,7 +113,7 @@ public sealed partial class HistoryView
         if (!LayoutChoice.IsEnabled) { ApplyAcceptedLayout(); return; }
         string requested = LayoutChoice.SelectedIndex == 1 ? "grid" : "list";
         try { core.Update(new Dictionary<string,string> { [LayoutKey] = requested }, core.Snapshot.Revision); ApplyAcceptedLayout(); }
-        catch (Exception error) { ApplyAcceptedLayout(); ShowError($"布局未保存，已保留原布局。{error.Message} 可重读布局后重试。"); }
+        catch (Exception error) { ApplyAcceptedLayout(); ShowError(text => string.Format(text.LayoutSaveFailed, error.Message)); }
     }
     private void OnReloadLayout(object sender, RoutedEventArgs args)
     {

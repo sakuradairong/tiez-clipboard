@@ -8,15 +8,17 @@ internal sealed class ShellController : IDisposable
 {
     private readonly MainWindow main;
     private readonly NativeCore core;
+    private readonly ClipboardPopupWindow? popup;
     private readonly DispatcherQueueTimer timer;
     private readonly CancellationTokenSource lifetime = new();
-    private bool disposed, polling;
+    private bool disposed, polling, stopped;
     internal ShellStatus? Status { get; private set; }
 
-    internal ShellController(MainWindow main, NativeCore core)
+    internal ShellController(MainWindow main, NativeCore core, ClipboardPopupWindow? popup = null)
     {
-        this.main = main; this.core = core;
+        this.main = main; this.core = core; this.popup = popup;
         main.ShutdownStarted += Dispose;
+        LanguageService.Changed += ApplyLanguage;
         timer = main.DispatcherQueue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(200);
         timer.Tick += Poll;
@@ -30,7 +32,7 @@ internal sealed class ShellController : IDisposable
             Apply(status); timer.Start();
         }
         catch (OperationCanceledException) { }
-        catch (Exception error) { if (!disposed) main.SetShellUnavailable(error.Message); }
+        catch (Exception error) { if (!disposed) { stopped = true; main.SetShellUnavailable(error.Message); } }
     }
     private void Apply(ShellStatus status)
     {
@@ -38,12 +40,26 @@ internal sealed class ShellController : IDisposable
         if (Status?.TrayVisible == true && !status.TrayVisible) main.ShowMain();
         Status = status;
         main.SetResidentMode(status.Running && status.TrayVisible);
-        if (status.LastError is not null) main.SetShellUnavailable(status.LastError);
-        else if (status.HotkeyError is not null) main.SetShellUnavailable(status.HotkeyError == "hotkey_conflict"
-            ? status.MainHotkeyActive ? "上次快捷键修改未完成，原绑定仍可用。" : "主快捷键已被系统或其他应用占用，请在设置中更改。"
-            : $"主快捷键应用未完成：{status.HotkeyError}");
-        else main.ClearShellWarning();
+        Publish();
     }
+    private string? Warning(ShellStatus status)
+    {
+        var text = ShellStrings.Current;
+        if (status.LastError is not null) return status.LastError;
+        if (status.HotkeyError is null) return null;
+        return status.HotkeyError == "hotkey_conflict"
+            ? status.MainHotkeyActive ? text.HotkeyPending : text.HotkeyOccupied
+            : string.Format(text.HotkeyFailureFormat, status.HotkeyError);
+    }
+    private void Publish()
+    {
+        if (disposed || stopped || Status is not { } status) return;
+        string? message = Warning(status);
+        if (message is not null) main.SetShellUnavailable(message); else main.ClearShellWarning();
+        popup?.SetShellMessage(message);
+    }
+    // The accepted language changed; re-derive only the shell warning already on screen.
+    private void ApplyLanguage() => Publish();
     private async void Poll(DispatcherQueueTimer sender, object args)
     {
         if (disposed || polling) return;
@@ -58,8 +74,8 @@ internal sealed class ShellController : IDisposable
                 if (disposed) break;
                 switch (action)
                 {
-                    case "show_main": main.ShowMain(); break;
-                    case "toggle_main": main.ToggleMain(); break;
+                    case "show_main": if (popup is not null) await popup.ShowAsync(); else main.ShowMain(); break;
+                    case "toggle_main": if (popup is not null) await popup.ToggleAsync(); else main.ToggleMain(); break;
                     case "open_settings": main.OpenSettings(); break;
                     case "quit": _ = main.Quit(); return;
                 }
@@ -71,6 +87,7 @@ internal sealed class ShellController : IDisposable
         {
             if (!disposed)
             {
+                stopped = true;
                 main.ShowMain(); main.SetShellUnavailable(error.Message);
                 main.SetResidentMode(false); timer.Stop();
             }
@@ -80,7 +97,8 @@ internal sealed class ShellController : IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; main.ShutdownStarted -= Dispose; timer.Stop(); timer.Tick -= Poll;
+        disposed = true; main.ShutdownStarted -= Dispose; LanguageService.Changed -= ApplyLanguage;
+        timer.Stop(); timer.Tick -= Poll;
         lifetime.Cancel(); lifetime.Dispose();
         // Core.Dispose owns native stop/join, including a menu that is open.
     }

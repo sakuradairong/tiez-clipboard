@@ -1,35 +1,72 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using TieZ.Core;
 
 namespace TieZ.Native;
 
-public sealed class ApplicationChoice
+public sealed class ApplicationChoice : INotifyPropertyChanged
 {
+    private readonly string contentType="",kind="",identity="",unavailable="";
     internal InstalledApplication? Application { get; }
     internal string? Value { get; }
     internal string Group { get; }
-    public string Name { get; }
-    public string GroupLabel { get; }
-    public string Details { get; }
+    public string Name { get; private set; } = "";
+    public string GroupLabel { get; private set; } = "";
+    public string Details { get; private set; } = "";
     // Searchable text: display name, launch target/path and the opaque catalog identity.
-    internal string SearchText { get; }
-    public string AccessibilityLabel => $"{Name}，{GroupLabel}，{Details}";
+    internal string SearchText { get; private set; } = "";
+    public string AccessibilityLabel=>string.Format(AppPickerStrings.Current.AccessibilityFormat,Name,GroupLabel,Details);
     public bool CanSelect { get; }
-    internal ApplicationChoice(string name,string details,string defaultLabel)
-    {Name=name;Details=details;GroupLabel=defaultLabel;Value="";Group="default";CanSelect=true;SearchText=$"{name}\n{details}\n{defaultLabel}";}
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private ApplicationChoice(string contentType)
+    {this.contentType=contentType;Group="default";Value="";CanSelect=true;Relocalize();}
     internal ApplicationChoice(InstalledApplication app,string reason)
     {
-        Application=app;Name=app.Name;Value=app.Handler;CanSelect=app.Handler is {Length:>0}&&app.Unavailable is null&&app.Kind is "desktop" or "packaged";
+        Application=app;Name=app.Name;Value=app.Handler;
+        CanSelect=app.Handler is {Length:>0}&&app.Unavailable is null&&app.Kind is "desktop" or "packaged";
         Group=CanSelect?reason:"unavailable";
-        string type=app.Kind=="desktop"?"桌面程序":app.Kind=="packaged"?"打包应用":"无法使用";
-        GroupLabel=Group switch {"association"=>$"系统关联推荐 · {type}","keyword"=>$"名称推荐 · {type}","other"=>$"其他应用 · {type}",_=>"无法用作打开程序"};
-        string identity=app.Handler??app.SourceId;
-        string unavailable=app.Unavailable switch {"missing_target"=>"没有可读取的启动目标","invalid_identity"=>"应用标识无法使用","not_native_executable"=>"目标缺失或不是支持的原生程序",_=>"没有支持的打开方式"};
-        Details=CanSelect?identity:$"{unavailable} · {identity}";
+        kind=app.Kind;identity=app.Handler??app.SourceId;unavailable=app.Unavailable??"";
         SearchText=$"{app.Name}\n{app.Handler}\n{app.SourceId}\n{app.Kind}";
+        Relocalize();
     }
+    internal static ApplicationChoice DefaultRule(string contentType)=>new(contentType);
+    // Row labels are re-derived from data already in memory, never from a new catalog read.
+    internal void Relocalize()
+    {
+        var text=AppPickerStrings.Current;
+        if(Application is null)
+        {
+            bool code=contentType=="code";
+            Name=code?text.FollowTextApp:text.DefaultApp;
+            GroupLabel=text.DefaultRowGroup;
+            Details=code?text.DefaultRowDetailsCode:text.DefaultRowDetailsOther;
+            SearchText=$"{Name}\n{Details}\n{GroupLabel}";
+        }
+        else
+        {
+            string type=kind=="desktop"?text.KindDesktop:kind=="packaged"?text.KindPackaged:text.KindUnavailable;
+            GroupLabel=Group switch
+            {
+                "association"=>string.Format(text.GroupAssociationFormat,type),
+                "keyword"=>string.Format(text.GroupKeywordFormat,type),
+                "other"=>string.Format(text.GroupOtherFormat,type),
+                _=>text.GroupUnavailable
+            };
+            string reason=unavailable switch
+            {
+                "missing_target"=>text.UnavailableMissingTarget,
+                "invalid_identity"=>text.UnavailableInvalidIdentity,
+                "not_native_executable"=>text.UnavailableNotNative,
+                _=>text.UnavailableGeneric
+            };
+            Details=CanSelect?identity:reason+text.DetailSeparator+identity;
+        }
+        Notify(nameof(Name));Notify(nameof(GroupLabel));Notify(nameof(Details));Notify(nameof(AccessibilityLabel));
+    }
+    private void Notify(string property)=>PropertyChanged?.Invoke(this,new PropertyChangedEventArgs(property));
 }
 
 // A local selection draft over a shared core snapshot. No settings update occurs here.
@@ -40,7 +77,8 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
     private Func<bool,CancellationToken,Task<ApplicationCatalogResult>>? reader;
     private CancellationTokenSource? lifetime,loadingCancellation;
     private ApplicationCatalogResult? accepted;
-    private string contentType="",current="",defaultLabel="";
+    private string contentType="",current="";
+    private Func<AppPickerStrings,string>? feedbackText;
     private bool disposed,loading,stale,failed,binding;
     private int generation;
     internal event Action? StateChanged;
@@ -65,18 +103,19 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
         SearchText.TextChanging+=(_,_)=>ApplyFilter();Category.SelectionChanged+=(_,_)=>ApplyFilter();
         Choices.SelectionChanged+=(_,_)=>{if(!binding&&!disposed){ShowSelection();StateChanged?.Invoke();}};
         RefreshButton.Click+=async(_,_)=>await LoadAsync(true);
+        ApplyLanguage();
     }
-    internal ApplicationPickerView(string contentType,string current,string defaultLabel,Func<bool,CancellationToken,Task<ApplicationCatalogResult>> reader,CancellationToken cancellationToken):this()
+    internal ApplicationPickerView(string contentType,string current,Func<bool,CancellationToken,Task<ApplicationCatalogResult>> reader,CancellationToken cancellationToken):this()
     {
-        this.contentType=contentType;this.current=current;this.defaultLabel=defaultLabel;this.reader=reader;
+        this.contentType=contentType;this.current=current;this.reader=reader;
         lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        CurrentText.Text=$"当前草稿：{(current.Length==0?defaultLabel:current)}";
+        RenderCurrent();
     }
     private static string Identity(InstalledApplication app)=>app.Handler is { } handler?$"{app.Kind}:{(app.Kind=="desktop"?handler.ToLowerInvariant():handler)}":$"unavailable:{app.SourceId}:{app.Name}";
     private List<ApplicationChoice> Build(ApplicationCatalogResult result)
     {
         if(!result.Snapshot.Recommendations.TryGetValue(contentType,out var recommendations))throw new CoreException("invalid_response","Application recommendations missing");
-        var choices=new List<ApplicationChoice> {new(defaultLabel,contentType=="code"?"保存后跟随文本打开应用":"打开时使用 Windows 当前关联","默认规则")};
+        var choices=new List<ApplicationChoice> {ApplicationChoice.DefaultRule(contentType)};
         var seen=new HashSet<string>(StringComparer.Ordinal);
         foreach(var item in recommendations.Applications)
             if(seen.Add(Identity(item.Application)))choices.Add(new(item.Application,item.Reason));
@@ -95,8 +134,7 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
             if(disposed||stale||version!=generation||cancellation.IsCancellationRequested)return;
             var choices=Build(result);string? selected=(Choices.SelectedItem as ApplicationChoice)?.Value??current;
             accepted=result;all.Clear();all.AddRange(choices);
-            var info=result.Snapshot.Recommendations[contentType];
-            DefaultText.Text=contentType=="code"?"默认跟随文本应用":info.DefaultName is {Length:>0} name?$"Windows 默认：{name}":"Windows 默认应用名称不可读取";
+            RenderDefaultText(result);
             ApplyFilter(selected);
         }
         catch(OperationCanceledException) { }
@@ -104,8 +142,8 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
         {
             if(!disposed&&!stale&&version==generation)
             {
-                failed=true;Feedback.Severity=InfoBarSeverity.Error;Feedback.Message=failure is CoreException {Code:"apps_busy"}
-                    ?"上一次读取仍在停止，请稍后刷新。":"无法读取应用目录，请刷新重试，或取消后填写程序路径。";Feedback.IsOpen=true;
+                failed=true;ShowFeedback(InfoBarSeverity.Error,failure is CoreException {Code:"apps_busy"}
+                    ?text=>text.Busy:text=>text.LoadFailed);
             }
         }
         finally
@@ -131,32 +169,76 @@ public sealed partial class ApplicationPickerView : UserControl, IDisposable
         finally{binding=false;}
         ShowSelection();UpdateControls();
     }
-    private void ShowSelection()=>SelectionText.Text=Choices.SelectedItem is ApplicationChoice choice?$"{(choice.CanSelect?"已选":"不可选择")}：{choice.Name} · {choice.Details}":"请选择一项；当前草稿不会自动更改。";
+    private void ShowSelection()
+    {
+        var text=AppPickerStrings.Current;
+        SelectionText.Text=Choices.SelectedItem is ApplicationChoice choice
+            ?string.Format(choice.CanSelect?text.SelectionSelectedFormat:text.SelectionUnavailableFormat,choice.Name,choice.Details)
+            :text.SelectionNone;
+    }
+    private void ShowFeedback(InfoBarSeverity severity,Func<AppPickerStrings,string> message)
+    {
+        feedbackText=message;Feedback.Severity=severity;Feedback.Message=message(AppPickerStrings.Current);Feedback.IsOpen=true;
+    }
+    private static string DefaultLabel(string contentType)=>contentType=="code"?AppPickerStrings.Current.FollowTextApp:AppPickerStrings.Current.DefaultApp;
+    private void RenderCurrent()
+    {
+        if(contentType.Length>0)CurrentText.Text=string.Format(AppPickerStrings.Current.CurrentDraftFormat,current.Length==0?DefaultLabel(contentType):current);
+    }
+    private void RenderDefaultText(ApplicationCatalogResult result)
+    {
+        if(!result.Snapshot.Recommendations.TryGetValue(contentType,out var info))return;
+        var text=AppPickerStrings.Current;
+        DefaultText.Text=contentType=="code"?text.DefaultSummaryCode:info.DefaultName is {Length:>0} name?string.Format(text.DefaultSummaryFormat,name):text.DefaultSummaryUnknown;
+    }
+    // Re-derives every visible string from the tables; accepted catalog rows, search text and selection stay in place.
+    internal void ApplyLanguage()
+    {
+        if(disposed)return;
+        var text=AppPickerStrings.Current;
+        SearchText.PlaceholderText=text.SearchPlaceholder;
+        AutomationProperties.SetName(SearchText,text.SearchName);
+        RefreshButton.Content=text.Refresh;
+        AutomationProperties.SetName(RefreshButton,text.Refresh);
+        AutomationProperties.SetName(Category,text.CategoryName);
+        CategoryAll.Content=text.CategoryAll;CategoryRecommended.Content=text.CategoryRecommended;
+        CategoryOther.Content=text.CategoryOther;CategoryUnavailable.Content=text.CategoryUnavailable;
+        AutomationProperties.SetName(Choices,text.ChoicesName);
+        Footer.Text=text.Footer;
+        foreach(var choice in all)choice.Relocalize();
+        foreach(var icon in IconViews)icon.ApplyLanguage();
+        if(Feedback.IsOpen&&feedbackText is { } message)Feedback.Message=message(text);
+        if(all.Count>0)ShowSelection();
+        if(accepted is not null||loading||failed)UpdateControls();
+        RenderCurrent();
+    }
     private void UpdateControls()
     {
         if(disposed)return;
         Progress.Visibility=loading?Visibility.Visible:Visibility.Collapsed;Choices.IsEnabled=!loading&&!stale;RefreshButton.IsEnabled=!loading&&!stale&&lifetime is {IsCancellationRequested:false};
-        if(loading)Summary.Text="正在读取应用目录…";
+        var text=AppPickerStrings.Current;
+        if(loading)Summary.Text=text.LoadingSummary;
         else if(accepted is { } result)
         {
             var info=result.Snapshot.Recommendations[contentType];int unavailable=all.Count(choice=>!choice.CanSelect);
-            string incomplete=result.Snapshot.Limited||info.Limited||result.Snapshot.Unreadable>0||info.Unreadable>0||info.AssociationError is not null?" 部分目录或推荐未能完整读取。":"";
-            Summary.Text=$"显示 {visible.Count} 项；目录中 {unavailable} 项无法用作打开程序。{(result.Cached?" 使用上次成功读取的列表；可刷新。":"")}{incomplete}";
+            bool incomplete=result.Snapshot.Limited||info.Limited||result.Snapshot.Unreadable>0||info.Unreadable>0||info.AssociationError is not null;
+            Summary.Text=string.Format(text.SummaryFormat,visible.Count,unavailable)
+                +(result.Cached?text.SummaryCached:"")+(incomplete?text.SummaryIncomplete:"");
         }
-        else Summary.Text=failed?"应用目录尚未读取成功。":"";
+        else Summary.Text=failed?text.SummaryFailed:"";
         QueueIconRefresh();StateChanged?.Invoke();
     }
     internal void Invalidate()
     {
         if(disposed)return;stale=true;ClearIcons();generation++;loadingCancellation?.Cancel();loading=false;Choices.SelectedItem=null;
-        Feedback.Severity=InfoBarSeverity.Warning;Feedback.Message="配置或应用草稿已变化，请取消后重新选择。";Feedback.IsOpen=true;UpdateControls();
+        ShowFeedback(InfoBarSeverity.Warning,text=>text.Invalidated);UpdateControls();
     }
     public void Dispose()
     {
         if(disposed)return;disposed=true;ReleaseIcons();generation++;loadingCancellation?.Cancel();lifetime?.Cancel();lifetime?.Dispose();lifetime=null;
         reader=null;accepted=null;Choices.SelectedItem=null;Choices.ItemsSource=null;all.Clear();visible.Clear();
         SearchText.Text="";CurrentText.Text=SelectionText.Text=Summary.Text=DefaultText.Text="";Feedback.IsOpen=false;Feedback.Message="";
-        contentType=current=defaultLabel="";StateChanged=null;
+        contentType=current="";feedbackText=null;StateChanged=null;
     }
     internal void Select(string value)=>Choices.SelectedItem=visible.FirstOrDefault(choice=>choice.Value==value);
     internal void SelectUnavailable()=>Choices.SelectedItem=visible.FirstOrDefault(choice=>!choice.CanSelect);

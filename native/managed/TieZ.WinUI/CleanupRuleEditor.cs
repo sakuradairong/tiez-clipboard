@@ -25,14 +25,16 @@ internal sealed class CleanupRuleEditor : UserControl
     }
     private readonly StackPanel root = new() { Spacing = 10 };
     private readonly StackPanel fields = new() { Spacing = 8 };
-    private readonly ComboBox selection = new() { Header = "清理规则（按执行顺序）", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox pattern = new() { Header = "匹配表达式（Rust 正则）", AcceptsReturn = true };
-    private readonly TextBox replacement = new() { Header = "替换内容", AcceptsReturn = true, PlaceholderText = @"支持 $1、${name} 和 \n、\r、\t" };
-    private readonly TextBox label = new() { Header = "规则说明（可选）", AcceptsReturn = true };
-    private readonly ComboBox action = new() { Header = "匹配后执行", ItemsSource = new[] { "替换文字", "忽略采集" } };
-    private readonly Button add = new() { Content = "添加规则" }, remove = new() { Content = "删除规则" }, up = new() { Content = "上移" }, down = new() { Content = "下移" };
+    private readonly ComboBox selection = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBox pattern = new() { AcceptsReturn = true };
+    private readonly TextBox replacement = new() { AcceptsReturn = true };
+    private readonly TextBox label = new() { AcceptsReturn = true };
+    private readonly ComboBox action = new();
+    private readonly Button add = new(), remove = new(), up = new(), down = new();
+    private readonly TextBlock hint = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.7 };
     private readonly InfoBar feedback = new() { Severity = InfoBarSeverity.Warning, IsClosable = false };
-    private readonly TextBox raw = new() { Header = "原始规则文本", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
+    private readonly TextBox raw = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 90 };
+    private readonly Expander rawExpander = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly List<Rule> rules = [];
     private readonly List<Line> footer = [];
     private bool loading, available = true;
@@ -54,9 +56,9 @@ internal sealed class CleanupRuleEditor : UserControl
         foreach (var button in new[] { add, remove, up, down }) buttons.Children.Add(button);
         root.Children.Add(buttons); root.Children.Add(feedback);
         fields.Children.Add(label); fields.Children.Add(pattern); fields.Children.Add(action); fields.Children.Add(replacement);
-        fields.Children.Add(new TextBlock { Text = @"清空结果或替换为 __IGNORE_CAPTURE__ 会忽略采集。正则由核心在测试和保存时校验；实际换行请写成 \n、\r，制表符写成 \t。", TextWrapping = TextWrapping.Wrap, Opacity = 0.7 });
+        fields.Children.Add(hint);
         root.Children.Add(fields);
-        root.Children.Add(new Expander { Header = "兼容配置 · 查看或编辑规则文本", Content = raw, HorizontalAlignment = HorizontalAlignment.Stretch });
+        rawExpander.Content = raw; root.Children.Add(rawExpander);
         Content = root;
         selection.SelectionChanged += (_, _) => { if (!loading) ShowSelected(); };
         add.Click += (_, _) => AddRule(); remove.Click += (_, _) => RemoveRule();
@@ -73,6 +75,28 @@ internal sealed class CleanupRuleEditor : UserControl
             if (!loading && Lines(raw.Text) != Lines(text)) LoadText(raw.Text);
         };
         LoadText("");
+        ApplyLanguage();
+    }
+    // Re-derives the rule chrome and the action list; rule text, selection and warnings keep their state.
+    internal void ApplyLanguage()
+    {
+        var text = AdvancedStrings.Current;
+        selection.Header = text.RuleSelection;
+        pattern.Header = text.RulePatternHeader;
+        replacement.Header = text.RuleReplacementHeader;
+        replacement.PlaceholderText = text.RuleReplacementPlaceholder;
+        label.Header = text.RuleLabelHeader;
+        action.Header = text.ActionHeader;
+        add.Content = text.RuleAdd; remove.Content = text.RuleRemove;
+        up.Content = text.MoveUp; down.Content = text.MoveDown;
+        hint.Text = text.RuleHint;
+        raw.Header = text.RuleRawHeader;
+        rawExpander.Header = text.RuleRawExpander;
+        int actionIndex = action.SelectedIndex;
+        loading = true;
+        try { action.ItemsSource = new[] { text.RuleActionReplace, text.ActionIgnore }; action.SelectedIndex = actionIndex; }
+        finally { loading = false; }
+        feedback.Message = available ? text.RuleInputWarning : text.RuleUnavailable;
     }
     private static bool IsLabel(Line line)
     {
@@ -88,7 +112,7 @@ internal sealed class CleanupRuleEditor : UserControl
         if (invalid)
         {
             args.Cancel = true; feedback.IsOpen = true;
-            feedback.Message = @"此文本无法安全写成一行规则。换行请使用 \n、\r；匹配 => 请将 > 写作 \x3E；开头的 # 请写作 \x23 或 [#]。";
+            feedback.Message = AdvancedStrings.Current.RuleInputWarning;
         }
         else if (available) feedback.IsOpen = false;
     }
@@ -128,7 +152,7 @@ internal sealed class CleanupRuleEditor : UserControl
         finally { loading = false; }
         Rebuild(0);
         feedback.IsOpen = !available;
-        feedback.Message = "原始文本包含无法逐条表示的规则，请在兼容配置中修正。原始草稿已完整保留。";
+        feedback.Message = AdvancedStrings.Current.RuleUnavailable;
         if (changed) Changed?.Invoke();
     }
     private void Rebuild(int selected)

@@ -131,7 +131,7 @@ internal sealed class HistoryLayoutWindowSmoke(MainWindow main, NativeCore core,
                     Check(view.Detail == "" && view.Rows.Single(row => row.Id == changedId).IsStale, "External privacy change did not invalidate detail/row.");
                     view.ChooseLayout("grid"); break;
                 case 27:
-                    Check(view.Detail == "" && !view.CanCopy && view.Rows.Single(row => row.Id == changedId).Preview == "记录已更新 · 请刷新",
+                    Check(view.Detail == "" && !view.CanCopy && view.Rows.Single(row => row.Id == changedId).Preview == HistoryStrings.Zh.PreviewStale,
                         "Switching stale layout restored private content/actions.");
                     await view.ReloadAsync(changedId); break;
                 case 28:
@@ -141,8 +141,12 @@ internal sealed class HistoryLayoutWindowSmoke(MainWindow main, NativeCore core,
                     Check(!view.CanChangeLayout && picker.Selection.Contains("password"), "Card selection not routed into tag picker.");
                     picker.NameDraft = "layout-selection"; picker.Invoke("add"); view.ConfirmDialog(); break;
                 case 30:
-                    Check(!view.HasDialog && (await core.GetTagSelectionAsync(changedId)).Tags.Contains("layout-selection") && view.Detail == "",
-                        "Card tag save lost identity or revealed body.");
+                    bool tagSaved = (await core.GetTagSelectionAsync(changedId)).Tags.Contains("layout-selection");
+                    Check(tagSaved && view.Detail == "",
+                        $"Card tag save lost identity or revealed body: dialog={view.HasDialog}, tagSaved={tagSaved}, detailCleared={view.Detail.Length == 0}.");
+                    // Storage and privacy are already checked; the native close transition may outlast one tick.
+                    // The suite deadline still fails if the dialog never finishes closing.
+                    if (view.HasDialog) return;
                     view.Select(richId); break;
                 case 31:
                     Check(view.HasDocumentPreview && view.PreviewedDocumentId == richId, "Card rich record did not load native document detail.");

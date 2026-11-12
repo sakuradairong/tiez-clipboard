@@ -1,0 +1,149 @@
+namespace TieZ.Native;
+
+/// <summary>Text of the ordinary settings window and its controls.</summary>
+internal sealed class SettingsStrings
+{
+    internal required string WindowTitle { get; init; }
+    internal required string Heading { get; init; }
+    internal required string Intro { get; init; }
+    internal required string LanguageHeader { get; init; }
+    internal required string LanguageHint { get; init; }
+    internal required string ThemeHeader { get; init; }
+    internal required string ThemeSystem { get; init; }
+    internal required string ThemeLight { get; init; }
+    internal required string ThemeDark { get; init; }
+    internal required string HotkeyHeader { get; init; }
+    internal required string HotkeyHint { get; init; }
+    internal required string Deduplicate { get; init; }
+    internal required string ShowSearch { get; init; }
+    internal required string Compact { get; init; }
+    internal required string PersistentHeader { get; init; }
+    internal required string PersistentOn { get; init; }
+    internal required string PersistentOff { get; init; }
+    internal required string CaptureFiles { get; init; }
+    internal required string CaptureRichText { get; init; }
+    internal required string Privacy { get; init; }
+    internal required string LimitEnabled { get; init; }
+    internal required string LimitHeader { get; init; }
+    internal required string Advanced { get; init; }
+    internal required string Openers { get; init; }
+    internal required string Reload { get; init; }
+    internal required string Save { get; init; }
+    internal required string RevisionFormat { get; init; }
+    internal required string Conflict { get; init; }
+    internal required string Saved { get; init; }
+    internal required string SavedWarningFormat { get; init; }
+    internal required string HotkeyConflict { get; init; }
+
+    internal static SettingsStrings Zh { get; } = new()
+    {
+        WindowTitle = "TieZ · 设置",
+        Heading = "设置",
+        Intro = "原生窗口 · 与主窗口共享同一配置核心",
+        LanguageHeader = "界面语言",
+        LanguageHint = "切换后立即应用到所有已打开的窗口，无需重启。",
+        ThemeHeader = "外观",
+        ThemeSystem = "跟随系统",
+        ThemeLight = "浅色",
+        ThemeDark = "深色",
+        HotkeyHeader = "主窗口快捷键（留空禁用）",
+        HotkeyHint = "Win+V 可能被 Windows 占用。支持键盘组合；留空可禁用。",
+        Deduplicate = "自动去重",
+        ShowSearch = "显示主窗口搜索框",
+        Compact = "紧凑列表（鼠标悬停 1 秒显示预览）",
+        PersistentHeader = "保存采集历史到磁盘",
+        PersistentOn = "持久化保存",
+        PersistentOff = "仅保留本次会话",
+        CaptureFiles = "采集文件路径",
+        CaptureRichText = "采集富文本和表格原始格式",
+        Privacy = "自动标记敏感内容",
+        LimitEnabled = "限制磁盘历史数量（置顶和有标签条目不计入）",
+        LimitHeader = "最多保留普通历史条数（0–1000000）",
+        Advanced = "高级设置 · 隐私与清理规则",
+        Openers = "打开记录使用的应用",
+        Reload = "重新载入",
+        Save = "保存设置",
+        RevisionFormat = "已保存配置版本 {0}",
+        Conflict = "配置已变化。请重新载入后再修改；当前草稿尚未保存。",
+        Saved = "设置已保存，主窗口已同步。",
+        SavedWarningFormat = "设置已保存，但快捷键未完整应用：{0}。可退出并重新打开应用恢复。",
+        HotkeyConflict = "快捷键已被系统或其他应用占用。原配置和绑定保持，当前草稿已保留。"
+    };
+
+    internal static SettingsStrings Tw { get; } = new()
+    {
+        WindowTitle = "TieZ · 設定",
+        Heading = "設定",
+        Intro = "原生視窗 · 與主視窗共用同一設定核心",
+        LanguageHeader = "介面語言",
+        LanguageHint = "切換後立即套用到所有已開啟的視窗，無需重新啟動。",
+        ThemeHeader = "外觀",
+        ThemeSystem = "跟隨系統",
+        ThemeLight = "淺色",
+        ThemeDark = "深色",
+        HotkeyHeader = "主視窗快速鍵（留空停用）",
+        HotkeyHint = "Win+V 可能被 Windows 佔用。支援鍵盤組合；留空可停用。",
+        Deduplicate = "自動去重",
+        ShowSearch = "顯示主視窗搜尋方塊",
+        Compact = "精簡清單（滑鼠停留 1 秒顯示預覽）",
+        PersistentHeader = "儲存擷取歷史到磁碟",
+        PersistentOn = "永久儲存",
+        PersistentOff = "僅保留本次工作階段",
+        CaptureFiles = "擷取檔案路徑",
+        CaptureRichText = "擷取富文字與表格原始格式",
+        Privacy = "自動標記敏感內容",
+        LimitEnabled = "限制磁碟歷史數量（置頂與有標籤項目不計入）",
+        LimitHeader = "最多保留一般歷史筆數（0–1000000）",
+        Advanced = "進階設定 · 隱私與清理規則",
+        Openers = "開啟記錄使用的應用程式",
+        Reload = "重新載入",
+        Save = "儲存設定",
+        RevisionFormat = "已儲存設定版本 {0}",
+        Conflict = "設定已變更。請重新載入後再修改；目前草稿尚未儲存。",
+        Saved = "設定已儲存，主視窗已同步。",
+        SavedWarningFormat = "設定已儲存，但快速鍵未完整套用：{0}。可結束並重新開啟應用程式復原。",
+        HotkeyConflict = "快速鍵已被系統或其他應用程式佔用。原設定與綁定保持，目前草稿已保留。"
+    };
+
+    internal static SettingsStrings En { get; } = new()
+    {
+        WindowTitle = "TieZ - settings",
+        Heading = "Settings",
+        Intro = "Native window - shares one configuration core with the main window",
+        LanguageHeader = "Interface language",
+        LanguageHint = "Applies to every open window immediately; no restart needed.",
+        ThemeHeader = "Appearance",
+        ThemeSystem = "Use system setting",
+        ThemeLight = "Light",
+        ThemeDark = "Dark",
+        HotkeyHeader = "Main window shortcut (leave empty to disable)",
+        HotkeyHint = "Win+V may be taken by Windows. Keyboard combinations are supported; leave empty to disable.",
+        Deduplicate = "Remove duplicates automatically",
+        ShowSearch = "Show the search box in the main window",
+        Compact = "Compact list (hover for 1 second to preview)",
+        PersistentHeader = "Save captured history to disk",
+        PersistentOn = "Keep on disk",
+        PersistentOff = "This session only",
+        CaptureFiles = "Capture file paths",
+        CaptureRichText = "Capture rich text and table formatting",
+        Privacy = "Flag sensitive content automatically",
+        LimitEnabled = "Limit stored history (pinned and tagged entries are excluded)",
+        LimitHeader = "Maximum stored plain history entries (0-1000000)",
+        Advanced = "Advanced settings - privacy and cleanup rules",
+        Openers = "Apps used to open records",
+        Reload = "Reload",
+        Save = "Save settings",
+        RevisionFormat = "Saved configuration revision {0}",
+        Conflict = "The configuration changed. Reload before editing again; the current draft is not saved.",
+        Saved = "Settings saved; the main window is updated.",
+        SavedWarningFormat = "Settings saved, but the shortcut was not applied completely: {0}. Exit and reopen the app to recover.",
+        HotkeyConflict = "The shortcut is taken by Windows or another app. The saved configuration and binding stay, and the current draft is kept."
+    };
+
+    internal static SettingsStrings Current => LanguageService.Current switch
+    {
+        Language.TraditionalChinese => Tw,
+        Language.English => En,
+        _ => Zh
+    };
+}

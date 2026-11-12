@@ -10,9 +10,11 @@ namespace TieZ.Native;
 // The realized container, not the catalog row, owns the native bitmap.
 public sealed class ApplicationIconView : Grid
 {
+    private enum IconState { Idle, Loading, Failed, Shown }
     private readonly Image image = new() { Stretch = Stretch.Uniform };
     private readonly SymbolIcon fallback = new(Symbol.AllApps);
     private SoftwareBitmapSource? source;
+    private IconState state = IconState.Idle;
     internal ApplicationChoice? Choice => DataContext as ApplicationChoice;
     internal ApplicationIconIdentity? DisplayedIdentity { get; private set; }
     internal ulong? DisplayedCatalog { get; private set; }
@@ -34,21 +36,30 @@ public sealed class ApplicationIconView : Grid
         source?.Dispose(); source = null;
         DisplayedIdentity = null; DisplayedCatalog = null; Unavailable = false;
         fallback.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(this, null);
-        AutomationProperties.SetName(this, "应用图标");
+        state = IconState.Idle;
+        ApplyLanguage();
     }
-    internal void SetLoading() { Clear(); AutomationProperties.SetName(this, "正在加载应用图标"); }
+    internal void SetLoading() { Clear(); state = IconState.Loading; ApplyLanguage(); }
     internal void Failed()
     {
-        Clear(); Unavailable = true;
-        AutomationProperties.SetName(this, "图标不可用，不影响选择应用");
-        ToolTipService.SetToolTip(this, "图标不可用，不影响选择应用");
+        Clear(); Unavailable = true; state = IconState.Failed; ApplyLanguage();
     }
     internal void Show(ApplicationIconRaster raster, SoftwareBitmapSource bitmap)
     {
         Clear(); source = bitmap; image.Source = bitmap; image.Visibility = Visibility.Visible;
         fallback.Visibility = Visibility.Collapsed;
         DisplayedIdentity = raster.Identity; DisplayedCatalog = raster.CatalogJobId;
-        AutomationProperties.SetName(this, "应用图标");
+        state = IconState.Shown; ApplyLanguage();
+    }
+    // Only the automation name and tooltip are chrome; the decoded bitmap is never touched by a language change.
+    internal void ApplyLanguage()
+    {
+        var text = AppPickerStrings.Current;
+        string? tooltip = null;
+        string name = text.IconName;
+        if (state == IconState.Loading) name = text.IconLoading;
+        else if (state == IconState.Failed) tooltip = name = text.IconUnavailable;
+        AutomationProperties.SetName(this, name);
+        ToolTipService.SetToolTip(this, tooltip);
     }
 }

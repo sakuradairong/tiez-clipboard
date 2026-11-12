@@ -81,13 +81,13 @@ internal sealed class HistoryCardCopyWindowSmoke(MainWindow main, NativeCore cor
                 case 2:
                     Check(requests is [{ Id: var id, PlainText: false, AllowSensitive: false, Revision: var revision }]
                         && id == richId && revision == historyRevision && view.SelectedHistoryIds.Order().SequenceEqual(selection.Order())
-                        && !view.HasError && view.CopyFeedback.Contains("原始格式"), "Direct rich copy lost identity/version/selection or feedback.");
+                        && !view.HasError && view.CopyFeedback.Contains(HistoryStrings.Zh.CopySuccessOriginal), "Direct rich copy lost identity/version/selection or feedback.");
                     Check((await core.GetEntryAsync(richId)).HtmlContent == Html && (await core.GetHistoryAsync(new())).Revision == historyRevision
                         && core.Snapshot.Revision == settingsRevision, "Copy routing mutated source/settings/history.");
                     view.InvokeCardCopy(publicId, true); break;
                 case 3:
                     Check(requests.Count == 2 && requests[^1] is { PlainText: true, AllowSensitive: false } && requests[^1].Id == publicId
-                        && view.CopyFeedback.Contains("纯文本") && view.SelectedHistoryIds.Order().SequenceEqual(selection.Order()), "Plain card copy changed selection/format.");
+                        && view.CopyFeedback.Contains(HistoryStrings.Zh.CopySuccessPlain) && view.SelectedHistoryIds.Order().SequenceEqual(selection.Order()), "Plain card copy changed selection/format.");
                     view.Select(privateId); break;
                 case 4:
                     Check(view.CanReveal && !view.CardCanCopy(privateId) && view.Detail == "", "Selecting a private card granted copy consent.");
@@ -129,14 +129,14 @@ internal sealed class HistoryCardCopyWindowSmoke(MainWindow main, NativeCore cor
                     if (!view.CardCanCopy(publicId)) return;
                     view.CardCopyWriter = null; view.InvokeCardCopy(badId); break;
                 case 15:
-                    Check(!view.CardCopyPending && view.HasError && !view.CopyFeedback.Contains("已复制"), "Invalid raster preparation was reported as copied.");
+                    Check(!view.CardCopyPending && view.HasError && !view.CopyFeedback.Contains(HistoryStrings.Zh.CopySuccessTitle), "Invalid raster preparation was reported as copied.");
                     HoldWrite(); view.InvokeCardCopy(publicId); break;
                 case 16:
                     if (!view.CardCopyPending) return;
                     Check(!view.CardCanCopy(publicId) && !view.CanChangeLayout, "Pending copy left commands enabled."); main.HideToTray(); break;
                 case 17:
                     if (view.CardCopyPending) return;
-                    Check(heldToken.IsCancellationRequested && !main.AppWindow.IsVisible && view.CopyFeedback.Contains("取消"), "Tray hide did not cancel queued copy.");
+                    Check(heldToken.IsCancellationRequested && !main.AppWindow.IsVisible && view.CopyFeedback.Contains(HistoryStrings.Zh.CopyCancelled), "Tray hide did not cancel queued copy.");
                     held!.TrySetCanceled(); view.CardCopyWriter = FakeWrite; main.ShowMain(); break;
                 case 18:
                     if (!view.CardCanCopy(publicId)) return;
@@ -176,7 +176,7 @@ internal sealed class HistoryCardCopyWindowSmoke(MainWindow main, NativeCore cor
                     await core.EditEntryAsync(publicId, "changed during queued copy"); release!.TrySetResult(true); break;
                 case 29:
                     if (view.CardCopyPending) return;
-                    Check(actualConflict && view.HasError && view.CopyFeedback.Contains("记录已变化"), "Actual DLL accepted a stale card request or lost refresh feedback.");
+                    Check(actualConflict && view.HasError && view.CopyFeedback.Contains(HistoryStrings.Zh.CopyConflict), "Actual DLL accepted a stale card request or lost refresh feedback.");
                     view.CardCopyWriter = FakeWrite; await view.ReloadAsync(); break;
                 case 30:
                     if (!view.CardCanCopy(publicId)) return;
@@ -198,7 +198,7 @@ internal sealed class HistoryCardCopyWindowSmoke(MainWindow main, NativeCore cor
                     held!.TrySetResult(new(heldRequest!.Id, 1)); break;
                 case 35:
                     if (view.CardCopyPending) return;
-                    Check(!view.HasError && view.CopyFeedback.Contains("已按原始格式"), "Late accepted result was misreported as cancelled.");
+                    Check(!view.HasError && view.CopyFeedback.Contains(HistoryStrings.Zh.CopySuccessOriginal), "Late accepted result was misreported as cancelled.");
                     view.CardCopyWriter = FakeWrite; main.ShowMain(); break;
                 case 36:
                     if (!view.CardCanCopy(otherId)) return;

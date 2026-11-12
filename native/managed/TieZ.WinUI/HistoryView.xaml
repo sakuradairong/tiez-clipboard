@@ -5,19 +5,19 @@
     xmlns:local="using:TieZ.Native">
     <UserControl.Resources>
                     <DataTemplate x:Key="StandardHistoryTemplate" x:DataType="local:HistoryRow">
-                        <StackPanel PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded" Spacing="6" Padding="8,10">
-                            <TextBlock Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="3"
+                        <StackPanel PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded" Spacing="4" Padding="8,8">
+                            <TextBlock Text="{x:Bind Preview, Mode=OneWay}" TextWrapping="Wrap" MaxLines="2" FontSize="14"
                                        TextTrimming="CharacterEllipsis"/>
-                            <TextBlock Text="{x:Bind Metadata}" FontSize="12" MaxLines="1"
+                            <TextBlock Text="{x:Bind Metadata, Mode=OneWay}" FontSize="12" MaxLines="1"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </DataTemplate>
                     <DataTemplate x:Key="CompactHistoryTemplate" x:DataType="local:HistoryRow">
                         <StackPanel PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded" Spacing="2" Padding="8,4">
-                            <TextBlock Text="{x:Bind Preview}" TextWrapping="Wrap" MaxLines="1"
+                            <TextBlock Text="{x:Bind Preview, Mode=OneWay}" TextWrapping="Wrap" MaxLines="1"
                                        TextTrimming="CharacterEllipsis"/>
-                            <TextBlock Text="{x:Bind Metadata}" FontSize="12" MaxLines="1"
+                            <TextBlock Text="{x:Bind Metadata, Mode=OneWay}" FontSize="12" MaxLines="1"
                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
@@ -28,21 +28,18 @@
                     PointerEntered="OnRowPointerEntered" PointerExited="OnRowPointerExited" Unloaded="OnRowUnloaded">
                 <Grid RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <Grid ColumnSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="{x:Bind TypeLabel}" VerticalAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <TextBlock Text="{x:Bind TypeLabel, Mode=OneWay}" VerticalAlignment="Center" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
                             <Button Tag="card-copy" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录的原始格式（敏感记录需先显示详情）"
-                                    AutomationProperties.Name="复制此条记录的原始格式"><SymbolIcon Symbol="Copy"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="Copy"/></Button>
                             <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
-                                    AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="Document"/></Button>
                             <Button Tag="card-open" Click="OnCardOpenClick" Loaded="OnCardOpenLoaded" Unloaded="OnCardOpenUnloaded" DataContextChanged="OnCardOpenContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="使用应用打开此记录（敏感记录需先显示详情；临时副本修改不会回写历史）"
-                                    AutomationProperties.Name="使用应用打开此条记录"><SymbolIcon Symbol="OpenFile"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="OpenFile"/></Button>
                         </StackPanel>
                     </Grid>
                     <local:HistoryThumbnailView Grid.Row="1"/>
-                    <TextBlock Grid.Row="2" Text="{x:Bind Metadata}" FontSize="12" MaxLines="2" TextWrapping="Wrap"
+                    <TextBlock Grid.Row="2" Text="{x:Bind Metadata, Mode=OneWay}" FontSize="12" MaxLines="2" TextWrapping="Wrap"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
                 </Grid>
             </Border>
@@ -54,167 +51,161 @@
                 <Grid RowSpacing="6"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                     <local:HistoryThumbnailView/>
                     <Grid Grid.Row="1" ColumnSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="{x:Bind Metadata}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
+                        <TextBlock Text="{x:Bind Metadata, Mode=OneWay}" FontSize="12" TextWrapping="Wrap" MaxLines="2"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4">
                             <Button Tag="card-copy" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录的原始格式（敏感记录需先显示详情）"
-                                    AutomationProperties.Name="复制此条记录的原始格式"><SymbolIcon Symbol="Copy"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="Copy"/></Button>
                             <Button Tag="card-copy-plain" Click="OnCardCopyClick" Loaded="OnCardCopyLoaded" Unloaded="OnCardCopyUnloaded" DataContextChanged="OnCardCopyContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="复制此条记录为纯文本（敏感记录需先显示详情）"
-                                    AutomationProperties.Name="复制此条记录为纯文本"><SymbolIcon Symbol="Document"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="Document"/></Button>
                             <Button Tag="card-open" Click="OnCardOpenClick" Loaded="OnCardOpenLoaded" Unloaded="OnCardOpenUnloaded" DataContextChanged="OnCardOpenContextChanged"
-                                    MinWidth="28" MinHeight="28" Padding="4" ToolTipService.ToolTip="使用应用打开此记录（敏感记录需先显示详情；临时副本修改不会回写历史）"
-                                    AutomationProperties.Name="使用应用打开此条记录"><SymbolIcon Symbol="OpenFile"/></Button>
+                                    MinWidth="28" MinHeight="28" Padding="4"><SymbolIcon Symbol="OpenFile"/></Button>
                         </StackPanel>
                     </Grid>
                 </Grid>
             </Border>
         </DataTemplate>
     </UserControl.Resources>
-    <Grid RowSpacing="12">
+    <Grid x:Name="WorkspaceRoot" RowSpacing="10">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <StackPanel Spacing="6">
-            <TextBlock Text="剪贴板历史" FontSize="26" FontWeight="SemiBold"/>
-            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Left">
-                <TextBlock x:Name="CaptureStatus" Text="正在准备采集" MaxWidth="460" Style="{StaticResource NativeCaptionStyle}"/>
-                <TextBlock Text="· 独立数据库" Style="{StaticResource NativeCaptionStyle}"
-                           ToolTipService.ToolTip="原生迁移版使用独立数据库，不会自动打开已安装旧版的数据。"/>
-            </StackPanel>
-            <CommandBar DefaultLabelPosition="Right" Background="Transparent" HorizontalAlignment="Stretch"
-                        HorizontalContentAlignment="Left" OverflowButtonVisibility="Auto" IsDynamicOverflowEnabled="True">
-                <AppBarButton x:Name="CaptureButton" Label="开始采集" Icon="Play"/>
-                <AppBarButton x:Name="ReturnTargetButton" Label="返回窗口" Icon="Back" DynamicOverflowOrder="1"
-                              ToolTipService.ToolTip="返回上次输入窗口，不发送粘贴按键"/>
-                <AppBarButton x:Name="StartTargetButton" Label="启用目标跟踪" Icon="Find" DynamicOverflowOrder="2"
-                              ToolTipService.ToolTip="开始记住上次输入窗口，供返回和粘贴使用"/>
-            </CommandBar>
-            <TextBlock x:Name="TargetInfo" Text="正在读取上次输入窗口" Style="{StaticResource NativeCaptionStyle}"
-                       ToolTipService.ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
-        </StackPanel>
-        <Border Grid.Row="1" Style="{StaticResource NativeSurfaceStyle}" Padding="12">
-            <StackPanel Spacing="8">
-                <TextBox x:Name="SearchText" PlaceholderText="搜索内容、来源、标签或识别结果" FontSize="15"
-                         AutomationProperties.Name="搜索剪贴板历史"/>
-                <Grid ColumnSpacing="12">
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="148"/><ColumnDefinition Width="*" MinWidth="0"/></Grid.ColumnDefinitions>
-                    <ComboBox x:Name="TypeFilter" SelectedIndex="0" HorizontalAlignment="Stretch" AutomationProperties.Name="内容类型">
-                        <ComboBoxItem Content="全部类型"/><ComboBoxItem Content="文本"/>
-                        <ComboBoxItem Content="代码"/><ComboBoxItem Content="链接"/>
-                        <ComboBoxItem Content="富文本"/><ComboBoxItem Content="图片"/>
-                        <ComboBoxItem Content="文件"/><ComboBoxItem Content="视频"/>
-                    </ComboBox>
-                    <TextBox x:Name="TagFilter" Grid.Column="1" PlaceholderText="按精确标签筛选" MinWidth="0"
-                             AutomationProperties.Name="按精确标签筛选"/>
-                </Grid>
-                <StackPanel Orientation="Horizontal" Spacing="16">
-                    <CheckBox x:Name="PinnedOnly" Content="仅置顶"/>
-                    <CheckBox x:Name="TagOnly" Content="仅搜索标签"/>
-                </StackPanel>
-            </StackPanel>
-        </Border>
-        <Grid Grid.Row="2" RowSpacing="4">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <Grid ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" MinWidth="0"/>
-                    <ColumnDefinition Width="1.3*" MinWidth="0"/>
-                    <ColumnDefinition Width="*" MinWidth="0"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="SelectionInfo" Text="选择记录以复制、粘贴或编辑" VerticalAlignment="Center"
-                           Style="{StaticResource NativeCaptionStyle}"/>
-                <ComboBox x:Name="OrderChoice" Grid.Column="1" SelectedIndex="0" HorizontalAlignment="Stretch" MinWidth="0"
-                          AutomationProperties.Name="记录排序" ToolTipService.ToolTip="记录排序">
-                    <ComboBoxItem Content="置顶优先"/><ComboBoxItem Content="时间（新到旧）"/>
-                    <ComboBoxItem Content="使用频率（高到低）"/>
-                </ComboBox>
-                <ComboBox x:Name="LayoutChoice" Grid.Column="2" SelectedIndex="0" HorizontalAlignment="Stretch" MinWidth="0"
-                          AutomationProperties.Name="记录布局" ToolTipService.ToolTip="列表或卡片布局">
-                    <ComboBoxItem Content="列表"/><ComboBoxItem Content="卡片"/>
-                </ComboBox>
-                <Button x:Name="ReloadLayoutButton" Grid.Column="3" Padding="8" MinWidth="40" MinHeight="32"
-                        ToolTipService.ToolTip="重新读取已保存的布局" AutomationProperties.Name="重读布局">
-                    <SymbolIcon Symbol="Refresh"/>
-                </Button>
-            </Grid>
-            <CommandBar x:Name="RecordCommands" Grid.Row="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
-                        DefaultLabelPosition="Right" Background="Transparent" OverflowButtonVisibility="Auto" IsDynamicOverflowEnabled="True">
-                <AppBarButton x:Name="AddButton" Label="新增" Icon="Add"/>
-                <AppBarSeparator/>
-                <AppBarButton x:Name="PasteButton" Label="粘贴" Icon="Paste" ToolTipService.ToolTip="按原始格式粘贴到上次输入窗口"/>
-                <AppBarButton x:Name="CopyButton" Label="复制" Icon="Copy" ToolTipService.ToolTip="复制原始格式"/>
-                <AppBarButton x:Name="EditButton" Label="编辑" Icon="Edit"/>
-                <AppBarButton x:Name="OpenButton" Label="打开" Icon="OpenFile" DynamicOverflowOrder="2"
-                              ToolTipService.ToolTip="使用应用打开；临时副本的修改不会回写历史"/>
-                <AppBarButton x:Name="PastePlainButton" Label="粘贴纯文本" Icon="Paste" DynamicOverflowOrder="1"/>
-                <AppBarButton x:Name="PinButton" Label="置顶" Icon="Pin" DynamicOverflowOrder="2"/>
-                <AppBarButton x:Name="TagsButton" Label="标签" DynamicOverflowOrder="2">
-                    <AppBarButton.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8EC;"/></AppBarButton.Icon>
-                </AppBarButton>
-                <AppBarButton x:Name="DeleteButton" Label="删除" Icon="Delete" DynamicOverflowOrder="2"/>
+        <Grid ColumnSpacing="12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="PageTitle" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"/>
+            <CommandBar Grid.Column="1" DefaultLabelPosition="Right" Background="Transparent"
+                        OverflowButtonVisibility="Visible" IsDynamicOverflowEnabled="False">
+                <AppBarButton x:Name="CaptureButton" Icon="Play"/>
                 <CommandBar.SecondaryCommands>
-                    <AppBarButton x:Name="CopyPlainButton" Label="复制为纯文本" Icon="Document"/>
-                    <AppBarButton x:Name="PreviewButton" Label="紧凑预览" Icon="ZoomIn"/>
-                    <AppBarButton x:Name="RefreshButton" Label="刷新历史" Icon="Refresh"/>
-                    <AppBarSeparator/>
-                    <AppBarButton x:Name="ClearButton" Label="清空普通历史…" Icon="Clear"/>
+                    <AppBarButton x:Name="ReturnTargetButton" Icon="Back"/>
+                    <AppBarButton x:Name="StartTargetButton" Icon="Find"/>
                 </CommandBar.SecondaryCommands>
             </CommandBar>
         </Grid>
-        <InfoBar x:Name="CaptureInfo" Grid.Row="3" IsOpen="False" IsClosable="True" Severity="Warning" Title="采集服务状态"/>
-        <Grid Grid.Row="4" ColumnSpacing="16">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="0"/><ColumnDefinition Width="280"/></Grid.ColumnDefinitions>
-            <Grid>
-                <ListView x:Name="HistoryList" SelectionMode="Extended" ItemTemplate="{StaticResource StandardHistoryTemplate}"
-                          HorizontalContentAlignment="Stretch" IsItemClickEnabled="False" AutomationProperties.Name="剪贴板历史记录">
-                    <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
-                </ListView>
-                <GridView x:Name="HistoryCards" SelectionMode="Extended" ItemTemplate="{StaticResource CardHistoryTemplate}"
-                          Visibility="Collapsed" HorizontalContentAlignment="Stretch" IsItemClickEnabled="False"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                          AutomationProperties.Name="剪贴板历史卡片">
-                    <GridView.ItemsPanel><ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" ItemWidth="240"/></ItemsPanelTemplate></GridView.ItemsPanel>
-                    <GridView.ItemContainerStyle><Style TargetType="GridViewItem">
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                        <Setter Property="VerticalContentAlignment" Value="Stretch"/>
-                        <Setter Property="Margin" Value="0"/><Setter Property="Padding" Value="2"/>
-                        <Setter Property="MinWidth" Value="0"/>
-                    </Style></GridView.ItemContainerStyle>
-                </GridView>
-            </Grid>
-            <Border Grid.Column="1" Style="{StaticResource NativeSurfaceStyle}">
-                <Grid RowSpacing="10">
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="132"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="SearchText" FontSize="14" MinHeight="36" VerticalContentAlignment="Center"/>
+            <ComboBox x:Name="TypeFilter" Grid.Column="1" SelectedIndex="0" MinHeight="36" HorizontalAlignment="Stretch">
+                <ComboBoxItem x:Name="TypeAllItem"/><ComboBoxItem x:Name="TypeTextItem"/>
+                <ComboBoxItem x:Name="TypeCodeItem"/><ComboBoxItem x:Name="TypeLinkItem"/>
+                <ComboBoxItem x:Name="TypeRichTextItem"/><ComboBoxItem x:Name="TypeImageItem"/>
+                <ComboBoxItem x:Name="TypeFileItem"/><ComboBoxItem x:Name="TypeVideoItem"/>
+            </ComboBox>
+            <Button x:Name="FiltersButton" Grid.Column="2" MinWidth="40" MinHeight="36" Padding="10,6">
+                <Grid><SymbolIcon Symbol="Filter"/>
+                    <Ellipse x:Name="ActiveFilterDot" Width="6" Height="6" HorizontalAlignment="Right" VerticalAlignment="Top"
+                             Margin="0,-3,-3,0" Fill="{ThemeResource SystemControlHighlightAccentBrush}" Visibility="Collapsed"/>
+                </Grid>
+                <Button.Flyout>
+                    <Flyout Placement="BottomEdgeAlignedRight">
+                        <StackPanel Width="284" Spacing="12">
+                            <TextBlock x:Name="FiltersTitle" FontSize="18" FontWeight="SemiBold"/>
+                            <TextBox x:Name="TagFilter" MinWidth="0"/>
+                            <CheckBox x:Name="PinnedOnly"/><CheckBox x:Name="TagOnly"/>
+                            <ComboBox x:Name="OrderChoice" SelectedIndex="0" HorizontalAlignment="Stretch">
+                                <ComboBoxItem x:Name="SortPinnedItem"/><ComboBoxItem x:Name="SortTimeItem"/><ComboBoxItem x:Name="SortUsageItem"/>
+                            </ComboBox>
+                            <ComboBox x:Name="LayoutChoice" SelectedIndex="0" HorizontalAlignment="Stretch">
+                                <ComboBoxItem x:Name="LayoutListItem"/><ComboBoxItem x:Name="LayoutCardsItem"/>
+                            </ComboBox>
+                            <Button x:Name="ReloadLayoutButton" HorizontalAlignment="Right" Padding="8" MinWidth="40" MinHeight="32">
+                                <SymbolIcon Symbol="Refresh"/>
+                            </Button>
+                            <TextBlock x:Name="TargetInfo" TextWrapping="Wrap" Style="{StaticResource NativeCaptionStyle}"/>
+                            <TextBlock x:Name="DatabaseNote" TextWrapping="Wrap" Style="{StaticResource NativeCaptionStyle}"/>
+                        </StackPanel>
+                    </Flyout>
+                </Button.Flyout>
+            </Button>
+        </Grid>
+        <CommandBar x:Name="RecordCommands" Grid.Row="2" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
+                    DefaultLabelPosition="Right" Background="Transparent" OverflowButtonVisibility="Auto" IsDynamicOverflowEnabled="True">
+            <AppBarButton x:Name="AddButton" Icon="Add"/>
+            <AppBarSeparator/>
+            <AppBarButton x:Name="PasteButton" Icon="Paste"/>
+            <AppBarButton x:Name="CopyButton" Icon="Copy"/>
+            <AppBarButton x:Name="EditButton" Icon="Edit"/>
+            <AppBarButton x:Name="OpenButton" Icon="OpenFile" DynamicOverflowOrder="2"/>
+            <AppBarButton x:Name="PastePlainButton" Icon="Paste" DynamicOverflowOrder="1"/>
+            <AppBarButton x:Name="PinButton" Icon="Pin" DynamicOverflowOrder="2"/>
+            <AppBarButton x:Name="TagsButton" DynamicOverflowOrder="2">
+                <AppBarButton.Icon><FontIcon FontFamily="Segoe MDL2 Assets" Glyph="&#xE8EC;"/></AppBarButton.Icon>
+            </AppBarButton>
+            <AppBarButton x:Name="DeleteButton" Icon="Delete" DynamicOverflowOrder="2"/>
+            <CommandBar.SecondaryCommands>
+                <AppBarButton x:Name="CopyPlainButton" Icon="Document"/>
+                <AppBarButton x:Name="PreviewButton" Icon="ZoomIn"/>
+                <AppBarButton x:Name="RefreshButton" Icon="Refresh"/>
+                <AppBarSeparator/>
+                <AppBarButton x:Name="ClearButton" Icon="Clear"/>
+            </CommandBar.SecondaryCommands>
+        </CommandBar>
+        <InfoBar x:Name="CaptureInfo" Grid.Row="3" IsOpen="False" IsClosable="True" Severity="Warning"/>
+        <Grid x:Name="HistoryBody" Grid.Row="4" ColumnSpacing="0" RowSpacing="0">
+            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition x:Name="DetailRow" Height="0"/></Grid.RowDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="0"/><ColumnDefinition x:Name="DetailColumn" Width="0"/></Grid.ColumnDefinitions>
+            <Border x:Name="RecordsSurface" Style="{StaticResource NativeSurfaceStyle}" Padding="4">
+                <Grid>
+                    <ListView x:Name="HistoryList" SelectionMode="Extended" ItemTemplate="{StaticResource StandardHistoryTemplate}"
+                              HorizontalContentAlignment="Stretch" IsItemClickEnabled="False">
+                        <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel/></ItemsPanelTemplate></ListView.ItemsPanel>
+                        <ListView.ItemContainerStyle><Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="4,0"/>
+                            <Setter Property="Margin" Value="0,2"/><Setter Property="CornerRadius" Value="6"/>
+                        </Style></ListView.ItemContainerStyle>
+                    </ListView>
+                    <GridView x:Name="HistoryCards" SelectionMode="Extended" ItemTemplate="{StaticResource CardHistoryTemplate}"
+                              Visibility="Collapsed" HorizontalContentAlignment="Stretch" IsItemClickEnabled="False"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <GridView.ItemsPanel><ItemsPanelTemplate><ItemsWrapGrid Orientation="Horizontal" ItemWidth="240"/></ItemsPanelTemplate></GridView.ItemsPanel>
+                        <GridView.ItemContainerStyle><Style TargetType="GridViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                            <Setter Property="Margin" Value="0"/><Setter Property="Padding" Value="2"/><Setter Property="MinWidth" Value="0"/>
+                        </Style></GridView.ItemContainerStyle>
+                    </GridView>
+                    <StackPanel x:Name="EmptyHistory" MaxWidth="300" Margin="24" Spacing="10" IsHitTestVisible="False"
+                                HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="Collapsed">
+                        <Border Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="16" Width="64" Height="64" HorizontalAlignment="Center">
+                            <FontIcon Glyph="&#xE8C8;" FontSize="28" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        </Border>
+                        <TextBlock x:Name="EmptyTitle" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" TextAlignment="Center"/>
+                        <TextBlock x:Name="EmptyDescription" TextWrapping="Wrap" TextAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <Border x:Name="DetailPanel" Grid.Column="1" Visibility="Collapsed" Style="{StaticResource NativeSurfaceStyle}" Padding="16">
+                <Grid RowSpacing="8">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <TextBlock x:Name="DetailTitle" Text="记录详情" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="DetailTitle" FontSize="18" FontWeight="SemiBold"/>
                     <TextBlock x:Name="DetailMetadata" Grid.Row="1" TextWrapping="Wrap" Style="{StaticResource NativeCaptionStyle}"/>
-                    <Button x:Name="RevealButton" Grid.Row="2" Content="显示敏感内容" HorizontalAlignment="Stretch" Visibility="Collapsed"/>
-                    <StackPanel x:Name="DetailHint" Grid.Row="3" Spacing="8" Margin="0,8,0,0" HorizontalAlignment="Stretch">
-                        <TextBlock x:Name="DetailHintText" Text="选择一条记录查看详情" TextAlignment="Left"
-                                   TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    <Button x:Name="RevealButton" Grid.Row="2" HorizontalAlignment="Stretch" Visibility="Collapsed"/>
+                    <StackPanel x:Name="DetailHint" Grid.Row="3" Spacing="8" Margin="0,8,0,0">
+                        <TextBlock x:Name="DetailHintText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
                     </StackPanel>
                     <Grid x:Name="DetailBody" Grid.Row="4" Visibility="Collapsed">
-                        <TextBox x:Name="DetailText" IsReadOnly="True" AcceptsReturn="True"
-                                 TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                 AutomationProperties.Name="所选记录的原始文本"/>
+                        <TextBox x:Name="DetailText" IsReadOnly="True" AcceptsReturn="True" BorderThickness="0" Background="Transparent"
+                                 TextWrapping="Wrap" ScrollViewer.VerticalScrollBarVisibility="Auto"/>
                         <local:ImagePreviewView x:Name="ImagePreview"/>
                         <local:DocumentPreviewView x:Name="DocumentPreview"/>
                     </Grid>
                 </Grid>
             </Border>
         </Grid>
-        <StackPanel Grid.Row="5" Spacing="8">
+        <StackPanel Grid.Row="5" Spacing="6">
             <InfoBar x:Name="Feedback" IsOpen="False" IsClosable="True"/>
-            <Grid ColumnSpacing="12">
+            <Grid ColumnSpacing="8">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <TextBlock x:Name="ListStatus" VerticalAlignment="Center" Style="{StaticResource NativeCaptionStyle}"/>
-                <ProgressRing x:Name="LoadingIndicator" Grid.Column="1" Width="20" Height="20" IsActive="False"/>
-                <Button x:Name="MoreButton" Grid.Column="2" Content="载入更多"/>
+                <ProgressRing x:Name="LoadingIndicator" Grid.Column="1" Width="16" Height="16" IsActive="False"/>
+                <Button x:Name="MoreButton" Grid.Column="2"/>
+            </Grid>
+            <Grid ColumnSpacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="SelectionInfo" Style="{StaticResource NativeCaptionStyle}"/>
+                <TextBlock x:Name="CaptureStatus" Grid.Column="1" HorizontalAlignment="Right" Style="{StaticResource NativeCaptionStyle}"/>
             </Grid>
         </StackPanel>
     </Grid>

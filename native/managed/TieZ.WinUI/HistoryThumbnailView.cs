@@ -12,8 +12,17 @@ public sealed class HistoryThumbnailView : Grid
     private readonly Image image = new() { Stretch = Stretch.Uniform };
     private readonly TextBlock fallback = new() { TextWrapping = TextWrapping.Wrap, MaxLines = 4,
         TextTrimming = TextTrimming.CharacterEllipsis };
-    internal HistoryRow? Row => DataContext as HistoryRow;
-    internal long? DisplayedId { get; private set; }
+    private int state;
+    internal HistoryRow? Row
+    {
+        get
+        {
+            // A recycled card that is being torn down can fail to hand back its DataContext; a thumbnail only
+            // falls back to its text then, it never crashes the window.
+            try { return DataContext as HistoryRow; }
+            catch (Exception) { return null; }
+        }
+    }    internal long? DisplayedId { get; private set; }
     internal bool HasImage => image.Source is BitmapImage { PixelWidth: > 0 } && image.Visibility == Visibility.Visible;
     internal bool Unavailable { get; private set; }
     public HistoryThumbnailView()
@@ -26,20 +35,38 @@ public sealed class HistoryThumbnailView : Grid
     internal void Clear()
     {
         image.Source = null; image.Visibility = Visibility.Collapsed;
-        DisplayedId = null; Unavailable = false;
-        fallback.Text = Row is { IsStale: false } row && !row.Summary.IsSensitive && row.Summary.ContentType == "image"
-            ? "图片 · 选择后查看详情" : Row?.Preview ?? "";
-        fallback.Visibility = Visibility.Visible;
-        AutomationProperties.SetName(image, "图片缩略图");
-        ToolTipService.SetToolTip(this, null);
+        DisplayedId = null; Unavailable = false; state = 0;
+        Render();
     }
-    internal void SetLoading() { Clear(); fallback.Text = "正在加载图片预览"; }
-    internal void Failed() { Clear(); Unavailable = true; fallback.Text = "图片预览不可用 · 选择后查看详情"; }
+    internal void SetLoading() { Clear(); state = 1; Render(); }
+    internal void Failed() { Clear(); Unavailable = true; state = 2; Render(); }
     internal void Show(long id, BitmapImage bitmap, bool animation)
     {
         image.Source = bitmap; image.Visibility = Visibility.Visible;
-        fallback.Visibility = Visibility.Collapsed; DisplayedId = id; Unavailable = false;
-        string label = animation ? "图片缩略图 · 动画显示首帧，原始动画保留" : "图片缩略图 · 原始图片保留";
-        AutomationProperties.SetName(image, label); ToolTipService.SetToolTip(this, label);
+        DisplayedId = id; Unavailable = false; state = animation ? 4 : 3;
+        Render();
+    }
+    internal void ApplyLanguage() => Render();
+    // Labels are re-derived from the retained state; a decoded bitmap is never dropped by a language switch.
+    private void Render()
+    {
+        var text = PreviewStrings.Current;
+        if (state is 3 or 4)
+        {
+            string label = state == 4 ? text.ThumbnailAnimationLabel : text.ThumbnailStaticLabel;
+            AutomationProperties.SetName(image, label); ToolTipService.SetToolTip(this, label);
+            fallback.Visibility = Visibility.Collapsed;
+            return;
+        }
+        fallback.Text = state switch
+        {
+            1 => text.ThumbnailLoading,
+            2 => text.ThumbnailFailed,
+            _ => Row is { IsStale: false } row && !row.Summary.IsSensitive && row.Summary.ContentType == "image"
+                ? text.ThumbnailHint : Row?.Preview ?? ""
+        };
+        fallback.Visibility = Visibility.Visible;
+        AutomationProperties.SetName(image, text.ThumbnailName);
+        ToolTipService.SetToolTip(this, null);
     }
 }

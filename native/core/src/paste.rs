@@ -22,15 +22,17 @@ pub(crate) fn paste_entry(
     plain_text: bool,
     allow_sensitive: bool,
     expected_generation: u64,
+    expected_revision: Option<u64>,
 ) -> CoreResult<PasteResult> {
     let ticket = service
         .target
         .ticket(expected_generation)
         .map_err(before_write)?;
     // Prepare every format before changing focus or the OS clipboard.
-    let prepared = service
-        .capture
-        .prepare_copy(id, plain_text, allow_sensitive)?;
+    let prepared = match expected_revision {
+        Some(revision) => service.capture.prepare_copy_at_revision(id, plain_text, allow_sensitive, Some(revision))?,
+        None => service.capture.prepare_copy(id, plain_text, allow_sensitive)?,
+    };
     keyboard::ensure_keys_idle().map_err(before_write)?;
     service.target.restore(&ticket).map_err(before_write)?;
     let copied = service.capture.commit_copy(prepared, || {

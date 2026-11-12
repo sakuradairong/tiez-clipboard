@@ -36,7 +36,7 @@ public sealed partial class MainWindow : Window
         HistoryWorkspace.PreviewRequested += compactPreview.Request;
         HistoryWorkspace.IsExplicitPreviewActive = () => compactPreview.IsExplicitActive;
         HistoryWorkspace.PreviewInvalidated += compactPreview.Cancel;
-        Title = "TieZ · 原生迁移版";
+        Title = ShellStrings.Current.WindowTitle;
         AppWindow.Resize(new SizeInt32(1080, 760));
         Activated += (_, args) =>
         {
@@ -55,7 +55,7 @@ public sealed partial class MainWindow : Window
         HideButton.Click += (_, _) => HideToTray();
         QuitButton.Click += async (_, _) => await Quit();
         RetryExitButton.Click += (_, _) => _ = Quit();
-        Navigation.Loaded += (_, _) => UpdateNavigationChrome();
+        Navigation.Loaded += (_, _) => { ApplyLanguage(); UpdateNavigationChrome(); };
         Navigation.SizeChanged += (_, _) => UpdateNavigationChrome();
         Navigation.PaneOpened += (_, _) => UpdateNavigationChrome();
         Navigation.PaneClosed += (_, _) => UpdateNavigationChrome();
@@ -160,8 +160,8 @@ public sealed partial class MainWindow : Window
         quitting = true;
         SetResidentMode(false);
         QuitButton.IsEnabled = RetryExitButton.IsEnabled = false;
-        SetExitProgress("正在退出…");
-        ExitError.Title = "正在退出"; ExitError.Message = "正在停止后台服务并清理临时文件，请稍候。";
+        SetExitProgress(ShellStrings.Current.Exiting);
+        ExitError.Title = ShellStrings.Current.ExitTitle; ExitError.Message = ShellStrings.Current.ExitStoppingMessage;
         ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
         ExitError.IsOpen = true;
         ShowMain();
@@ -177,12 +177,12 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception error)
         {
-            ExitError.Title = "退出尚未完成";
+            ExitError.Title = ShellStrings.Current.ExitFailedTitle;
             ExitError.Message = error is CoreException { Code: "open_cleanup" }
-                ? "临时导出文件仍被外部应用占用。请先关闭对应编辑器，再选择“重试退出”。剪贴板采集和其他后台服务已停止，临时文件仍由核心跟踪。"
-                : "核心资源释放失败。请重试退出；当前窗口会保留，避免丢失清理重试入口。";
+                ? ShellStrings.Current.ExitLockedMessage
+                : ShellStrings.Current.ExitFailedMessage;
             ExitError.Severity = Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error;
-            SetExitProgress("重试退出"); QuitButton.IsEnabled = RetryExitButton.IsEnabled = true;
+            SetExitProgress(ShellStrings.Current.ExitRetry); QuitButton.IsEnabled = RetryExitButton.IsEnabled = true;
             ShowMain();
             return false;
         }
@@ -201,7 +201,7 @@ public sealed partial class MainWindow : Window
     internal void SetOpenCleanupWarning(string? code)
     {
         if (quitting) return;
-        OpenCleanupError.Message = code is null ? "" : "部分临时导出文件尚未清理。关闭使用这些文件的编辑器后，应用将自动重试；原始历史内容保持不变。";
+        OpenCleanupError.Message = code is null ? "" : ShellStrings.Current.OpenCleanupMessage;
         OpenCleanupError.IsOpen = code is not null;
     }
     internal bool ResidentMode => residentMode;
@@ -240,6 +240,9 @@ public sealed partial class MainWindow : Window
 
     private void Apply(SettingsSnapshot snapshot)
     {
+        // Every live surface follows the accepted language; unchanged values notify nobody.
+        LanguageService.Apply(snapshot.Values["app.language"]);
+        ApplyLanguage();
         MainRoot.RequestedTheme = ViewTheme.From(snapshot);
         HistoryWorkspace.CompactMode = snapshot.Values["app.compact_mode"] == "true";
         HistoryWorkspace.ApplyViewPreferences(snapshot);

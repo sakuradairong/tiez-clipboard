@@ -11,28 +11,31 @@ namespace TieZ.Native;
 internal sealed class AppPolicyEditor : UserControl
 {
     private static readonly string[] Types = ["text", "code", "url", "rich_text", "image", "file", "video"];
-    private static readonly string[] TypeLabels = ["文本", "代码", "链接", "富文本", "图片", "文件", "视频"];
     private readonly CleanupPreviewView preview;
     internal CleanupPreviewView RulePreview => preview;
     internal CleanupRuleEditor RulesEditor => rules;
     internal void Initialize(TieZ.Core.NativeCore core) => preview.Initialize(core);
     private readonly StackPanel root = new() { Spacing = 12 };
     private readonly StackPanel fields = new() { Spacing = 10 };
-    private readonly ComboBox selection = new() { Header = "应用策略（按执行顺序）", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly Button add = new() { Content = "添加策略" };
-    private readonly Button remove = new() { Content = "删除此策略" };
-    private readonly Button up = new() { Content = "上移" };
-    private readonly Button down = new() { Content = "下移" };
-    private readonly ToggleSwitch enabled = new() { Header = "启用此策略" };
-    private readonly TextBox name = new() { Header = "应用名称", PlaceholderText = "例如：notepad" };
-    private readonly TextBox path = new() { Header = "路径、可执行文件名或应用 ID", PlaceholderText = "例如：notepad.exe" };
-    private readonly ComboBox action = new() { Header = "匹配后执行", ItemsSource = new[] { "清理文字", "忽略采集" } };
+    private readonly TextBlock heading = new() { FontSize = 20 };
+    private readonly TextBlock intro = new() { TextWrapping = TextWrapping.Wrap };
+    private readonly ComboBox selection = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Button add = new();
+    private readonly Button remove = new();
+    private readonly Button up = new();
+    private readonly Button down = new();
+    private readonly ToggleSwitch enabled = new();
+    private readonly TextBox name = new();
+    private readonly TextBox path = new();
+    private readonly ComboBox action = new();
     private readonly CleanupRuleEditor rules = new();
+    private readonly TextBlock typesHeader = new();
     private readonly TextBlock semantics = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly TextBlock extraTypes = new() { TextWrapping = TextWrapping.Wrap, Opacity = 0.75 };
     private readonly InfoBar invalid = new() { Severity = InfoBarSeverity.Warning, IsClosable = false };
-    private readonly TextBox raw = new() { Header = "策略配置", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100 };
-    private readonly CheckBox[] kinds = Types.Select((_, i) => new CheckBox { Content = TypeLabels[i] }).ToArray();
+    private readonly TextBox raw = new() { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100 };
+    private readonly Expander rawExpander = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly CheckBox[] kinds = Types.Select(_ => new CheckBox()).ToArray();
     private JsonArray? policies, acceptedPolicies;
     private string acceptedText = "[]";
     private readonly Dictionary<JsonObject, JsonObject> originals = new(ReferenceEqualityComparer.Instance);
@@ -49,14 +52,13 @@ internal sealed class AppPolicyEditor : UserControl
     internal AppPolicyEditor()
     {
         preview = new CleanupPreviewView(() => Selected is { } policy ? String(policy, "cleanupRules", "") : "");
-        root.Children.Add(new TextBlock { Text = "按应用清理策略", FontSize = 20 });
-        root.Children.Add(new TextBlock { Text = "先按顺序执行匹配的应用策略，再执行全局清理；清理可累加，忽略会立即停止采集。名称和路径任一匹配即可；支持可执行文件名、应用 ID 和 /正则/。", TextWrapping = TextWrapping.Wrap });
+        root.Children.Add(heading); root.Children.Add(intro);
         root.Children.Add(selection);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         foreach (var button in new[] { add, remove, up, down }) buttons.Children.Add(button);
         root.Children.Add(buttons); root.Children.Add(invalid);
         fields.Children.Add(enabled); fields.Children.Add(name); fields.Children.Add(path); fields.Children.Add(action);
-        fields.Children.Add(new TextBlock { Text = "适用内容类型" });
+        fields.Children.Add(typesHeader);
         var typePanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
         for (int i = 0; i < kinds.Length; i++)
         {
@@ -68,7 +70,7 @@ internal sealed class AppPolicyEditor : UserControl
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
         fields.Children.Add(extraTypes); fields.Children.Add(rules); fields.Children.Add(semantics); fields.Children.Add(preview);
         root.Children.Add(fields);
-        root.Children.Add(new Expander { Header = "兼容配置 · 查看或编辑 JSON", Content = raw, HorizontalAlignment = HorizontalAlignment.Stretch });
+        rawExpander.Content = raw; root.Children.Add(rawExpander);
         Content = root;
         selection.SelectionChanged += (_, _) => { if (!loading) ShowSelected(); };
         add.Click += (_, _) => Add(); remove.Click += (_, _) => Remove();
@@ -88,6 +90,7 @@ internal sealed class AppPolicyEditor : UserControl
         };
         raw.TextChanging += (_, _) => { if (!loading) { Parse(); Changed?.Invoke(); } };
         Text = "[]";
+        ApplyLanguage();
     }
 
     internal void Clear()
@@ -141,18 +144,19 @@ internal sealed class AppPolicyEditor : UserControl
         catch (Exception error) when (error is JsonException or InvalidOperationException or ArgumentException)
         {
             policies = null; originals.Clear();
-            invalid.Message = "配置无法用表单读取，原始内容已保留。请展开兼容配置修正；无效配置不会保存。";
+            invalid.Message = AdvancedStrings.Current.PolicyInvalid;
             invalid.IsOpen = true;
         }
         RebuildSelection(previous);
     }
     private string Label(int index)
     {
+        var text = AdvancedStrings.Current;
         var policy = (JsonObject)policies![index]!;
         string title = String(policy, "appName", "");
         if (string.IsNullOrWhiteSpace(title)) title = String(policy, "appPath", "");
-        if (string.IsNullOrWhiteSpace(title)) title = "未指定应用";
-        return $"{index + 1}. {title}" + (Enabled(policy) ? "" : "（已停用）");
+        if (string.IsNullOrWhiteSpace(title)) title = text.UnnamedApp;
+        return $"{index + 1}. {title}" + (Enabled(policy) ? "" : text.DisabledSuffix);
     }
     private void RebuildSelection(int selected)
     {
@@ -186,8 +190,7 @@ internal sealed class AppPolicyEditor : UserControl
             rules.Text = policy is null ? "" : String(policy, "cleanupRules", "");
             var types = policy is null ? [] : ContentTypes(policy);
             for (int i = 0; i < kinds.Length; i++) kinds[i].IsChecked = types.Contains(Types[i], StringComparer.OrdinalIgnoreCase);
-            extraTypes.Text = string.Join("、", types.Where(kind => !Types.Contains(kind, StringComparer.OrdinalIgnoreCase)));
-            if (extraTypes.Text.Length > 0) extraTypes.Text = "保留的其他类型：" + extraTypes.Text;
+            RenderExtraTypes(types);
             Describe();
         }
         finally { loading = false; }
@@ -196,10 +199,61 @@ internal sealed class AppPolicyEditor : UserControl
     {
         bool ignore = action.SelectedIndex == 1;
         rules.IsEnabled = !ignore;
-        semantics.Text = ignore ? "未选择类型时忽略全部类型。已保存的清理规则会保留，切回清理后可继续使用。"
-            : "未选择类型时此策略不生效。清理规则仅转换文字类型；替换为空白或 __IGNORE_CAPTURE__ 会忽略本条采集。";
+        var text = AdvancedStrings.Current;
+        semantics.Text = ignore ? text.PolicyIgnoreSemantics : text.PolicyCleanSemantics;
         if (string.IsNullOrWhiteSpace(name.Text) && string.IsNullOrWhiteSpace(path.Text))
-            semantics.Text += " 请填写应用名称或路径，否则此策略不会匹配。";
+            semantics.Text += text.PolicyMissingApp;
+    }
+    private static string TypeLabel(AdvancedStrings text, string kind) => kind switch
+    {
+        "text" => text.TypeText,
+        "code" => text.TypeCode,
+        "url" => text.TypeUrl,
+        "rich_text" => text.TypeRichText,
+        "image" => text.TypeImage,
+        "file" => text.TypeFile,
+        _ => text.TypeVideo
+    };
+    private void RenderExtraTypes(IEnumerable<string> types)
+    {
+        var text = AdvancedStrings.Current;
+        string extra = string.Join(text.ListSeparator, types.Where(kind => !Types.Contains(kind, StringComparer.OrdinalIgnoreCase)));
+        extraTypes.Text = extra.Length == 0 ? "" : text.OtherTypesPrefix + extra;
+    }
+    // List labels are re-rendered from the parsed policies only; field drafts, the raw text and selection stay put.
+    private void RefreshLabels()
+    {
+        if (policies is null) return;
+        for (int i = 0; i < selection.Items.Count && i < Count; i++)
+            if (selection.Items[i] is ComboBoxItem item) item.Content = Label(i);
+    }
+    internal void ApplyLanguage()
+    {
+        var text = AdvancedStrings.Current;
+        heading.Text = text.PolicyHeading;
+        intro.Text = text.PolicyIntro;
+        selection.Header = text.PolicySelection;
+        add.Content = text.PolicyAdd; remove.Content = text.PolicyRemove;
+        up.Content = text.MoveUp; down.Content = text.MoveDown;
+        enabled.Header = text.PolicyEnabled;
+        enabled.OnContent = CommonStrings.Current.On;
+        enabled.OffContent = CommonStrings.Current.Off;
+        name.Header = text.AppNameHeader; name.PlaceholderText = text.AppNamePlaceholder;
+        path.Header = text.AppPathHeader; path.PlaceholderText = text.AppPathPlaceholder;
+        action.Header = text.ActionHeader;
+        typesHeader.Text = text.TypesHeader;
+        raw.Header = text.PolicyRawHeader;
+        rawExpander.Header = text.PolicyRawExpander;
+        for (int i = 0; i < kinds.Length; i++) kinds[i].Content = TypeLabel(text, Types[i]);
+        int actionIndex = action.SelectedIndex;
+        loading = true;
+        try { action.ItemsSource = new[] { text.ActionClean, text.ActionIgnore }; action.SelectedIndex = actionIndex; }
+        finally { loading = false; }
+        if (invalid.IsOpen) invalid.Message = text.PolicyInvalid;
+        RefreshLabels();
+        if (Selected is { } policy) RenderExtraTypes(ContentTypes(policy));
+        Describe();
+        rules.ApplyLanguage(); preview.ApplyLanguage();
     }
     private void Publish()
     {

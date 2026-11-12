@@ -23,6 +23,8 @@ internal sealed class CompactPreviewController : IDisposable
     private ElementTheme theme;
     internal int WindowsCreated { get; private set; }
     internal nint WindowHandle => window is null ? 0 : WinRT.Interop.WindowNative.GetWindowHandle(window);
+    // Exposes the live compact preview window so a scan can read its rendered chrome.
+    internal Window? PreviewWindow => window;
     internal bool Visible => window?.AppWindow.IsVisible == true;
     internal bool HasPending => pending is not null;
     internal bool IsExplicitActive => explicitRequest && (HasPending || Visible);
@@ -99,7 +101,7 @@ internal sealed class CompactPreviewController : IDisposable
         catch (Exception error)
         {
             if (current != generation || disposed) return;
-            Cancel(); owner.History.SetPreviewError($"紧凑预览不可用：{error.Message}");
+            Cancel(); owner.History.SetPreviewError(string.Format(PreviewStrings.Current.UnavailableFormat, error.Message));
         }
     }
     private RectInt32 AnchorBounds(FrameworkElement anchor)

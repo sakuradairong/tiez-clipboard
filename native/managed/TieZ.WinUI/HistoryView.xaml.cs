@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
@@ -22,6 +23,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private TargetTrackingStatus? targetStatus;
     private bool targetBusy;
     private bool startCapture, captureBusy;
+    internal bool ManageCaptureStartup { get; set; } = true;
     private int captureGeneration;
     private DispatcherQueueTimer? debounce;
     private DispatcherQueueTimer? poll;
@@ -33,7 +35,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private uint offset;
     private int generation;
     private int detailGeneration;
-    private bool started, disposed, loading, mutating, polling, filterPending, hasMore, externalPending;
+    private bool started, disposed, loading, mutating, polling, filterPending, hasMore, externalPending, relabeling;
     private ClipboardEntry? selectedEntry;
     private string? exactTagFilter;
     private FrameworkElement? hoveredAnchor;
@@ -60,11 +62,116 @@ public sealed partial class HistoryView : UserControl, IDisposable
     private ContentDialog? activeDialog;
     private TextBox? dialogInput;
     private TagPickerView? tagPicker;
+    private Action? feedbackRender;
+    private Action? dialogChrome;
+    private long? storedCount;
+    private int? sessionCount;
+    private string? captureFailureMessage, targetErrorMessage;
+    private bool detailTextFallback, historyLoaded;
+
+    /// <summary>
+    /// Re-derives every localized string of this surface from the shared language. It never talks to the core:
+    /// selection, loaded detail, scroll offset, filters, drafts and busy state stay exactly where they were.
+    /// </summary>
+    // A combo box caches the string it shows for the current selection, so relabelled items only reach the
+    // collapsed box after the selection is re-asserted; the handlers ignore that re-assert.
+    private static void Reassert(ComboBox combo)
+    {
+        int index = combo.SelectedIndex;
+        if (index < 0) return;
+        combo.SelectedIndex = -1;
+        combo.SelectedIndex = index;
+    }
+
+    internal void ApplyLanguage()    {
+        if (disposed) return;
+        var text = HistoryStrings.Current;
+        var common = CommonStrings.Current;
+        PageTitle.Text = text.Title;
+        ApplyWorkspaceLanguage();
+        DatabaseNote.Text = text.DatabaseNote;
+        ToolTipService.SetToolTip(DatabaseNote, text.DatabaseNoteToolTip);
+        ReturnTargetButton.Label = text.ReturnTargetLabel;
+        ToolTipService.SetToolTip(ReturnTargetButton, text.ReturnTargetToolTip);
+        StartTargetButton.Label = text.StartTargetLabel;
+        ToolTipService.SetToolTip(StartTargetButton, text.StartTargetToolTip);
+        SearchText.PlaceholderText = text.SearchPlaceholder;
+        AutomationProperties.SetName(SearchText, text.SearchName);
+        AutomationProperties.SetName(TypeFilter, text.TypeFilterName);
+        TypeAllItem.Content = text.TypeAll; TypeTextItem.Content = text.TypeText;
+        TypeCodeItem.Content = text.TypeCode; TypeLinkItem.Content = text.TypeLink;
+        TypeRichTextItem.Content = text.TypeRichText; TypeImageItem.Content = text.TypeImage;
+        TypeFileItem.Content = text.TypeFile; TypeVideoItem.Content = text.TypeVideo;
+        TagFilter.PlaceholderText = text.TagFilterPlaceholder;
+        AutomationProperties.SetName(TagFilter, text.TagFilterName);
+        PinnedOnly.Content = text.PinnedOnly;
+        TagOnly.Content = text.TagOnly;
+        AutomationProperties.SetName(OrderChoice, text.SortName);
+        ToolTipService.SetToolTip(OrderChoice, text.SortToolTip);
+        SortPinnedItem.Content = text.SortPinned; SortTimeItem.Content = text.SortTime;
+        SortUsageItem.Content = text.SortUsage;
+        AutomationProperties.SetName(LayoutChoice, text.LayoutName);
+        ToolTipService.SetToolTip(LayoutChoice, text.LayoutToolTip);
+        LayoutListItem.Content = text.LayoutList; LayoutCardsItem.Content = text.LayoutCards;
+        relabeling = true;
+        try { Reassert(TypeFilter); Reassert(OrderChoice); Reassert(LayoutChoice); }
+        finally { relabeling = false; }        AutomationProperties.SetName(ReloadLayoutButton, text.ReloadLayoutName);
+        ToolTipService.SetToolTip(ReloadLayoutButton, text.ReloadLayoutToolTip);
+        AddButton.Label = common.Add;
+        EditButton.Label = common.Edit;
+        PasteButton.Label = common.Paste;
+        ToolTipService.SetToolTip(PasteButton, text.PasteToolTip);
+        CopyButton.Label = common.Copy;
+        ToolTipService.SetToolTip(CopyButton, text.CopyToolTip);
+        OpenButton.Label = common.Open;
+        ToolTipService.SetToolTip(OpenButton, text.OpenToolTip);
+        PastePlainButton.Label = common.PastePlainText;
+        TagsButton.Label = common.Tags;
+        CopyPlainButton.Label = common.CopyPlainText;
+        PreviewButton.Label = text.PreviewLabel;
+        ClearButton.Label = text.ClearHistory;
+        CaptureInfo.Title = text.CaptureStatusTitle;
+        AutomationProperties.SetName(HistoryList, text.ListName);
+        AutomationProperties.SetName(HistoryCards, text.CardsName);
+        AutomationProperties.SetName(DetailText, text.DetailTextName);
+        RevealButton.Content = text.RevealSensitive;
+        MoreButton.Content = text.LoadMore;
+        UpdateRefreshLabel();
+        // AppBarButton derives a tooltip from Label and keeps that copy when only the label changes; keep them in step
+        // so a language switch cannot leave the previous language in a hover hint.
+        foreach (var bar in new[] { AddButton, EditButton, PastePlainButton, TagsButton, CopyPlainButton, PreviewButton, ClearButton } )
+            ToolTipService.SetToolTip(bar, bar.Label);
+        // Rows and their containers stay; only the labels derived from the table are re-raised.
+        foreach (var row in rows) row.RefreshText();
+        UpdateListStatus();
+        UpdateCommands();
+        ApplyDetailHeading();
+        if (ActiveList.SelectedItems.Count == 1 && ActiveList.SelectedItem is HistoryRow single && !single.IsStale)
+            DetailMetadata.Text = single.Metadata;
+        if (captureFailureMessage is not null) RenderCaptureFailure();
+        else if (captureStatus is not null) ApplyCapture(captureStatus);
+        else
+        {
+            CaptureStatus.Text = text.CapturePreparing;
+            CaptureButton.Label = text.CaptureStart;
+        }
+        if (targetErrorMessage is not null) SetTargetError(targetErrorMessage);
+        else if (targetStatus is not null) ApplyTarget(targetStatus);
+        else TargetInfo.Text = text.TargetReading;
+        if (detailTextFallback) DetailText.Text = text.ImageUnavailable;
+        ImagePreview.ApplyLanguage();
+        DocumentPreview.ApplyLanguage();
+        foreach (var view in Descendants<HistoryThumbnailView>(HistoryCards)) view.ApplyLanguage();
+        foreach (var button in Descendants<Button>(HistoryCards)) ApplyCardButtonText(button);
+        if (Feedback.IsOpen) feedbackRender?.Invoke();
+        dialogChrome?.Invoke();
+    }
     internal TagPickerView? TagPicker => tagPicker;
 
     public HistoryView()
     {
         InitializeComponent();
+        WorkspaceRoot.SizeChanged += (_, _) => UpdateWorkspaceLayout();
         InitializeHistoryLayouts();
         InitializeThumbnails();
         InitializeCardCopies();
@@ -86,8 +193,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
             input.TextChanging += (_, _) => ScheduleSearch();
         }
         TagFilter.TextChanging += (_, _) => exactTagFilter = null;
-        TypeFilter.SelectionChanged += (_, _) => ScheduleSearch();
-        OrderChoice.SelectionChanged += (_, _) => ScheduleSearch();
+        // A relabel of the item contents re-asserts the selection, which must not debounce a new query.
+        TypeFilter.SelectionChanged += (_, _) => { if (!relabeling) ScheduleSearch(); };
+        OrderChoice.SelectionChanged += (_, _) => { if (!relabeling) ScheduleSearch(); };
         PinnedOnly.Checked += (_, _) => ScheduleSearch();
         PinnedOnly.Unchecked += (_, _) => ScheduleSearch();
         TagOnly.Checked += (_, _) => ScheduleSearch();
@@ -98,10 +206,10 @@ public sealed partial class HistoryView : UserControl, IDisposable
             started = true;
             poll!.Start();
             _ = ReloadAsync();
-            _ = SetCaptureAsync(startCapture);
+            if (ManageCaptureStartup) _ = SetCaptureAsync(startCapture);
         };
         CaptureButton.Click += async (_, _) => await SetCaptureAsync(captureStatus?.Running != true);
-        AddButton.Click += async (_, _) => await ShowTextDialogAsync("新增条目", "", (value, token) => core!.AddManualAsync(value, cancellationToken: token));
+        AddButton.Click += async (_, _) => await ShowTextDialogAsync(text => text.AddTitle, "", (value, token) => core!.AddManualAsync(value, cancellationToken: token));
         ReturnTargetButton.Click += async (_, _) => await ReturnTargetAsync();
         StartTargetButton.Click += async (_, _) => await StartTargetAsync();
         PasteButton.Click += async (_, _) => await PasteSelectedAsync(false);
@@ -115,7 +223,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         EditButton.Click += async (_, _) =>
         {
             if (selectedEntry is { } entry)
-                await ShowTextDialogAsync("编辑内容", entry.Content, (value, token) => core!.EditEntryAsync(entry.Id, value, cancellationToken: token));
+                await ShowTextDialogAsync(text => text.EditTitle, entry.Content, (value, token) => core!.EditEntryAsync(entry.Id, value, cancellationToken: token));
         };
         TagsButton.Click += async (_, _) =>
         {
@@ -133,6 +241,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         MoreButton.Click += async (_, _) => await LoadAsync(false);
         RevealButton.Click += async (_, _) => await LoadDetailAsync(true);
         UpdateCommands();
+        LanguageService.Changed += ApplyLanguage;
+        ApplyLanguage();
     }
 
     internal void Initialize(NativeCore sharedCore, bool captureOnStartup)
@@ -149,15 +259,20 @@ public sealed partial class HistoryView : UserControl, IDisposable
         poll.Tick += OnPoll;
     }
 
-    internal void SetTargetError(string message) => TargetInfo.Text = $"目标跟踪不可用：{message}";
+    internal void SetTargetError(string message)
+    {
+        targetErrorMessage = message;
+        TargetInfo.Text = string.Format(HistoryStrings.Current.TargetErrorFormat, message);
+    }
 
     private void ApplyTarget(TargetTrackingStatus status)
     {
         if (targetStatus is not null && status.Generation < targetStatus.Generation) return;
-        targetStatus = status;
-        TargetInfo.Text = status.HasTarget ? $"上次输入窗口：{status.Application}。返回窗口不会粘贴内容。"
-            : status.Running ? "尚无输入目标：先切换到需要粘贴的应用，再返回 TieZ。" : "窗口跟踪已停止，可点击启用目标跟踪。";
-        if (status.LastError is not null) TargetInfo.Text += $" 服务错误：{status.LastError}";
+        targetStatus = status; targetErrorMessage = null;
+        var text = HistoryStrings.Current;
+        TargetInfo.Text = status.HasTarget ? string.Format(text.TargetFormat, status.Application)
+            : status.Running ? text.TargetNone : text.TargetStopped;
+        if (status.LastError is not null) TargetInfo.Text += string.Format(text.TargetErrorSuffix, status.LastError);
         StartTargetButton.Visibility = status.Running ? Visibility.Collapsed : Visibility.Visible;
         UpdateCommands();
     }
@@ -177,7 +292,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
         try
         {
             await core!.RestoreTargetFocusAsync(target.Generation, lifetime.Token);
-            if (!disposed) { Feedback.Title = "已返回目标窗口"; Feedback.Message = "未发送粘贴按键。"; Feedback.Severity = InfoBarSeverity.Success; Feedback.IsOpen = true; }
+            if (!disposed)
+                PresentFeedback(InfoBarSeverity.Success, () =>
+                {
+                    var text = HistoryStrings.Current;
+                    Feedback.Title = text.ReturnedTitle; Feedback.Message = text.ReturnedMessage;
+                });
         }
         catch (OperationCanceledException) { }
         catch (Exception error) { if (!disposed) ShowError(error.Message); }
@@ -186,15 +306,24 @@ public sealed partial class HistoryView : UserControl, IDisposable
 
     private void ApplyCapture(CaptureStatus status)
     {
-        captureStatus = status;
-        CaptureButton.Label = status.Running ? "暂停采集" : "开始采集";
+        var text = HistoryStrings.Current;
+        captureStatus = status; captureFailureMessage = null;
+        CaptureButton.Label = status.Running ? text.CapturePause : text.CaptureStart;
         CaptureButton.Icon = new SymbolIcon(status.Running ? Symbol.Pause : Symbol.Play);
-        string state = status.Running ? "正在监听" : "采集已暂停";
-        CaptureStatus.Text = $"{state} · 已接收 {status.Accepted} 条";
-        ToolTipService.SetToolTip(CaptureStatus, $"已接收 {status.Accepted} 条 · 已忽略 {status.Ignored} 条 · 失败 {status.Failed} 次。使用独立数据库。");
+        string state = status.Running ? text.CaptureListening : text.CapturePaused;
+        CaptureStatus.Text = string.Format(text.CaptureStatusFormat, state, status.Accepted);
+        ToolTipService.SetToolTip(CaptureStatus, string.Format(text.CaptureStatusToolTip, status.Accepted, status.Ignored, status.Failed));
         CaptureInfo.Severity = InfoBarSeverity.Warning;
-        CaptureInfo.Message = status.LastError is null ? "" : $"采集服务错误：{status.LastError}";
+        CaptureInfo.Message = status.LastError is null ? "" : string.Format(text.CaptureErrorFormat, status.LastError);
         CaptureInfo.IsOpen = status.LastError is not null;
+    }
+    private void RenderCaptureFailure()
+    {
+        var text = HistoryStrings.Current;
+        CaptureStatus.Text = text.CaptureUnknown;
+        CaptureInfo.IsOpen = true;
+        CaptureInfo.Severity = InfoBarSeverity.Error;
+        CaptureInfo.Message = string.Format(text.CaptureUnknownFormat, captureFailureMessage);
     }
 
     private async Task SetCaptureAsync(bool enabled)
@@ -215,10 +344,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             if (!disposed)
             {
-                CaptureStatus.Text = "采集状态未确认";
-                CaptureInfo.IsOpen = true;
-                CaptureInfo.Severity = InfoBarSeverity.Error;
-                CaptureInfo.Message = $"采集状态未确认：{error.Message}";
+                captureFailureMessage = error.Message;
+                RenderCaptureFailure();
                 ShowError(error.Message);
             }
         }
@@ -299,8 +426,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
             {
                 selectId ??= (ActiveList.SelectedItem as HistoryRow)?.Id;
                 rows.Clear();
-                externalPending = false;
-                RefreshButton.Label = "刷新";
+                externalPending = false; historyLoaded = true;
+                UpdateRefreshLabel();
+        // AppBarButton derives a tooltip from Label and keeps that copy when only the label changes; keep them in step
+        // so a language switch cannot leave the previous language in a hover hint.
+        foreach (var bar in new[] { AddButton, EditButton, PastePlainButton, TagsButton, CopyPlainButton, PreviewButton, ClearButton } )
+            ToolTipService.SetToolTip(bar, bar.Label);
             }
             foreach (var item in page.Items)
             {
@@ -311,7 +442,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
             observedRevision = page.Revision;
             offset = page.NextOffset;
             hasMore = page.HasMore;
-            ListStatus.Text = $"已载入 {rows.Count} 条 · 本地 {page.StoredCount} 条 · 会话 {page.SessionCount} 条";
+            storedCount = page.StoredCount; sessionCount = page.SessionCount;
+            UpdateListStatus();
             if (selectId is { } selected)
                 ActiveList.SelectedItem = rows.FirstOrDefault(row => row.Id == selected);
             if (reset) { tagLayoutScope = query.Tag is not null; ApplyAcceptedLayout(); }
@@ -366,7 +498,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (externalPending || activeDialog is not null || ActiveList.SelectedItem is not null || (listScroll?.VerticalOffset ?? 0) > 32)
             {
                 externalPending = true;
-                RefreshButton.Label = "刷新（有更新）";
+                UpdateRefreshLabel();
+        // AppBarButton derives a tooltip from Label and keeps that copy when only the label changes; keep them in step
+        // so a language switch cannot leave the previous language in a hover hint.
+        foreach (var bar in new[] { AddButton, EditButton, PastePlainButton, TagsButton, CopyPlainButton, PreviewButton, ClearButton } )
+            ToolTipService.SetToolTip(bar, bar.Label);
                 var changedIds = changes.Changes.SelectMany(change => change.RemovedIds.Append(change.Id)
                     .Concat(change.ReplacedId is { } replaced ? new[] { replaced } : Array.Empty<long>())).ToHashSet();
                 for (int index = 0; index < rows.Count; index++)
@@ -399,18 +535,19 @@ public sealed partial class HistoryView : UserControl, IDisposable
         ImagePreview.Clear();
         DocumentPreview.Clear();
         DetailText.Visibility = Visibility.Visible;
+        detailTextFallback = false;
         DetailText.Text = "";
         RevealButton.Visibility = Visibility.Collapsed;
         if (disposed) return;
         if (ActiveList.SelectedItems.Count != 1 || ActiveList.SelectedItem is not HistoryRow row)
         {
-            DetailTitle.Text = ActiveList.SelectedItems.Count > 1 ? $"已选择 {ActiveList.SelectedItems.Count} 条" : "选择一条记录";
+            ApplyDetailHeading();
             DetailMetadata.Text = "";
             UpdateCommands();
             return;
         }
         if (row.IsStale) { UpdateCommands(); return; }
-        DetailTitle.Text = row.TypeLabel;
+        ApplyDetailHeading();
         DetailMetadata.Text = row.Metadata;
         UpdateCommands();
         if (row.Summary.IsSensitive && !reveal)
@@ -437,7 +574,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 catch (CoreException error) when (error.Code is not "history_conflict" and not "sensitive_confirmation")
                 {
                     if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
-                    DetailText.Text = "图片预览不可用，原始内容未修改。";
+                    detailTextFallback = true;
+                    DetailText.Text = HistoryStrings.Current.ImageUnavailable;
                     ShowError(error.Message);
                 }
             }
@@ -447,6 +585,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 {
                     var preview = await core.GetDocumentPreviewAsync(entry.Id, revision!.Value, reveal, token);
                     if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    detailTextFallback = false;
                     DetailText.Text = entry.Content;
                     DocumentPreview.Show(preview, entry.Content);
                     DetailText.Visibility = Visibility.Collapsed;
@@ -454,11 +593,12 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 catch (CoreException error) when (error.Code is not "history_conflict" and not "sensitive_confirmation")
                 {
                     if (disposed || token.IsCancellationRequested || current != detailGeneration) return;
+                    detailTextFallback = false;
                     DetailText.Text = entry.Content;
                     ShowError(error.Message);
                 }
             }
-            else DetailText.Text = entry.Content;
+            else { detailTextFallback = false; DetailText.Text = entry.Content; }
             selectedEntry = entry;
             UpdateCommands();
         }
@@ -479,12 +619,13 @@ public sealed partial class HistoryView : UserControl, IDisposable
         bool busy = loading || mutating || filterPending || targetBusy;
         var selected = ActiveList.SelectedItems.Count == 1 ? ActiveList.SelectedItem as HistoryRow : null;
         int selectedCount = ActiveList.SelectedItems.Count;
-        SelectionInfo.Text = selectedCount == 0 ? "选择记录以复制、粘贴或编辑" : $"已选择 {selectedCount} 条记录";
+        var text = HistoryStrings.Current;
+        SelectionInfo.Text = selectedCount == 0 ? text.SelectionHint : string.Format(text.SelectionCountFormat, selectedCount);
         bool showDetail = selected is { IsStale: false } && selectedEntry?.Id == selected.Id;
         DetailBody.Visibility = showDetail ? Visibility.Visible : Visibility.Collapsed;
         DetailHint.Visibility = showDetail ? Visibility.Collapsed : Visibility.Visible;
-        DetailHintText.Text = selectedCount > 1 ? "已选择多条记录，可统一删除。" : selected is { IsStale: true } ? "记录已更新，请刷新后查看。"
-            : selected?.Summary.IsSensitive == true ? "敏感内容已隐藏，确认后可显示。" : selected is null ? "选择一条记录查看详情" : "正在载入记录…";
+        DetailHintText.Text = selectedCount > 1 ? text.DetailMultipleHint : selected is { IsStale: true } ? text.DetailStaleHint
+            : selected?.Summary.IsSensitive == true ? text.DetailSensitiveHint : selected is null ? text.DetailEmptyHint : text.DetailLoading;
         bool available = !busy && activeDialog is null;
         OrderChoice.IsEnabled = LayoutChoice.IsEnabled = ReloadLayoutButton.IsEnabled = available;
         if (busy || activeDialog is not null || externalPending) PreviewInvalidated?.Invoke();
@@ -499,14 +640,18 @@ public sealed partial class HistoryView : UserControl, IDisposable
         PinButton.IsEnabled = TagsButton.IsEnabled = available && !externalPending && selected is { IsStale: false };
         DeleteButton.IsEnabled = available && !externalPending && ActiveList.SelectedItems.Count > 0
             && ActiveList.SelectedItems.Cast<HistoryRow>().All(row => !row.IsStale);
-        DeleteButton.Label = ActiveList.SelectedItems.Count > 1 ? $"删除所选（{ActiveList.SelectedItems.Count}）" : "删除";
-        PinButton.Label = selected?.Summary.IsPinned == true ? "取消置顶" : "置顶";
+        DeleteButton.Label = ActiveList.SelectedItems.Count > 1
+            ? string.Format(text.DeleteSelectedFormat, ActiveList.SelectedItems.Count) : CommonStrings.Current.Delete;
+        ToolTipService.SetToolTip(DeleteButton, DeleteButton.Label);
+        ToolTipService.SetToolTip(PinButton, PinButton.Label);
+        PinButton.Label = selected?.Summary.IsPinned == true ? text.UnpinAction : text.PinAction;
         ClearButton.IsEnabled = available && !externalPending;
         RefreshButton.IsEnabled = available;
         MoreButton.IsEnabled = available && hasMore;
         MoreButton.Visibility = hasMore ? Visibility.Visible : Visibility.Collapsed;
         RevealButton.IsEnabled = available && !externalPending;
         LoadingIndicator.IsActive = busy;
+        UpdateWorkspaceLayout();
     }
 
     private async Task CopySelectedAsync(bool plainText)
@@ -539,10 +684,11 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 allowSensitive: row.Summary.IsSensitive, lifetime.Token);
             if (!disposed)
             {
-                Feedback.Title = "粘贴按键已发送";
-                Feedback.Message = "目标程序的接收结果需在目标窗口确认。";
-                Feedback.Severity = InfoBarSeverity.Success;
-                Feedback.IsOpen = true;
+                PresentFeedback(InfoBarSeverity.Success, () =>
+                {
+                    var text = HistoryStrings.Current;
+                    Feedback.Title = text.PasteSentTitle; Feedback.Message = text.PasteSentMessage;
+                });
             }
         }
         catch (OperationCanceledException) { }
@@ -551,12 +697,59 @@ public sealed partial class HistoryView : UserControl, IDisposable
         finally { mutating = false; if (!disposed) UpdateCommands(); }
     }
 
-    private void ShowError(string message)
+    private void ShowError(string message) => PresentFeedback(InfoBarSeverity.Error, () =>
     {
-        Feedback.Severity = InfoBarSeverity.Error;
-        Feedback.Title = "操作未完成";
+        Feedback.Title = HistoryStrings.Current.ErrorTitle;
         Feedback.Message = message;
+    });
+    private void ShowError(Func<HistoryStrings, string> message) => PresentFeedback(InfoBarSeverity.Error, () =>
+    {
+        var text = HistoryStrings.Current;
+        Feedback.Title = text.ErrorTitle;
+        Feedback.Message = message(text);
+    });
+    // The renderer is retained so an open bar follows a live language switch instead of freezing one language.
+    private void PresentFeedback(InfoBarSeverity severity, Action render)
+    {
+        Feedback.Severity = severity;
+        render();
+        feedbackRender = render;
         Feedback.IsOpen = true;
+    }
+    private void CloseFeedback()
+    {
+        feedbackRender = null;
+        Feedback.IsOpen = false;
+    }
+    private void UpdateRefreshLabel() => RefreshButton.Label = !historyLoaded ? HistoryStrings.Current.RefreshHistory
+        : externalPending ? HistoryStrings.Current.RefreshPending : HistoryStrings.Current.RefreshLabel;
+    private void UpdateListStatus()
+    {
+        if (storedCount is not { } stored) return;
+        ListStatus.Text = string.Format(HistoryStrings.Current.ListStatusFormat, rows.Count, stored, sessionCount ?? 0);
+    }
+    private void ApplyDetailHeading() => DetailTitle.Text = ActiveList.SelectedItems.Count > 1
+        ? string.Format(HistoryStrings.Current.DetailTitleFormat, ActiveList.SelectedItems.Count)
+        : ActiveList.SelectedItem is HistoryRow row ? row.TypeLabel : HistoryStrings.Current.DetailTitleDefault;
+    // Card labels live in a recycled template, so they are re-derived from the tag whenever it is realized.
+    internal static void ApplyCardButtonText(Button button)
+    {
+        var text = HistoryStrings.Current;
+        switch (button.Tag)
+        {
+            case "card-copy":
+                AutomationProperties.SetName(button, text.CardCopyName);
+                ToolTipService.SetToolTip(button, text.CardCopyToolTip);
+                break;
+            case "card-copy-plain":
+                AutomationProperties.SetName(button, text.CardCopyPlainName);
+                ToolTipService.SetToolTip(button, text.CardCopyPlainToolTip);
+                break;
+            case "card-open":
+                AutomationProperties.SetName(button, text.CardOpenName);
+                ToolTipService.SetToolTip(button, text.CardOpenToolTip);
+                break;
+        }
     }
 
     private async Task<bool> MutateAsync(Func<Task<HistoryMutation>> action, bool revisionGuarded = false)
@@ -565,7 +758,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         // Only callers whose core mutation atomically checks an accepted revision may bypass this UI guard.
         if (externalPending && !revisionGuarded)
         {
-            ShowError("历史记录已更新，请取消后刷新再修改。草稿将保留在当前对话框中。");
+            ShowError(text => text.MutateBlocked);
             return false;
         }
         mutating = true;
@@ -574,7 +767,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         {
             var result = await action();
             if (disposed) return true;
-            Feedback.IsOpen = false;
+            CloseFeedback();
             await ReloadAsync(result.RemovedIds.Contains(result.Id) ? null : result.Id);
             return true;
         }
@@ -600,9 +793,16 @@ public sealed partial class HistoryView : UserControl, IDisposable
     {
         if (disposed || core is null || activeDialog is not null || mutating || loading || filterPending || externalPending) return;
         var picker = new TagPickerView();
-        var dialog = new ContentDialog { Title = "选择标签", Content = picker, PrimaryButtonText = "保存",
-            CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot,
-            IsPrimaryButtonEnabled = false };
+        var dialog = new ContentDialog { Content = picker, DefaultButton = ContentDialogButton.Close,
+            XamlRoot = XamlRoot, IsPrimaryButtonEnabled = false };
+        dialogChrome = () =>
+        {
+            var text = HistoryStrings.Current;
+            dialog.Title = text.TagPickerTitle;
+            dialog.PrimaryButtonText = CommonStrings.Current.Save;
+            dialog.CloseButtonText = CommonStrings.Current.Cancel;
+        };
+        dialogChrome();
         tagPicker = picker; activeDialog = dialog;
         void UpdateSave() => dialog.IsPrimaryButtonEnabled = picker.CanSave;
         picker.StateChanged += UpdateSave;
@@ -619,26 +819,37 @@ public sealed partial class HistoryView : UserControl, IDisposable
         finally
         {
             picker.StateChanged -= UpdateSave; picker.Dispose();
-            tagPicker = null; activeDialog = null;
+            tagPicker = null; activeDialog = null; dialogChrome = null;
             if (!disposed) UpdateCommands();
         }
     }
 
-    private async Task ShowTextDialogAsync(string title, string initial, Func<string, CancellationToken, Task<HistoryMutation>> save)
+    private async Task ShowTextDialogAsync(Func<HistoryStrings, string> title, string initial,
+        Func<string, CancellationToken, Task<HistoryMutation>> save)
     {
         if (disposed || activeDialog is not null || mutating || loading || filterPending) return;
         using var dialogCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         bool dialogClosed = false;
         var input = new TextBox { Text = initial, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
-            MinWidth = 360, MaxHeight = 300, PlaceholderText = "输入内容" };
+            MinWidth = 360, MaxHeight = 300 };
         // TextBox normalizes line endings. Opening and accepting without edits must preserve the original payload.
         string initialInput = input.Text;
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         var content = new StackPanel { Spacing = 12 };
         content.Children.Add(input);
         content.Children.Add(error);
-        var dialog = new ContentDialog { Title = title, Content = content, PrimaryButtonText = "保存",
-            CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary, XamlRoot = XamlRoot };
+        var dialog = new ContentDialog { Content = content, DefaultButton = ContentDialogButton.Primary, XamlRoot = XamlRoot };
+        // The open dialog follows a live language switch; its draft text is never touched.
+        dialogChrome = () =>
+        {
+            var text = HistoryStrings.Current;
+            dialog.Title = title(text);
+            dialog.PrimaryButtonText = CommonStrings.Current.Save;
+            dialog.CloseButtonText = CommonStrings.Current.Cancel;
+            input.PlaceholderText = text.InputPlaceholder;
+            if (error.Visibility == Visibility.Visible) error.Text = Feedback.Message;
+        };
+        dialogChrome();
         dialog.Closing += (_, _) => dialogCancellation.Cancel();
         dialog.PrimaryButtonClick += async (_, args) =>
         {
@@ -675,7 +886,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
             dialogClosed = true; dialogCancellation.Cancel();
             input.Text = ""; error.Text = ""; content.Children.Clear(); dialog.Content = null;
             activeDialog = null;
-            dialogInput = null;
+            dialogInput = null; dialogChrome = null;
             if (!disposed) UpdateCommands();
         }
     }
@@ -686,11 +897,17 @@ public sealed partial class HistoryView : UserControl, IDisposable
             || revision is not { } selectedRevision) return;
         long[] ids = ActiveList.SelectedItems.Cast<HistoryRow>().Select(row => row.Id).ToArray();
         if (ids.Length == 0) return;
-        if (ids.Length > 1000) { ShowError("一次最多删除 1000 条，请缩小选择范围。"); return; }
-        var dialog = new ContentDialog { Title = ids.Length == 1 ? "删除这条记录？" : $"删除所选 {ids.Length} 条记录？",
-            Content = "删除后无法撤销。置顶或带标签的所选记录也会删除。",
-            PrimaryButtonText = "删除", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
-            XamlRoot = XamlRoot };
+        if (ids.Length > 1000) { ShowError(text => text.DeleteTooMany); return; }
+        var dialog = new ContentDialog { DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot };
+        dialogChrome = () =>
+        {
+            var text = HistoryStrings.Current;
+            dialog.Title = ids.Length == 1 ? text.DeleteOneTitle : string.Format(text.DeleteManyTitleFormat, ids.Length);
+            dialog.Content = text.DeleteBody;
+            dialog.PrimaryButtonText = CommonStrings.Current.Delete;
+            dialog.CloseButtonText = CommonStrings.Current.Cancel;
+        };
+        dialogChrome();
         activeDialog = dialog;
         UpdateCommands();
         try
@@ -701,7 +918,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
                 await MutateAsync(() => core!.DeleteEntriesAsync(ids, selectedRevision));
         }
         catch (Exception error) { if (!disposed) ShowError(error.Message); }
-        finally { activeDialog = null; if (!disposed) UpdateCommands(); }
+        finally { activeDialog = null; dialogChrome = null; if (!disposed) UpdateCommands(); }
     }
 
     private async Task ShowClearDialogAsync()
@@ -714,19 +931,23 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (disposed) return;
             if (preview.EligibleCount == 0)
             {
-                Feedback.Title = "没有可清空的普通历史";
-                Feedback.Message = "置顶和带标签的记录已保留。";
-                Feedback.Severity = InfoBarSeverity.Informational; Feedback.IsOpen = true;
+                PresentFeedback(InfoBarSeverity.Informational, () =>
+                {
+                    var text = HistoryStrings.Current;
+                    Feedback.Title = text.ClearNothingTitle; Feedback.Message = text.ClearNothingMessage;
+                });
                 return;
             }
-            var dialog = new ContentDialog
+            var dialog = new ContentDialog { DefaultButton = ContentDialogButton.Close, XamlRoot = XamlRoot };
+            dialogChrome = () =>
             {
-                Title = "清空普通历史？",
-                Content = $"将删除 {preview.StoredCount} 条本地记录和 {preview.SessionCount} 条会话记录。\n"
-                    + "保留所有置顶和带标签的记录。此操作作用于整个历史，不受搜索或筛选影响，删除后无法撤销。",
-                PrimaryButtonText = "清空", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close,
-                XamlRoot = XamlRoot
+                var text = HistoryStrings.Current;
+                dialog.Title = text.ClearTitle;
+                dialog.Content = string.Format(text.ClearBodyFormat, preview.StoredCount, preview.SessionCount);
+                dialog.PrimaryButtonText = CommonStrings.Current.Clear;
+                dialog.CloseButtonText = CommonStrings.Current.Cancel;
             };
+            dialogChrome();
             activeDialog = dialog; mutating = false; UpdateCommands();
             var choice = await dialog.ShowAsync();
             activeDialog = null;
@@ -736,16 +957,22 @@ public sealed partial class HistoryView : UserControl, IDisposable
             if (disposed) return;
             await ReloadAsync(0);
             if (disposed) return;
-            Feedback.Title = "已清空普通历史";
-            Feedback.Message = $"已删除 {result.RemovedCount} 条记录，置顶和带标签的记录已保留。"
-                + (result.CompactionError is null ? "" : " 数据库空间压缩未完成；历史清空已经生效。");
-            Feedback.Severity = result.CompactionError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning;
-            Feedback.IsOpen = true;
+            PresentFeedback(result.CompactionError is null ? InfoBarSeverity.Success : InfoBarSeverity.Warning, () =>
+            {
+                var text = HistoryStrings.Current;
+                Feedback.Title = text.ClearDoneTitle;
+                Feedback.Message = string.Format(text.ClearDoneFormat, result.RemovedCount)
+                    + (result.CompactionError is null ? "" : text.ClearCompactionWarning);
+            });
         }
         catch (OperationCanceledException) when (disposed) { }
-        catch (Exception error) { if (!disposed) ShowError(error is CoreException { Code: "history_conflict" }
-            ? "历史记录已变化，本次清空未执行。请刷新后重新查看清空范围。" : error.Message); }
-        finally { activeDialog = null; mutating = false; if (!disposed) UpdateCommands(); }
+        catch (Exception error)
+        {
+            if (disposed) { }
+            else if (error is CoreException { Code: "history_conflict" }) ShowError(text => text.ClearConflict);
+            else ShowError(error.Message);
+        }
+        finally { activeDialog = null; dialogChrome = null; mutating = false; if (!disposed) UpdateCommands(); }
     }
 
     private static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
@@ -776,7 +1003,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true; IsExplicitPreviewActive = null; exactTagFilter = null; OrderChoice.SelectedIndex = 0;
+        disposed = true; LanguageService.Changed -= ApplyLanguage; feedbackRender = null; dialogChrome = null;
+        IsExplicitPreviewActive = null; exactTagFilter = null; OrderChoice.SelectedIndex = 0;
         PreviewInvalidated?.Invoke(); hoveredAnchor = null;
         generation++;
         detailGeneration++;
@@ -869,6 +1097,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         && Descendants<Button>(activeDialog).Any(button => button.Name == "CloseButton" && button.IsLoaded);
     internal string DialogText => dialogInput?.Text ?? "";
     internal bool HasError => Feedback.IsOpen && Feedback.Severity == InfoBarSeverity.Error;
+    internal string FeedbackText => Feedback.IsOpen ? Feedback.Message : "";
     internal int RealizedCount => Enumerable.Range(0, rows.Count).Count(index => ActiveList.ContainerFromIndex(index) is not null);
     internal string ActiveTagFilter => exactTagFilter ?? TagFilter.Text.Trim();
     internal string SortOrder => OrderChoice.SelectedIndex switch { 1 => "time", 2 => "usage", _ => "default" };

@@ -16,6 +16,7 @@ public sealed class ImagePreviewView : Grid
         MaxZoomFactor = 8, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private int generation;
+    private ImagePreviewData? shown;
     internal long? DisplayedId { get; private set; }
     internal bool HasImage => image.Source is BitmapImage { PixelWidth: > 0 } && Visibility == Visibility.Visible;
     internal int PixelWidth => (image.Source as BitmapImage)?.PixelWidth ?? 0;
@@ -25,15 +26,15 @@ public sealed class ImagePreviewView : Grid
         RowSpacing = 8;
         RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        AutomationProperties.SetName(image, "所选图片的静态预览");
         viewport.Content = image;
         Children.Add(viewport); Children.Add(caption); SetRow(caption, 1);
         Visibility = Visibility.Collapsed;
+        RenderChrome();
     }
     internal void Clear()
     {
         generation++;
-        image.Source = null; caption.Text = ""; DisplayedId = null;
+        image.Source = null; shown = null; caption.Text = ""; DisplayedId = null;
         Visibility = Visibility.Collapsed;
         viewport.ChangeView(null, null, 1, true);
     }
@@ -44,8 +45,19 @@ public sealed class ImagePreviewView : Grid
         var bitmap = await NativeImageBitmap.DecodeAsync(preview, token);
         if (current != generation) return;
         image.Source = bitmap;
-        caption.Text = $"静态预览 {preview.Width} × {preview.Height} · 原图 {preview.OriginalWidth} × {preview.OriginalHeight}"
-            + (preview.AnimationSource ? "\n动画显示首帧，原始动画保留用于复制和粘贴。" : "");
+        shown = preview;
         DisplayedId = preview.Id; Visibility = Visibility.Visible;
+        RenderChrome();
+    }
+    internal void ApplyLanguage() => RenderChrome();
+    // The decoded bitmap is kept; only the caption and automation name follow the active language.
+    private void RenderChrome()
+    {
+        var text = PreviewStrings.Current;
+        AutomationProperties.SetName(image, text.ImageName);
+        if (shown is not { } preview) { caption.Text = ""; return; }
+        caption.Text = string.Format(text.ImageCaptionFormat, preview.Width, preview.Height,
+            preview.OriginalWidth, preview.OriginalHeight)
+            + (preview.AnimationSource ? "\n" + text.ImageAnimationNote : "");
     }
 }
