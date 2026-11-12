@@ -87,6 +87,7 @@ internal sealed class ShellController : IDisposable
                         break;
                     case "paste_latest_rich": await PasteLatestAsync(false); break;
                     case "paste_latest_plain": await PasteLatestAsync(true); break;
+                    case "paste_next": await PasteQueueNextAsync(); break;
                     case "quit": _ = main.Quit(); return;
                     default:
                         if (action.StartsWith("quick_paste:", StringComparison.Ordinal)
@@ -110,6 +111,29 @@ internal sealed class ShellController : IDisposable
             }
         }
         finally { polling = false; }
+    }
+    private async Task PasteQueueNextAsync()
+    {
+        if (main.History.HasDialog || popup?.HasDialog == true) return;
+        try
+        {
+            var queue = await core.GetPasteQueueAsync(lifetime.Token);
+            if (queue.Ids.Count == 0) return;
+            var target = await core.GetTargetStatusAsync(lifetime.Token);
+            await NativePasteActivation.WaitAsync(lifetime.Token);
+            var result = await core.PasteNextAsync(queue, target.Generation, false, lifetime.Token);
+            if (!disposed && result.PostPasteError is not null)
+            { main.ShowMain(); main.SetShellUnavailable(QueueStrings.Sent + " " + PopupStrings.PostPaste); }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) when (disposed) { }
+        catch (Exception error)
+        {
+            if (disposed) return;
+            main.ShowMain();
+            main.SetShellUnavailable(error is CoreException { Code: "sensitive_confirmation" } ? QueueStrings.Sensitive : error.Message);
+            _ = main.History.ShowPasteQueueAsync();
+        }
     }
     private async Task PasteLatestAsync(bool textOnly)
     {

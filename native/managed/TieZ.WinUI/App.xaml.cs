@@ -93,6 +93,7 @@ public partial class App : Application
                         throw new ArgumentException("Exit smoke requires an absolute --fixture-directory for the owned managed smoke binary.");
                     new NativeExitWindowSmoke(main, core, directory, report, arguments[fixtureIndex + 1]).Start();
                 }
+                else if (arguments.Contains("--queue-only")) new PasteQueueWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--i18n-only")) new LocalizationWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--card-copy-only")) new HistoryCardCopyWindowSmoke(main, core, directory, report).Start();
                 else if (arguments.Contains("--thumbnails-only")) new HistoryThumbnailWindowSmoke(main, core, directory, report).Start();

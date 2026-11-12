@@ -52,6 +52,10 @@ public sealed class SettingsWindow : Window
         ToolTipService.SetToolTip(searchHotkey, text.SearchHotkeyHint);
         richPasteHotkey.Header = text.RichPasteHeader;
         plainPasteHotkey.Header = text.PlainPasteHeader;
+        sequentialMode.Header = QueueStrings.Mode;
+        sequentialMode.OnContent = CommonStrings.Current.On; sequentialMode.OffContent = CommonStrings.Current.Off;
+        sequentialHotkey.Header = QueueStrings.Hotkey;
+        ToolTipService.SetToolTip(sequentialHotkey, QueueStrings.ShortcutHint);
         var quickPasteIndex = quickPaste.SelectedIndex;
         quickPaste.Header = text.QuickPasteHeader;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(quickPaste, text.QuickPasteHeader);
@@ -95,6 +99,8 @@ public sealed class SettingsWindow : Window
     private readonly TextBox searchHotkey = new() { PlaceholderText = "Alt+F" };
     private readonly TextBox richPasteHotkey = new() { PlaceholderText = "Alt+Shift+V" };
     private readonly TextBox plainPasteHotkey = new();
+    private readonly TextBox sequentialHotkey = new() { PlaceholderText = "Alt+V" };
+    private readonly ToggleSwitch sequentialMode = new();
     private readonly ComboBox quickPaste = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ToggleSwitch deduplicate = new();
     private readonly ToggleSwitch showSearch = new();
@@ -135,7 +141,7 @@ public sealed class SettingsWindow : Window
         intro = new TextBlock { TextWrapping = TextWrapping.Wrap };
         intro.Style = revision.Style = (Style)Application.Current.Resources["NativeCaptionStyle"];
         panel.Children.Add(intro);
-        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, quickPaste, ToggleRow(showSearch), ToggleRow(compact)));
+        panel.Children.Add(SettingsCard(appearanceHeading, language, theme, hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, quickPaste, ToggleRow(sequentialMode), sequentialHotkey, ToggleRow(showSearch), ToggleRow(compact)));
         ToolTipService.SetToolTip(hotkey, SettingsStrings.Current.HotkeyHint);
         panel.Children.Add(SettingsCard(captureHeading, ToggleRow(deduplicate), ToggleRow(captureFiles), ToggleRow(captureRichText), ToggleRow(deleteAfterPaste), ToggleRow(moveToTop), ToggleRow(edgeDocking), ToggleRow(privacy)));
         panel.Children.Add(SettingsCard(storageHeading, ToggleRow(persistent), ToggleRow(limitEnabled), limit));
@@ -167,7 +173,8 @@ public sealed class SettingsWindow : Window
         compact.Toggled += (_, _) => MarkDirty();
         foreach (var toggle in new[] { persistent, captureFiles, captureRichText, deleteAfterPaste, moveToTop, edgeDocking, privacy, limitEnabled })
             toggle.Toggled += (_, _) => MarkDirty();
-        foreach (var input in new[] { hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, limit })
+        sequentialMode.Toggled += (_, _) => MarkDirty();
+        foreach (var input in new[] { hotkey, searchHotkey, richPasteHotkey, plainPasteHotkey, sequentialHotkey, limit })
             // TextChanged is deferred; drafts must be current before Save or an external snapshot.
             input.TextChanging += (_, _) => MarkDirty();
         save.Click += (_, _) => Save();
@@ -233,6 +240,8 @@ public sealed class SettingsWindow : Window
             searchHotkey.Text = snapshot.Values["app.search_hotkey"];
             richPasteHotkey.Text = snapshot.Values["app.rich_paste_hotkey"];
             plainPasteHotkey.Text = snapshot.Values["app.plain_paste_hotkey"];
+            sequentialHotkey.Text = snapshot.Values["app.sequential_hotkey"];
+            sequentialMode.IsOn = snapshot.Values["app.sequential_mode"] == "true";
             quickPaste.SelectedIndex = Math.Max(0, Array.IndexOf(QuickPasteModifiers, snapshot.Values["app.quick_paste_modifier"]));
             language.SelectedIndex = Array.IndexOf(Languages, snapshot.Values["app.language"]);
             theme.SelectedIndex = Array.IndexOf(Themes, snapshot.Values["app.color_mode"]);
@@ -278,6 +287,8 @@ public sealed class SettingsWindow : Window
             ["app.search_hotkey"] = searchHotkey.Text,
             ["app.rich_paste_hotkey"] = richPasteHotkey.Text,
             ["app.plain_paste_hotkey"] = plainPasteHotkey.Text,
+            ["app.sequential_hotkey"] = sequentialHotkey.Text,
+            ["app.sequential_mode"] = sequentialMode.IsOn ? "true" : "false",
             ["app.quick_paste_modifier"] = QuickPasteModifiers[Math.Clamp(quickPaste.SelectedIndex, 0, QuickPasteModifiers.Length - 1)],
             ["app.language"] = Languages[Math.Clamp(language.SelectedIndex, 0, Languages.Length - 1)],
             ["app.color_mode"] = Themes[Math.Clamp(theme.SelectedIndex, 0, Themes.Length - 1)],

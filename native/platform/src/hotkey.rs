@@ -163,6 +163,7 @@ pub(crate) struct Bindings<B: Backend> {
     pending: Option<Pending>,
     retired: Vec<i32>,
     next_id: i32,
+    last_id: i32,
     token: u64,
     pub error: Option<&'static str>,
 }
@@ -177,6 +178,7 @@ impl<B: Backend> Bindings<B> {
             pending: None,
             retired: Vec::new(),
             next_id: first_id,
+            last_id: first_id + 0xff,
             token: 0,
             error: None,
         }
@@ -217,7 +219,7 @@ impl<B: Backend> Bindings<B> {
         let next = if same {
             None
         } else if let Some(chord) = desired {
-            if self.next_id > 0xBFFF {
+            if self.next_id > self.last_id {
                 return Err("hotkey_restart_required");
             }
             self.backend.register(self.next_id, chord)?;
@@ -579,6 +581,20 @@ mod tests {
             Err("hotkey_restart_required")
         );
         assert_eq!(bindings.retired.len(), 1);
+    }
+    #[test]
+    fn repeated_edits_cannot_allocate_ids_from_another_shortcut_slot() {
+        let mut bindings = Bindings::with_first_id(Fake::default(), 0x7100);
+        for index in 0..256 {
+            let token = bindings.prepare(shortcut(if index % 2 == 0 { 0x87 } else { 0x86 })).unwrap();
+            bindings.resolve(token, true).unwrap();
+        }
+        assert_eq!(bindings.prepare(shortcut(0x85)).unwrap_err(), "hotkey_restart_required");
+        assert!(bindings.backend.registered.keys().all(|id| (0x7100..=0x71ff).contains(id)));
+        assert!(bindings.accepts(0x71ff, (0x86 << 16) | 7));
+        let off = bindings.prepare(Shortcut::Disabled).unwrap();
+        bindings.resolve(off, true).unwrap();
+        assert!(bindings.backend.registered.is_empty());
     }
     #[test]
     fn quick_paste_registers_both_digit_rows_and_rolls_back_a_conflict() {

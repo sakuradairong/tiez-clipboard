@@ -135,6 +135,8 @@
             </AppBarButton>
             <AppBarButton x:Name="DeleteButton" Icon="Delete" DynamicOverflowOrder="2"/>
             <CommandBar.SecondaryCommands>
+                <AppBarButton x:Name="QueueSelectionButton" Icon="List"/>
+                <AppBarButton x:Name="QueueButton" Icon="AllApps"/>
                 <AppBarButton x:Name="CopyPlainButton" Icon="Document"/>
                 <AppBarButton x:Name="PreviewButton" Icon="ZoomIn"/>
                 <AppBarButton x:Name="RefreshButton" Icon="Refresh"/>

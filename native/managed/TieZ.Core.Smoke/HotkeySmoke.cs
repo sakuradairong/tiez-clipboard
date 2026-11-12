@@ -9,6 +9,11 @@ internal static class HotkeySmoke
     internal static void Run(NativeCore core)
     {
         const string first = "Ctrl+Alt+Shift+F24", second = "Ctrl+Alt+Shift+F23";
+        // The restart also restores ancillary shortcuts; never claim the user's default Alt chords in a fixture.
+        core.Update(new Dictionary<string, string> {
+            ["app.search_hotkey"] = "", ["app.rich_paste_hotkey"] = "", ["app.plain_paste_hotkey"] = "",
+            ["app.quick_paste_modifier"] = "disabled", ["app.sequential_mode"] = "false"
+        }, core.Snapshot.Revision);
         var original = core.Refresh();
         using (var reserved = new Probe(0x87))
         {
@@ -35,7 +40,7 @@ internal static class HotkeySmoke
         ulong savedRevision = core.Snapshot.Revision;
         Read(core.StopShellAsync());
         var restarted = Read(core.StartShellAsync(showTray: false, bindMainHotkey: true));
-        Check(restarted.MainHotkeyActive && restarted.HotkeyError is null, "Saved shortcut not restored on shell restart");
+        Check(restarted.MainHotkeyActive && restarted.HotkeyError is null, $"Saved shortcut not restored on shell restart: {restarted}");
         Check(core.Refresh().Revision == savedRevision, "Shell restart rewrote settings");
         window = ShellSmoke.FindOwnedWindow();
         Signal(window, 0x4100, 0x87, 7);

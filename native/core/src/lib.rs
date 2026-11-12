@@ -506,19 +506,29 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                         } else {
                             None
                         };
-                        Ok((hotkey, quick_paste, search, rich, plain))
+                        let sequential = if running &&
+                            (current.values["app.sequential_hotkey"] != next.values["app.sequential_hotkey"]
+                                || current.values["app.sequential_mode"] != next.values["app.sequential_mode"]) {
+                            let value = if next.values["app.sequential_mode"] == "true" {
+                                &next.values["app.sequential_hotkey"]
+                            } else { "" };
+                            Some(shell.prepare_sequential_hotkey(value).map_err(hotkey_error)?)
+                        } else { None };
+                        Ok((hotkey, quick_paste, search, rich, plain, sequential))
                     })?;
-            let effect_error = prepared.and_then(|(hotkey, quick_paste, search, rich, plain)| {
+            let effect_error = prepared.and_then(|(hotkey, quick_paste, search, rich, plain, sequential)| {
                 let hotkey_error = hotkey.and_then(|prepared| prepared.commit().err());
                 let quick_paste_error = quick_paste.and_then(|prepared| prepared.commit().err());
                 let search_error = search.and_then(|prepared| prepared.commit().err());
                 let rich_error = rich.and_then(|prepared| prepared.commit().err());
                 let plain_error = plain.and_then(|prepared| prepared.commit().err());
+                let sequential_error = sequential.and_then(|prepared| prepared.commit().err());
                 hotkey_error
                     .or(quick_paste_error)
                     .or(search_error)
                     .or(rich_error)
                     .or(plain_error)
+                    .or(sequential_error)
             });
             service.capture.apply_settings(&change.snapshot);
             let mut result = serde_json::to_value(change).expect("serializable settings");
@@ -953,6 +963,11 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                 {
                     let _ = prepared.commit();
                 }
+                if snapshot.values["app.sequential_mode"] == "true" {
+                    if let Ok(prepared) = service.shell.prepare_sequential_hotkey(&snapshot.values["app.sequential_hotkey"]) {
+                        let _ = prepared.commit();
+                    }
+                }
             }
             Ok(shell_status(service.shell.status()))
         }
@@ -972,6 +987,7 @@ fn dispatch(bytes: &[u8]) -> CoreResult<Value> {
                     ShellAction::FocusSearch => "focus_search".to_string(),
                     ShellAction::PasteLatestRich => "paste_latest_rich".to_string(),
                     ShellAction::PasteLatestPlain => "paste_latest_plain".to_string(),
+                    ShellAction::PasteNext => "paste_next".to_string(),
                 })
                 .collect();
             Ok(json!({ "status": shell_status(service.shell.status()), "actions": actions }))

@@ -130,6 +130,9 @@ public sealed partial class HistoryView : UserControl, IDisposable
         CopyPlainButton.Label = common.CopyPlainText;
         PreviewButton.Label = text.PreviewLabel;
         ClearButton.Label = text.ClearHistory;
+        QueueSelectionButton.Label = QueueStrings.Replace; QueueButton.Label = QueueStrings.Manage;
+        ToolTipService.SetToolTip(QueueSelectionButton, QueueStrings.Replace);
+        ToolTipService.SetToolTip(QueueButton, QueueStrings.Manage);
         CaptureInfo.Title = text.CaptureStatusTitle;
         AutomationProperties.SetName(HistoryList, text.ListName);
         AutomationProperties.SetName(HistoryCards, text.CardsName);
@@ -237,6 +240,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         };
         DeleteButton.Click += async (_, _) => await DeleteSelectedAsync();
         ClearButton.Click += async (_, _) => await ShowClearDialogAsync();
+        QueueSelectionButton.Click += async (_, _) => await ShowPasteQueueAsync(true);
+        QueueButton.Click += async (_, _) => await ShowPasteQueueAsync();
         RefreshButton.Click += async (_, _) => await ReloadAsync();
         MoreButton.Click += async (_, _) => await LoadAsync(false);
         RevealButton.Click += async (_, _) => await LoadDetailAsync(true);
@@ -646,6 +651,8 @@ public sealed partial class HistoryView : UserControl, IDisposable
         ToolTipService.SetToolTip(PinButton, PinButton.Label);
         PinButton.Label = selected?.Summary.IsPinned == true ? text.UnpinAction : text.PinAction;
         ClearButton.IsEnabled = available && !externalPending;
+        QueueSelectionButton.IsEnabled = core is not null && DeleteButton.IsEnabled && selectedCount <= 1000;
+        QueueButton.IsEnabled = core is not null && available;
         RefreshButton.IsEnabled = available;
         MoreButton.IsEnabled = available && hasMore;
         MoreButton.Visibility = hasMore ? Visibility.Visible : Visibility.Collapsed;
@@ -1015,6 +1022,7 @@ public sealed partial class HistoryView : UserControl, IDisposable
         if (poll is not null) { poll.Stop(); poll.Tick -= OnPoll; }
         if (listScroll is not null) listScroll.ViewChanged -= OnScroll;
         tagPicker?.Dispose();
+        pasteQueueView?.Dispose();
         activeDialog?.Hide();
         ReleaseCardCopies();
         ReleaseContentOpens();

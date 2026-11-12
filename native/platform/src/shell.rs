@@ -32,6 +32,7 @@ pub enum ShellAction {
     FocusSearch,
     PasteLatestRich,
     PasteLatestPlain,
+    PasteNext,
 }
 #[derive(Default)]
 struct State {
@@ -40,8 +41,13 @@ struct State {
     last_error: Option<&'static str>,
     hotkey_active: bool,
     hotkey_error: Option<&'static str>,
+    hotkey_errors: [Option<&'static str>; 6],
 }
 impl State {
+    fn set_hotkey_error(&mut self, slot: usize, error: Option<&'static str>) {
+        self.hotkey_errors[slot] = error;
+        self.hotkey_error = self.hotkey_errors.iter().flatten().next().copied();
+    }
     fn queue(&mut self, flags: u8) {
         if flags & QUIT != 0 {
             self.pending.clear();
@@ -110,6 +116,14 @@ impl State {
         }
         self.pending.push_back(action);
     }
+    fn queue_sequential(&mut self) {
+        if self.pending.front() == Some(&ShellAction::Quit) { return; }
+        if self.pending.len() == 32 {
+            self.last_error = Some("shell_action_overflow");
+            return;
+        }
+        self.pending.push_back(ShellAction::PasteNext);
+    }
     fn drain(&mut self) -> Vec<ShellAction> {
         self.pending.drain(..).collect()
     }
@@ -126,6 +140,7 @@ struct Context {
     search: RefCell<Option<Bindings<WindowsBackend>>>,
     rich_paste: RefCell<Option<Bindings<WindowsBackend>>>,
     plain_paste: RefCell<Option<Bindings<WindowsBackend>>>,
+    sequential: RefCell<Option<Bindings<WindowsBackend>>>,
     quick_paste: RefCell<Option<QuickPasteSet<WindowsBackend>>>,
 }
 thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
@@ -269,6 +284,13 @@ impl ShellService {
             finished: false,
             slot: 0,
         })
+    }
+    pub fn prepare_sequential_hotkey(&self, value: &str) -> Result<PreparedSearchHotkey, &'static str> {
+        let shortcut = Shortcut::parse(value)?;
+        if !self.status().running { return Err("shell_stopped"); }
+        let endpoint = self.endpoint.as_ref().ok_or("shell_stopped")?.clone();
+        let token = endpoint.call(CommandKind::PrepareSequential(shortcut))?;
+        Ok(PreparedSearchHotkey { endpoint, token, finished: false, slot: 3 })
     }
     pub fn prepare_rich_paste_hotkey(&self, value: &str) -> Result<PreparedSearchHotkey, &'static str> {
         self.prepare_labeled_hotkey(value, true)
@@ -445,6 +467,7 @@ fn run(
             search: RefCell::new(None),
             rich_paste: RefCell::new(None),
             plain_paste: RefCell::new(None),
+            sequential: RefCell::new(None),
             quick_paste: RefCell::new(None),
         })
     });
@@ -476,6 +499,8 @@ fn run(
                 Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7200));
             *context.plain_paste.borrow_mut() =
                 Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7300));
+            *context.sequential.borrow_mut() =
+                Some(Bindings::with_first_id(WindowsBackend(resources.window), 0x7400));
             *context.quick_paste.borrow_mut() =
                 Some(QuickPasteSet::new(WindowsBackend(resources.window)));
         }
@@ -573,6 +598,13 @@ unsafe extern "system" fn window_proc(
                 return true;
             }
             if message == WM_HOTKEY {
+                let sequential = context.sequential.try_borrow().ok().is_some_and(|slots| {
+                    slots.as_ref().is_some_and(|bindings| bindings.accepts(wparam.0, lparam.0))
+                });
+                if sequential {
+                    context.state.lock().unwrap_or_else(|error| error.into_inner()).queue_sequential();
+                    return true;
+                }
                 let quick = context.quick_paste.try_borrow().ok().and_then(|slots| {
                     slots
                         .as_ref()
@@ -808,6 +840,34 @@ mod tests {
         probe();
     }
     #[test]
+    fn sequential_binding_dispatches_only_committed_chords_and_releases_on_stop() {
+        let mut shell = ShellService::default();
+        shell.start(false).unwrap();
+        let window = HWND(shell.window.load(Ordering::Acquire) as _);
+        let pending = shell.prepare_sequential_hotkey("Ctrl+Alt+Shift+F22").unwrap();
+        unsafe { SendMessageW(window, WM_HOTKEY, Some(WPARAM(0x7400)), Some(LPARAM((0x85 << 16) | 7))); }
+        assert!(shell.drain().is_empty());
+        pending.commit().unwrap();
+        for _ in 0..2 {
+            unsafe { SendMessageW(window, WM_HOTKEY, Some(WPARAM(0x7400)), Some(LPARAM((0x85 << 16) | 7))); }
+        }
+        assert_eq!(shell.drain(), vec![ShellAction::PasteNext, ShellAction::PasteNext]);
+        let replacement = shell.prepare_sequential_hotkey("Ctrl+Alt+Shift+F21").unwrap();
+        drop(replacement);
+        unsafe { SendMessageW(window, WM_HOTKEY, Some(WPARAM(0x7401)), Some(LPARAM((0x84 << 16) | 7))); }
+        assert!(shell.drain().is_empty());
+        shell.prepare_sequential_hotkey("").unwrap().commit().unwrap();
+        unsafe { SendMessageW(window, WM_HOTKEY, Some(WPARAM(0x7400)), Some(LPARAM((0x85 << 16) | 7))); }
+        assert!(shell.drain().is_empty());
+        shell.stop().unwrap();
+        use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS};
+        unsafe {
+            RegisterHotKey(None, 122, HOT_KEY_MODIFIERS(7), 0x85).unwrap();
+            UnregisterHotKey(None, 122).unwrap();
+        }
+    }
+
+    #[test]
     fn stop_restart_and_drop_join_and_release_window_state() {
         let mut shell = ShellService::default();
         assert_eq!(shell.start(false).unwrap().starts, 1);
@@ -836,6 +896,8 @@ enum CommandKind {
     ResolveRich { token: u64, commit: bool },
     PreparePlain(Shortcut),
     ResolvePlain { token: u64, commit: bool },
+    PrepareSequential(Shortcut),
+    ResolveSequential { token: u64, commit: bool },
 }
 struct Command {
     kind: CommandKind,
@@ -921,6 +983,7 @@ impl PreparedSearchHotkey {
         match self.slot {
             1 => CommandKind::ResolveRich { token: self.token, commit },
             2 => CommandKind::ResolvePlain { token: self.token, commit },
+            3 => CommandKind::ResolveSequential { token: self.token, commit },
             _ => CommandKind::ResolveSearch { token: self.token, commit },
         }
     }
@@ -959,6 +1022,8 @@ fn handle_commands(context: &Context) {
                 | CommandKind::ResolveRich { .. }
                 | CommandKind::PreparePlain(_)
                 | CommandKind::ResolvePlain { .. }
+                | CommandKind::PrepareSequential(_)
+                | CommandKind::ResolveSequential { .. }
         ) {
             handle_labeled(context, command);
             continue;
@@ -995,7 +1060,9 @@ fn handle_commands(context: &Context) {
             CommandKind::PrepareRich(_)
             | CommandKind::ResolveRich { .. }
             | CommandKind::PreparePlain(_)
-            | CommandKind::ResolvePlain { .. } => {
+            | CommandKind::ResolvePlain { .. }
+            | CommandKind::PrepareSequential(_)
+            | CommandKind::ResolveSequential { .. } => {
                 unreachable!("latest paste hotkeys are handled above")
             }
         };
@@ -1008,14 +1075,14 @@ fn handle_commands(context: &Context) {
         {
             let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
             state.hotkey_active = bindings.active();
-            state.hotkey_error = bindings.error;
+            state.set_hotkey_error(0, bindings.error);
         }
         if command.reply.send(result).is_err() {
             if let Some(token) = prepared_token {
                 let _ = bindings.resolve(token, false);
                 let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
                 state.hotkey_active = bindings.active();
-                state.hotkey_error = bindings.error;
+                state.set_hotkey_error(0, bindings.error);
             }
         }
     }
@@ -1051,10 +1118,7 @@ fn handle_quick_paste(context: &Context, command: Command) {
     } else {
         None
     };
-    if slots.error.is_some() {
-        let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.hotkey_error = slots.error;
-    }
+    context.state.lock().unwrap_or_else(|e| e.into_inner()).set_hotkey_error(1, slots.error);
     if command.reply.send(result).is_err() {
         if let Some(token) = prepared_token {
             let _ = slots.resolve(token, false);
@@ -1092,10 +1156,7 @@ fn handle_search(context: &Context, command: Command) {
     } else {
         None
     };
-    if bindings.error.is_some() {
-        let mut state = context.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.hotkey_error = bindings.error;
-    }
+    context.state.lock().unwrap_or_else(|e| e.into_inner()).set_hotkey_error(2, bindings.error);
     if command.reply.send(result).is_err() {
         if let Some(token) = prepared_token {
             let _ = bindings.resolve(token, false);
@@ -1104,8 +1165,9 @@ fn handle_search(context: &Context, command: Command) {
 }
 fn handle_labeled(context: &Context, command: Command) {
     let rich = matches!(command.kind, CommandKind::PrepareRich(_) | CommandKind::ResolveRich { .. });
-    let slots = if rich { &context.rich_paste } else { &context.plain_paste };
-    let clear = if rich { ShellAction::PasteLatestRich } else { ShellAction::PasteLatestPlain };
+    let sequential = matches!(command.kind, CommandKind::PrepareSequential(_) | CommandKind::ResolveSequential { .. });
+    let slots = if sequential { &context.sequential } else if rich { &context.rich_paste } else { &context.plain_paste };
+    let clear = if sequential { ShellAction::PasteNext } else if rich { ShellAction::PasteLatestRich } else { ShellAction::PasteLatestPlain };
     let Ok(mut slots) = slots.try_borrow_mut() else {
         let _ = command.reply.send(Err("hotkey_update_pending"));
         return;
@@ -1114,10 +1176,10 @@ fn handle_labeled(context: &Context, command: Command) {
         let _ = command.reply.send(Err("shell_stopped"));
         return;
     };
-    let preparing = matches!(command.kind, CommandKind::PrepareRich(_) | CommandKind::PreparePlain(_));
+    let preparing = matches!(command.kind, CommandKind::PrepareRich(_) | CommandKind::PreparePlain(_) | CommandKind::PrepareSequential(_));
     let result = match command.kind {
-        CommandKind::PrepareRich(shortcut) | CommandKind::PreparePlain(shortcut) => bindings.prepare(shortcut),
-        CommandKind::ResolveRich { token, commit } | CommandKind::ResolvePlain { token, commit } => {
+        CommandKind::PrepareRich(shortcut) | CommandKind::PreparePlain(shortcut) | CommandKind::PrepareSequential(shortcut) => bindings.prepare(shortcut),
+        CommandKind::ResolveRich { token, commit } | CommandKind::ResolvePlain { token, commit } | CommandKind::ResolveSequential { token, commit } => {
             let result = bindings.resolve(token, commit).map(|_| 0);
             if commit {
                 context.state.lock().unwrap_or_else(|e| e.into_inner()).pending.retain(|action| *action != clear);
@@ -1127,9 +1189,8 @@ fn handle_labeled(context: &Context, command: Command) {
         _ => unreachable!("only latest-paste commands reach this function"),
     };
     let prepared_token = if preparing { result.as_ref().ok().copied() } else { None };
-    if bindings.error.is_some() {
-        context.state.lock().unwrap_or_else(|e| e.into_inner()).hotkey_error = bindings.error;
-    }
+    context.state.lock().unwrap_or_else(|e| e.into_inner())
+        .set_hotkey_error(if sequential { 5 } else if rich { 3 } else { 4 }, bindings.error);
     if command.reply.send(result).is_err() {
         if let Some(token) = prepared_token {
             let _ = bindings.resolve(token, false);

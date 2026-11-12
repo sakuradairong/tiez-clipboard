@@ -17,6 +17,16 @@ string directory = Path.Combine(Path.GetTempPath(), $"TieZ-原生-{Guid.NewGuid(
 Directory.CreateDirectory(directory);
 try
 {
+    if (args.Contains("--hotkeys-only"))
+    {
+        using var core = new NativeCore(Path.Combine(directory, "快捷键.db"));
+        core.StartShellAsync(false, false).GetAwaiter().GetResult();
+        HotkeySmoke.Run(core);
+        return;
+    }
+    QueueSmoke.Run(Path.Combine(directory, "队列.db"));
+    QueueHotkeySmoke.Run(Path.Combine(directory, "队列快捷键.db"));
+    if (args.Contains("--queue-only")) return;
     if (args.Contains("--large-history-only"))
     {
         LargeHistorySmoke.Run(Path.Combine(directory, "大正文"));
