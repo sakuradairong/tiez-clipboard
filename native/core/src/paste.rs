@@ -29,11 +29,14 @@ pub(crate) fn paste_entry(
         .target
         .ticket(expected_generation)
         .map_err(before_write)?;
-    // Prepare every format before changing focus or the OS clipboard.
-    let prepared = match expected_revision {
-        Some(revision) => service.capture.prepare_copy_at_revision(id, plain_text, allow_sensitive, Some(revision))?,
-        None => service.capture.prepare_copy(id, plain_text, allow_sensitive)?,
+    let accepted_revision = match expected_revision {
+        Some(revision) => revision,
+        None => service.history.lock()
+            .map_err(|_| CoreError::new("history", "History unavailable"))?.revision(),
     };
+    let prepared = service.capture.prepare_copy_at_revision(
+        id, plain_text, allow_sensitive, Some(accepted_revision),
+    )?;
     keyboard::ensure_keys_idle().map_err(before_write)?;
     service.target.restore(&ticket).map_err(before_write)?;
     let copied = service.capture.commit_copy(prepared, || {
@@ -48,7 +51,7 @@ pub(crate) fn paste_entry(
             "Clipboard was written; paste input accepted {}/4 events, cleanup accepted {} events, cleanup complete: {}. History retained",
             error.sent, error.cleanup_sent, error.cleanup_complete)))?;
     // Sending a complete batch does not prove the target consumed its clipboard.
-    let post_paste_error = apply_after_successful_paste(service, copied.id);
+    let post_paste_error = apply_after_successful_paste(service, copied.id, accepted_revision);
     Ok(PasteResult {
         id: copied.id,
         clipboard_sequence: copied.clipboard_sequence,
@@ -57,7 +60,7 @@ pub(crate) fn paste_entry(
         post_paste_error,
     })
 }
-fn apply_after_successful_paste(service: &CoreRuntime, id: i64) -> Option<String> {
+fn apply_after_successful_paste(service: &CoreRuntime, id: i64, accepted_revision: u64) -> Option<String> {
     let snapshot = match service.settings.snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => return Some(error.message),
@@ -70,7 +73,7 @@ fn apply_after_successful_paste(service: &CoreRuntime, id: i64) -> Option<String
     };
     // The paste already reached the OS. A bookkeeping failure must not be reported as an unsent paste.
     history
-        .apply_after_paste(id, delete_after, move_to_top)
+        .apply_after_paste(id, accepted_revision, delete_after, move_to_top)
         .err()
         .map(|error| error.message)
 }

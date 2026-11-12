@@ -351,6 +351,7 @@ impl CaptureService {
             self.prepare_copy_at_revision(id, plain_text, allow_sensitive, expected_revision)?;
         self.commit_copy(prepared, || Ok(()))
     }
+    #[cfg(test)]
     pub(crate) fn prepare_copy(
         &self,
         id: i64,

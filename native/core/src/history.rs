@@ -1,4 +1,6 @@
 mod sorting;
+#[cfg(test)]
+mod post_paste_tests;
 mod usage;
 mod tags;
 pub use tags::TagQuery;
@@ -723,19 +725,26 @@ impl HistoryService {
         }
         Ok(self.committed(revision, id, None, vec![id], id > 0))
     }
-    /// Legacy post-paste policy. Stored pinned or tagged rows are never deleted.
-    /// Session rows follow the delete flag even when pinned. A kept stored row
-    /// gains one use, and an unpinned row can move to the front.
     pub fn apply_after_paste(
         &mut self,
         id: i64,
+        accepted_revision: u64,
         delete_after: bool,
         move_to_top: bool,
     ) -> CoreResult<bool> {
+        // SQLite can reuse an ID, and capture can replace the row while input is being sent.
+        let changes = self.changes(accepted_revision)?;
+        if changes.resync_required || changes.changes.iter().any(|change| {
+            change.id == id || change.id == 0 || change.replaced_id == Some(id)
+                || change.removed_ids.contains(&id)
+        }) {
+            return Err(CoreError::new("history_conflict",
+                "Entry changed after paste; history was not updated"));
+        }
         let entry = self.entry(id)?;
         let protected = id > 0 && (entry.is_pinned || !entry.tags.is_empty());
         if delete_after && !protected {
-            self.delete(id)?;
+            self.delete_many(vec![id], self.revision)?;
             return Ok(true);
         }
         if id <= 0 {
@@ -753,7 +762,8 @@ impl HistoryService {
             let transaction = connection.transaction().map_err(failure)?;
             let rows = if touch {
                 transaction.execute(
-                    "UPDATE clipboard_history SET use_count=?1, timestamp=?2, sync_updated_at=?2,
+                    "UPDATE clipboard_history SET use_count=?1, timestamp=MAX(timestamp,?2),
+                     sync_updated_at=MAX(COALESCE(sync_updated_at,0)+1,?2),
                      sync_updated_by=COALESCE((SELECT value FROM settings WHERE key='app.anon_id'),'') WHERE id=?3",
                     rusqlite::params![uses, now, id],
                 )
@@ -1185,26 +1195,26 @@ mod tests {
             .unwrap()
             .id;
         let before = history.entry(plain).unwrap().timestamp;
-        assert!(!history.apply_after_paste(plain, false, true).unwrap());
+        assert!(!history.apply_after_paste(plain, history.revision(), false, true).unwrap());
         let moved = history.entry(plain).unwrap();
         assert_eq!(moved.use_count, 1);
         assert!(moved.timestamp >= before);
-        assert!(history.apply_after_paste(plain, true, false).unwrap());
+        assert!(history.apply_after_paste(plain, history.revision(), true, false).unwrap());
         assert!(history.entry(plain).is_err());
         let pinned_time = history.entry(pinned).unwrap().timestamp;
-        assert!(!history.apply_after_paste(pinned, true, true).unwrap());
+        assert!(!history.apply_after_paste(pinned, history.revision(), true, true).unwrap());
         let kept = history.entry(pinned).unwrap();
         assert!(kept.is_pinned);
         assert_eq!(kept.use_count, 1);
         assert_eq!(kept.timestamp, pinned_time);
-        assert!(!history.apply_after_paste(tagged, true, false).unwrap());
+        assert!(!history.apply_after_paste(tagged, history.revision(), true, false).unwrap());
         assert_eq!(history.entry(tagged).unwrap().tags, vec!["work".to_string()]);
         let session = history
             .record_processed(processed("session"), false)
             .unwrap()
             .id;
         assert!(session < 0);
-        assert!(history.apply_after_paste(session, true, false).unwrap());
+        assert!(history.apply_after_paste(session, history.revision(), true, false).unwrap());
         assert!(history.entry(session).is_err());
     }
     #[test]
