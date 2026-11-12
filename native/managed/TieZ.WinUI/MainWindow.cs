@@ -13,6 +13,7 @@ public sealed partial class MainWindow : Window
     private bool shutdownComplete, workspacesStopped;
     private Task<bool>? quitTask;
     private readonly OpenLifetimeController openLifetime;
+    private readonly EdgeDockController edgeDock;
     internal event Action? ShutdownStarted;
     internal OpenLifetimeController OpenLifetime => openLifetime;
     internal bool ShutdownPending => quitting;
@@ -77,6 +78,8 @@ public sealed partial class MainWindow : Window
         };
         TagWorkspace.Initialize(core); TagWorkspace.FilterRequested += FilterByTag;
         HistoryWorkspace.Initialize(core, captureOnStartup);
+        edgeDock = new EdgeDockController(this, core, () => HistoryWorkspace.HasDialog, "main");
+        ShutdownStarted += edgeDock.Dispose;
         core.Changed += Apply;
         Closed += (_, _) => { openLifetime.Dispose(); StopWorkspaces(); };
         Apply(core.Snapshot);

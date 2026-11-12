@@ -91,5 +91,7 @@ internal static class EdgeDock
         var right = new DockRect(1920 - 400, 100, 1920, 660);
         if (Next(right, screen, 0, 0, false, DockEdge.None, false, true) is not { Edge: DockEdge.Right, Hidden: true })
             throw new InvalidOperationException("A window on the right edge should dock right.");
+        if (!EdgeDockController.Combined(false, true) || EdgeDockController.Combined(false, false))
+            throw new InvalidOperationException("Either parked window keeps quick paste in the edge-hidden state.");
     }
 }

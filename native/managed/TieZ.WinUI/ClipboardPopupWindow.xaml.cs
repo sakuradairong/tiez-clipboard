@@ -80,7 +80,7 @@ public sealed partial class ClipboardPopupWindow : Window, IDisposable
         owner.ShutdownStarted += Dispose;
         core.Changed += ApplySettings;
         LanguageService.Changed += ApplyLanguage;
-        edgeDock = new EdgeDockController(this, core);
+        edgeDock = new EdgeDockController(this, core, () => HasDialog, "popup");
         ApplySettings(core.Snapshot); ApplyLanguage();
     }
 
